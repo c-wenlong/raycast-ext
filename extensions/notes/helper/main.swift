@@ -788,7 +788,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// rename on the next save leaves the copy's name alone.
   private func duplicateNote() {
     saveNow()
-    guard let path = currentPath else { return }
+    guard let path = currentPath, textView.isEditable else {
+      NSSound.beep()
+      return
+    }
     let filename = (path as NSString).lastPathComponent
     let directory = (path as NSString).deletingLastPathComponent
     var text = loadedText
@@ -861,8 +864,18 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   // MARK: Loading and saving
 
   private func load(_ path: String) {
-    let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     currentPath = path
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+      // Not UTF-8 (or unreadable): show it read-only so nothing here can
+      // overwrite or copy a file we cannot represent.
+      loadedText = ""
+      textView.string = ""
+      textView.isEditable = false
+      watch(path)
+      panel.title = "Cannot read \((path as NSString).lastPathComponent) as UTF-8"
+      return
+    }
+    textView.isEditable = true
     loadedText = text
     textView.string = text
     restyle()
@@ -884,7 +897,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   private func saveNow() {
     saveTimer?.invalidate()
-    guard let path = currentPath else { return }
+    guard let path = currentPath, textView.isEditable else { return }
     let text = textView.string
     guard text != loadedText else { return }
     do {
@@ -1025,6 +1038,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       panel.title = "Notes"
       return
     }
+    guard textView.isEditable else { return }
     let noteTitle = title(of: textView.string, filename: (path as NSString).lastPathComponent)
     let position = currentIndex.map { "\($0 + 1)/\(notes.count)" } ?? ""
     let unsaved = textView.string != loadedText ? " •" : ""
