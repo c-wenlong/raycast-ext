@@ -709,7 +709,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       duplicateNote()
     case "find":
       let item = NSMenuItem()
-      item.tag = NSFindPanelAction.showFindPanel.rawValue
+      item.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
       textView.performFindPanelAction(item)
     case "copy":
       NSPasteboard.general.clearContents()
