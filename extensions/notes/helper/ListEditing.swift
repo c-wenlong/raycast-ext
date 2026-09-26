@@ -204,6 +204,41 @@ enum ListEditing {
 
   // MARK: Public operations
 
+  private static let quoteLine = try! NSRegularExpression(pattern: #"^>[ \t]?(.*)$"#)
+
+  /// Enter on a quote line: the quote continues on the next line, or
+  /// ends when the line is empty. Nil when the cursor is not in a quote.
+  static func quoteNewline(in text: String, cursor: Int) -> Edit? {
+    guard !insideFence(text, cursor: cursor) else { return nil }
+    let ns = text as NSString
+    var lineStart = 0
+    var contentsEnd = 0
+    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
+    let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
+    guard let match = quoteLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else { return nil }
+    let content = (line as NSString).substring(with: match.range(at: 1))
+    if content.trimmingCharacters(in: .whitespaces).isEmpty {
+      return Edit(range: NSRange(location: lineStart, length: contentsEnd - lineStart), replacement: "", cursor: lineStart)
+    }
+    let inserted = lineBreak(in: text) + "> "
+    return Edit(range: NSRange(location: cursor, length: 0), replacement: inserted, cursor: cursor + (inserted as NSString).length)
+  }
+
+  /// Removes the current line's block prefix (heading, quote, list
+  /// marker), turning it into plain text. Nil when there is none.
+  static func clearLinePrefix(in text: String, cursor: Int) -> Edit? {
+    let ns = text as NSString
+    var lineStart = 0
+    var contentsEnd = 0
+    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
+    let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
+    guard let match = anyPrefix.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else { return nil }
+    let prefix = match.range(at: 2)
+    let column = cursor - lineStart
+    let newColumn = column <= NSMaxRange(prefix) ? prefix.location : column - prefix.length
+    return Edit(range: NSRange(location: lineStart + prefix.location, length: prefix.length), replacement: "", cursor: lineStart + newColumn)
+  }
+
   /// Enter on a list item: continues the list, or ends it when the item
   /// is empty. Nil when the cursor is not on a list item.
   static func newline(in text: String, cursor: Int) -> Edit? {

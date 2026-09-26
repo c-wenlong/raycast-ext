@@ -309,9 +309,10 @@ final class StatusBar {
     label.alignment = .center
     label.translatesAutoresizingMaskIntoConstraints = false
 
-    formatButton = ChromeButton(glyph: "T", font: NSFont.systemFont(ofSize: 14, weight: .semibold), label: "Formatting")
-    formatButton.cornerRadius = 15
-    formatButton.fill = ChromeColors.round
+    // Same size and wash as the format bar's close button.
+    formatButton = ChromeButton(glyph: "T", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Formatting")
+    formatButton.cornerRadius = 12
+    formatButton.fill = ChromeColors.pill
     formatButton.stroke = ChromeColors.border
     formatButton.translatesAutoresizingMaskIntoConstraints = false
     self.onFormat = onFormat
@@ -321,7 +322,9 @@ final class StatusBar {
 
   private let onFormat: () -> Void
 
-  @objc private func formatClicked() { onFormat() }
+  @objc private func formatClicked() {
+    if isFormatBarVisible { hideFormatBar() } else { onFormat() }
+  }
 
   func install(in parent: NSView) {
     parent.addSubview(label)
@@ -329,10 +332,10 @@ final class StatusBar {
     NSLayoutConstraint.activate([
       label.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
       label.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
-      formatButton.widthAnchor.constraint(equalToConstant: 30),
-      formatButton.heightAnchor.constraint(equalToConstant: 30),
+      formatButton.widthAnchor.constraint(equalToConstant: 24),
+      formatButton.heightAnchor.constraint(equalToConstant: 24),
       formatButton.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -12),
-      formatButton.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
+      formatButton.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -13),
     ])
   }
 
@@ -341,7 +344,7 @@ final class StatusBar {
   /// Shows the floating bar in place of the count and the "T" button.
   func showFormatBar(apply: @escaping (NoteTextView.Format) -> Void) {
     guard formatBar == nil, let parent = formatButton.superview else { return }
-    let bar = FormatBar(apply: apply) { [weak self] in self?.hideFormatBar() }
+    let bar = FormatBar(apply: apply)
     parent.addSubview(bar)
     NSLayoutConstraint.activate([
       bar.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
@@ -350,15 +353,25 @@ final class StatusBar {
     ])
     formatBar = bar
     label.isHidden = true
-    formatButton.isHidden = true
+    // The same round button closes the bar: only its glyph changes.
+    formatButton.imagePosition = .imageOnly
+    formatButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close formatting")?
+      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+    formatButton.setAccessibilityLabel("Close formatting")
   }
 
   func hideFormatBar() {
     formatBar?.removeFromSuperview()
     formatBar = nil
     label.isHidden = false
-    formatButton.isHidden = false
+    formatButton.imagePosition = .noImage
+    formatButton.image = nil
+    formatButton.attributedTitle = Self.tGlyph
+    formatButton.setAccessibilityLabel("Formatting")
   }
+
+  private static let tGlyph = NSAttributedString(
+    string: "T", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
 
   var isFormatBarVisible: Bool { formatBar != nil }
 
@@ -377,9 +390,14 @@ final class StatusBar {
 final class FormatBar: NSView, NSMenuDelegate {
   static let height: CGFloat = 32
   private let pill = PillView()
-  private let closeButton: ChromeButton
+
+  /// The bar spans the window but only the pill is solid: clicks beside
+  /// it fall through to the note and to the round × button.
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let local = convert(point, from: superview)
+    return pill.frame.contains(local) ? super.hitTest(point) : nil
+  }
   private let apply: (NoteTextView.Format) -> Void
-  private let onClose: () -> Void
   private var menus: [ObjectIdentifier: NSMenu] = [:]
 
   private struct Slot {
@@ -390,7 +408,7 @@ final class FormatBar: NSView, NSMenuDelegate {
   }
 
   private static let slots: [Slot] = [
-    Slot(symbol: "textformat.size", label: "Heading", format: nil, menu: FormatOptions.all.filter { ["h1", "h2", "h3"].contains($0.id) }),
+    Slot(symbol: "textformat.size", label: "Heading", format: nil, menu: FormatOptions.all.filter { ["h1", "h2", "h3", "h4"].contains($0.id) }),
     Slot(symbol: "italic", label: "Text style", format: nil, menu: FormatOptions.all.filter { ["bold", "italic", "strike"].contains($0.id) }),
     Slot(symbol: "link", label: "Link", format: .link, menu: []),
     Slot(symbol: "chevron.left.forwardslash.chevron.right", label: "Code", format: .wrap("`"), menu: []),
@@ -399,10 +417,8 @@ final class FormatBar: NSView, NSMenuDelegate {
     Slot(symbol: "list.bullet", label: "List", format: nil, menu: FormatOptions.all.filter { ["bullet", "ordered", "task"].contains($0.id) }),
   ]
 
-  init(apply: @escaping (NoteTextView.Format) -> Void, onClose: @escaping () -> Void) {
+  init(apply: @escaping (NoteTextView.Format) -> Void) {
     self.apply = apply
-    self.onClose = onClose
-    closeButton = ChromeButton(symbol: "xmark", pointSize: 9, weight: .bold, label: "Close formatting")
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
 
@@ -437,14 +453,6 @@ final class FormatBar: NSView, NSMenuDelegate {
       stack.addArrangedSubview(button)
     }
 
-    closeButton.cornerRadius = 12
-    closeButton.fill = ChromeColors.round
-    closeButton.stroke = ChromeColors.border
-    closeButton.translatesAutoresizingMaskIntoConstraints = false
-    closeButton.target = self
-    closeButton.action = #selector(closeClicked)
-    addSubview(closeButton)
-
     NSLayoutConstraint.activate([
       stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
       stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
@@ -452,14 +460,11 @@ final class FormatBar: NSView, NSMenuDelegate {
       stack.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
       { let c = pill.centerXAnchor.constraint(equalTo: centerXAnchor); c.priority = .defaultHigh; return c }(),
       pill.centerYAnchor.constraint(equalTo: centerYAnchor),
-      // Never run into the close button or off the left edge in a narrow window.
-      pill.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
+      // Never run into the status bar's round button (which closes the
+      // bar) or off the left edge in a narrow window.
+      pill.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -(12 + 24 + 8)),
       pill.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
       pill.heightAnchor.constraint(equalToConstant: Self.height - 2),
-      closeButton.widthAnchor.constraint(equalToConstant: 24),
-      closeButton.heightAnchor.constraint(equalToConstant: 24),
-      closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-      closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
       heightAnchor.constraint(equalToConstant: Self.height),
     ])
   }
@@ -484,7 +489,6 @@ final class FormatBar: NSView, NSMenuDelegate {
     apply(option.format)
   }
 
-  @objc private func closeClicked() { onClose() }
 }
 
 // MARK: - Formatting picker
@@ -503,6 +507,7 @@ enum FormatOptions {
     Option(id: "h1", title: "Heading 1", keys: "⌥⌘1", symbol: "textformat.size.larger", format: .prefix(.heading(1))),
     Option(id: "h2", title: "Heading 2", keys: "⌥⌘2", symbol: "textformat.size", format: .prefix(.heading(2))),
     Option(id: "h3", title: "Heading 3", keys: "⌥⌘3", symbol: "textformat.size.smaller", format: .prefix(.heading(3))),
+    Option(id: "h4", title: "Heading 4", keys: "⌥⌘4", symbol: "textformat.size.smaller", format: .prefix(.heading(4))),
     Option(id: "bold", title: "Bold", keys: "⌘B", symbol: "bold", format: .wrap("**")),
     Option(id: "italic", title: "Italic", keys: "⌘I", symbol: "italic", format: .wrap("_")),
     Option(id: "strike", title: "Strikethrough", keys: "⇧⌘S", symbol: "strikethrough", format: .wrap("~~")),

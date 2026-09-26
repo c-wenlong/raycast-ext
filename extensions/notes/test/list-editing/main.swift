@@ -353,5 +353,31 @@ do {
   check("parentheses in a pasted url are encoded", text == "[text](https://en.wikipedia.org/wiki/Function_%28mathematics%29)", text)
 }
 
+
+// Quotes: Enter continues, Enter on an empty quote ends it
+
+do {
+  let (text, cursor) = applied("> one", ListEditing.quoteNewline(in: "> one", cursor: 5))!
+  check("Enter on a quote line continues the quote", text == "> one\n> " && cursor == 8, "\(text.debugDescription) \(cursor)")
+  let (mid, midCursor) = applied("> one two", ListEditing.quoteNewline(in: "> one two", cursor: 5))!
+  check("Enter mid-quote carries the rest to the next quote line", mid == "> one\n>  two" && midCursor == 8, mid.debugDescription)
+  let (ended, endCursor) = applied("> ", ListEditing.quoteNewline(in: "> ", cursor: 2))!
+  check("Enter on an empty quote ends it", ended == "" && endCursor == 0, ended.debugDescription)
+  check("Enter off a quote line is not a quote newline", ListEditing.quoteNewline(in: "plain", cursor: 5) == nil)
+  check("Enter inside a fence is not a quote newline", ListEditing.quoteNewline(in: "```\n> x", cursor: 7) == nil)
+}
+
+// Plain text: the block prefix goes
+
+do {
+  let (text, cursor) = applied("## Title", ListEditing.clearLinePrefix(in: "## Title", cursor: 8))!
+  check("clearLinePrefix drops a heading marker", text == "Title" && cursor == 5, "\(text) \(cursor)")
+  let (task, taskCursor) = applied("  - [ ] do", ListEditing.clearLinePrefix(in: "  - [ ] do", cursor: 4))!
+  check("clearLinePrefix keeps the indent and puts a caret inside the prefix at the text", task == "  do" && taskCursor == 2, "\(task) \(taskCursor)")
+  check("clearLinePrefix is nil on plain text", ListEditing.clearLinePrefix(in: "plain", cursor: 2) == nil)
+  let (quote, _) = applied("> q", ListEditing.clearLinePrefix(in: "> q", cursor: 3))!
+  check("clearLinePrefix drops a quote marker", quote == "q", quote)
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)
