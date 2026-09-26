@@ -27,7 +27,8 @@ if args.count >= 3, let caret = Int(args[2]), let textView = panel.contentView?.
   textView.scrollRangeToVisible(textView.selectedRange())
 }
 RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-let view = panel.contentView!
+// The whole window frame (title bar included), not just the content view.
+let view = panel.contentView!.superview ?? panel.contentView!
 let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
 view.cacheDisplay(in: view.bounds, to: rep)
 try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args[1]))
