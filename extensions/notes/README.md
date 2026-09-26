@@ -27,9 +27,14 @@ Inside the window:
 
 | Keys | Action |
 |---|---|
+| `⌘K` | action palette: type to filter, `↑` `↓` to move, `↩` to run |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (the `#` heading becomes the title and filename) |
+| `⌘D` | duplicate note |
 | `⌘↩` | toggle the task on the current line, or click the `[ ]` box |
+| `⌘F` | find in note |
+| `⇧⌘C` | copy the note's markdown |
+| `⌃X` | move the note to the Trash |
 | `⌘P` | jump to Browse Notes in Raycast |
 | `⌘W` or `Esc` | hide |
 
