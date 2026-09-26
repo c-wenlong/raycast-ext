@@ -111,7 +111,8 @@ final class TaskBoxLayoutManager: NSLayoutManager {
   /// quote line with no text. NoteTextView calls it from drawBackground.
   func drawQuoteBars(in rect: NSRect, origin: NSPoint) {
     guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
-    let band = NSRect(x: 0, y: rect.minY - origin.y, width: container.size.width, height: rect.height)
+    let reach = 2 * Markdown.zoom  // the bar's padding past its text
+    let band = NSRect(x: 0, y: rect.minY - origin.y - reach, width: container.size.width, height: rect.height + reach * 2)
     let glyphs = glyphRange(forBoundingRect: band, in: container)
     guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
     let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
@@ -165,7 +166,10 @@ final class TaskBoxLayoutManager: NSLayoutManager {
   /// drawBackground.
   func drawCalloutBoxes(in rect: NSRect, origin: NSPoint) {
     guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
-    let band = NSRect(x: 0, y: rect.minY - origin.y, width: container.size.width, height: rect.height)
+    // The box reaches `calloutPad` past its text, so look that far past
+    // the redraw area for callout glyphs.
+    let reach = Markdown.calloutPad + 1
+    let band = NSRect(x: 0, y: rect.minY - origin.y - reach, width: container.size.width, height: rect.height + reach * 2)
     let glyphs = glyphRange(forBoundingRect: band, in: container)
     guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
     let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
@@ -429,10 +433,13 @@ enum Markdown {
   // Possessive `[ \t]++` so "-  [ ] x" cannot backtrack to one space and
   // pass as a bullet as well as a task.
   static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
-  static let quote = try! NSRegularExpression(pattern: #"^(>)(?!>)[ \t]?(.*)$"#, options: .anchorsMatchLines)
+  // A quote is "> " (or a bare ">"), a callout ">> ": the same shapes the
+  // editing rules (ListEditing) recognise, so a marker the rules would
+  // not remove is never drawn as one. A third ">" makes neither.
+  static let quote = try! NSRegularExpression(pattern: #"^(>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
   /// A callout: ">> " lines, drawn in an outlined box (a nested quote to
   /// other markdown viewers).
-  static let callout = try! NSRegularExpression(pattern: #"^(>>)[ \t]?(.*)$"#, options: .anchorsMatchLines)
+  static let callout = try! NSRegularExpression(pattern: #"^(>>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?(?:^ {0,3}(?:\1`*|\2~*)[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)

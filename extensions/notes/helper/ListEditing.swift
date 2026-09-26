@@ -204,7 +204,7 @@ enum ListEditing {
 
   // MARK: Public operations
 
-  private static let quoteLine = try! NSRegularExpression(pattern: #"^(>>?)[ \t]?(.*)$"#)
+  private static let quoteLine = try! NSRegularExpression(pattern: #"^(>>?)(?!>)(?:[ \t]|$)(.*)$"#)
 
   /// Enter on a quote (">") or callout (">>") line: the block continues
   /// on the next line, or ends when the line is empty. Nil when the
