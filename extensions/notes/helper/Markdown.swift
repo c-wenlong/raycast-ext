@@ -229,7 +229,11 @@ enum Markdown {
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?(?:^ {0,3}(?:\1`*|\2~*)[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
-  static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*|_)(?=\S)(.+?)(?<=\S)\1(?![\*\w])"#)
+  // Groups 1/2 for `*`, 3/4 for `_`. Each marker is a lone character (so
+  // a bold marker is never half an italic one) and only refuses its own
+  // character next to it, so `_b_` nests inside `**...**` and `**b**`
+  // inside `*...*`.
+  static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*)(?!\*)(?=\S)(.+?)(?<=\S)(?<!\*)\1(?![\*\w])|(?<![_\w])(_)(?!_)(?=\S)(.+?)(?<=\S)(?<!_)\3(?![_\w])"#)
   static let strike = try! NSRegularExpression(pattern: #"(~~)(?=\S)(.+?)(?<=\S)\1"#)
   static let code = try! NSRegularExpression(pattern: #"(`)([^`\n]+)\1"#)
   static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
@@ -463,16 +467,28 @@ enum Markdown {
       storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern, hiddenRun: role.rawValue], range: range)
     }
     for match in emptyPair.matches(in: text, range: all) where !inCode(match.range) {
-      // A whole line of **** or ____ is a horizontal rule, not a pair.
+      // A whole line of **** or ____ is a horizontal rule, not a pair;
+      // an empty code or strike pair on its own line is still a pair.
+      let matched = ns.substring(with: match.range)
       let line = ns.lineRange(for: match.range)
-      if ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines) == ns.substring(with: match.range) { continue }
+      if (matched.hasPrefix("*") || matched.hasPrefix("_")),
+        ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines) == matched
+      { continue }
       let half = match.range.length / 2
       marker(NSRange(location: match.range.location, length: half), .open)
       marker(NSRange(location: match.range.location + half, length: half), .close)
     }
+    // Adds a trait to every font run inside `range` (so bold inside italic
+    // keeps its italic), leaving already hidden markers untouched.
+    func addTrait(_ trait: NSFontTraitMask, in range: NSRange) {
+      storage.enumerateAttribute(.font, in: range) { value, run, _ in
+        guard storage.attribute(hiddenRun, at: run.location, effectiveRange: nil) == nil else { return }
+        let current = value as? NSFont ?? baseFont
+        storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: trait), range: run)
+      }
+    }
     for match in bold.matches(in: text, range: all) where !inCode(match.range) {
-      let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
-      storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .boldFontMask), range: match.range(at: 2))
+      addTrait(.boldFontMask, in: match.range(at: 2))
       marker(match.range(at: 1), .open)
       marker(NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length), .close)
     }
@@ -485,9 +501,9 @@ enum Markdown {
     func inBoldMarker(_ location: Int) -> Bool { boldMarkers.contains { NSLocationInRange(location, $0) } }
     for match in italic.matches(in: text, range: all) where !inCode(match.range) {
       guard !inBoldMarker(match.range.location), !inBoldMarker(NSMaxRange(match.range) - 1) else { continue }
-      let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
-      storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .italicFontMask), range: match.range(at: 2))
-      marker(match.range(at: 1), .open)
+      let group = match.range(at: 1).location != NSNotFound ? 1 : 3
+      addTrait(.italicFontMask, in: match.range(at: group + 1))
+      marker(match.range(at: group), .open)
       marker(NSRange(location: match.range.location + match.range.length - 1, length: 1), .close)
     }
     for match in strike.matches(in: text, range: all) where !inCode(match.range) {

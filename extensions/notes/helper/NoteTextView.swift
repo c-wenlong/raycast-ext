@@ -57,14 +57,24 @@ final class NoteTextView: NSTextView {
     let role: Markdown.HiddenRole
   }
 
-  /// The collapsed run covering character `index`, if any. Runs with
-  /// different roles that touch each other are reported separately.
+  /// The collapsed run covering character `index`, if any. Touching runs
+  /// with different roles, or made of different marker characters (the
+  /// `_` and `**` closers of `**a _b_**`), are reported separately.
   private func hiddenRun(at index: Int) -> HiddenRun? {
     guard let storage = textStorage, index >= 0, index < storage.length else { return nil }
     var run = NSRange(location: NSNotFound, length: 0)
     guard let raw = storage.attribute(Markdown.hiddenRun, at: index, longestEffectiveRange: &run, in: NSRange(location: 0, length: storage.length)) as? String,
       let role = Markdown.HiddenRole(rawValue: raw)
     else { return nil }
+    if role != .line {
+      let ns = string as NSString
+      let marker = ns.character(at: index)
+      var start = index
+      while start > run.location, ns.character(at: start - 1) == marker { start -= 1 }
+      var end = index + 1
+      while end < NSMaxRange(run), ns.character(at: end) == marker { end += 1 }
+      run = NSRange(location: start, length: end - start)
+    }
     return HiddenRun(range: run, role: role)
   }
 
@@ -86,26 +96,36 @@ final class NoteTextView: NSTextView {
     return run
   }
 
-  /// The partner of an opening or closing run on the same line: the next
-  /// closing run after an opening one, the previous opening run before a
-  /// closing one.
+  /// The partner of an opening or closing run on the same line: the
+  /// matching run with the same marker text, skipping nested pairs of that
+  /// text in between (`_a **b** c_` pairs the underscores, not `_` with `**`).
   private func partner(of run: HiddenRun) -> NSRange? {
     guard let storage = textStorage, run.role != .line else { return nil }
     let ns = string as NSString
     let line = ns.lineRange(for: run.range)
-    var found: NSRange?
-    if run.role == .open {
-      let after = NSRange(location: NSMaxRange(run.range), length: NSMaxRange(line) - NSMaxRange(run.range))
-      storage.enumerateAttribute(Markdown.hiddenRun, in: after) { value, range, stop in
-        if (value as? String) == Markdown.HiddenRole.close.rawValue { found = range; stop.pointee = true }
-      }
-    } else {
-      let before = NSRange(location: line.location, length: run.range.location - line.location)
-      storage.enumerateAttribute(Markdown.hiddenRun, in: before) { value, range, _ in
-        if (value as? String) == Markdown.HiddenRole.open.rawValue { found = range }
+    let marker = ns.substring(with: run.range)
+    let wanted: Markdown.HiddenRole = run.role == .open ? .close : .open
+    var candidates: [(NSRange, Markdown.HiddenRole)] = []
+    let scan = run.role == .open
+      ? NSRange(location: NSMaxRange(run.range), length: NSMaxRange(line) - NSMaxRange(run.range))
+      : NSRange(location: line.location, length: run.range.location - line.location)
+    storage.enumerateAttribute(Markdown.hiddenRun, in: scan) { value, range, _ in
+      guard let raw = value as? String, let role = Markdown.HiddenRole(rawValue: raw), role != .line,
+        ns.substring(with: range) == marker
+      else { return }
+      candidates.append((range, role))
+    }
+    if run.role == .close { candidates.reverse() }
+    var depth = 0
+    for (range, role) in candidates {
+      if role == wanted {
+        if depth == 0 { return range }
+        depth -= 1
+      } else {
+        depth += 1
       }
     }
-    return found
+    return nil
   }
 
   /// A selection about to be replaced grows to cover any marker run it
@@ -126,6 +146,25 @@ final class NoteTextView: NSTextView {
       }
     }
     return result
+  }
+
+  /// Deletes the visible character that ends at `location`, or nothing at
+  /// a line start. When it was the only content of a pair, the pair's
+  /// markers go with it. Returns the range that was removed.
+  private func deleteVisibleCharacter(before location: Int) -> NSRange? {
+    guard let storage = textStorage else { return nil }
+    let ns = string as NSString
+    guard location > ns.lineRange(for: NSRange(location: location, length: 0)).location else { return nil }
+    var remove = ns.rangeOfComposedCharacterSequence(at: location - 1)
+    if let opener = hiddenRun(endingAt: remove.location), opener.role == .open,
+      let closer = hiddenRun(startingAt: location), closer.role == .close
+    {
+      remove = NSRange(location: opener.range.location, length: NSMaxRange(closer.range) - opener.range.location)
+    }
+    guard shouldChangeText(in: remove, replacementString: "") else { return nil }
+    storage.replaceCharacters(in: remove, with: "")
+    didChangeText()
+    return remove
   }
 
   private var lastCaret = 0
@@ -473,23 +512,22 @@ final class NoteTextView: NSTextView {
           textStorage?.replaceCharacters(in: run.range, with: "")
           didChangeText()
           setSelectedRange(NSRange(location: run.range.location, length: 0))
-        case .open:
-          // Caret at the start of styled text: delete the character before
-          // the pair, or nothing at the start of a line.
-          let lineStart = (string as NSString).lineRange(for: NSRange(location: run.range.location, length: 0)).location
-          guard run.range.location > lineStart else { return }
-          setSelectedRange(NSRange(location: run.range.location, length: 0))
-          super.deleteBackward(sender)
-          setSelectedRange(NSRange(location: selectedRange().location + run.range.length, length: 0))
-        case .close:
-          if hiddenRun(endingAt: run.range.location)?.role == .open {
+        case .open, .close:
+          if run.role == .close, hiddenRun(endingAt: run.range.location)?.role == .open {
             removeEmptyPair(around: run.range.location)  // caret after an empty pair
             return
           }
-          // Look through the closing marker: delete the last styled character.
-          setSelectedRange(NSRange(location: run.range.location, length: 0))
-          super.deleteBackward(sender)
-          removeEmptyPair(around: selectedRange().location)
+          // Look through the marker (and any markers touching it, as in
+          // `**one****two**`) and delete the last visible character before
+          // it. After a closing marker the caret stays inside the span;
+          // after an opening one it stays just past the marker.
+          var target = run.range.location
+          while let touching = hiddenRun(endingAt: target), touching.role != .line {
+            target = touching.range.location
+          }
+          guard let removed = deleteVisibleCharacter(before: target) else { return }
+          let caret = run.role == .close ? removed.location : selection.location - removed.length
+          setSelectedRange(NSRange(location: caret, length: 0))
         }
         return
       }
