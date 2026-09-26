@@ -133,7 +133,8 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       let first = lineFragmentRect(forGlyphAt: firstGlyph, effectiveRange: nil)
       let last = lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
       let font = Markdown.baseFont
-      let pad = 2 * Markdown.zoom
+      // Within the line's own height, so it never touches the next line.
+      let pad = 1 * Markdown.zoom
       let top = first.minY + location(forGlyphAt: firstGlyph).y - font.ascender - pad
       let bottom = last.minY + location(forGlyphAt: lastGlyph).y - font.descender + pad
       let bar = NSRect(
@@ -619,14 +620,25 @@ enum Markdown {
     // an empty one. The text is indented past the bar.
     for match in quote.matches(in: text, range: all) where !inCode(match.range) {
       let body = match.range(at: 2)
-      collapse(NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location))
+      // The marker keeps the body font (each character kerned away by its
+      // own width) so an empty quote line is as tall as one with text and
+      // the bar lines up the same way on both.
+      let markerRange = NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location)
+      for offset in 0..<markerRange.length {
+        let character = NSRange(location: markerRange.location + offset, length: 1)
+        let width = (ns.substring(with: character) as NSString).size(withAttributes: [.font: baseFont]).width
+        storage.addAttributes(
+          [.foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
+      }
       let line = ns.lineRange(for: match.range)
       let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
       style.firstLineHeadIndent = quoteIndent
       style.headIndent = quoteIndent
       style.paragraphSpacing = 2 * zoom
       storage.addAttributes([.paragraphStyle: style, quoteBar: true], range: line)
-      if body.length == 0 { storage.addAttribute(quotePlaceholder, value: true, range: line) }
+      if ns.substring(with: body).trimmingCharacters(in: .whitespaces).isEmpty {
+        storage.addAttribute(quotePlaceholder, value: true, range: line)
+      }
     }
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)

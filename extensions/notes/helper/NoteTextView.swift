@@ -226,7 +226,7 @@ final class NoteTextView: NSTextView {
       return
     }
     super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
-    if slashMenuIsOpen, !stillSelecting { syncSlashMenu() }
+    if slashMenuIsOpen, !stillSelecting { syncSlashMenu(caretMoved: true) }
   }
 
   /// End of the block's last body line (before its newline).
@@ -523,6 +523,8 @@ final class NoteTextView: NSTextView {
 
   private func openSlashMenu(at slash: Int) {
     slashStart = slash
+    slashEnd = slash + 1
+    slashTextLength = (string as NSString).length
     if slashMenu.superview == nil { addSubview(slashMenu, positioned: .above, relativeTo: nil) }
     slashMenu.filter("")
     positionSlashMenu()
@@ -536,11 +538,17 @@ final class NoteTextView: NSTextView {
 
   /// Keeps the menu in step with the text: filters on what follows the
   /// "/", closes when the caret leaves it or nothing matches.
-  private func syncSlashMenu() {
+  private func syncSlashMenu(caretMoved: Bool = false) {
     guard let slash = slashStart else { return }
     let ns = string as NSString
     let caret = selectedRange().location
-    guard selectedRange().length == 0, slash < ns.length, ns.character(at: slash) == 0x2F, caret > slash else {
+    // The query is everything typed after the "/"; a caret that moves
+    // anywhere else (even back inside the query) closes the menu, so a
+    // pick never leaves part of the query behind.
+    // An edit moves the caret before didChangeText runs; only a move
+    // with the text unchanged counts as leaving.
+    let moved = caretMoved && caret != slashEnd && ns.length == slashTextLength
+    guard selectedRange().length == 0, slash < ns.length, ns.character(at: slash) == 0x2F, caret > slash, !moved else {
       closeSlashMenu()
       return
     }
@@ -549,16 +557,34 @@ final class NoteTextView: NSTextView {
       closeSlashMenu()
       return
     }
+    slashEnd = caret
+    slashTextLength = ns.length
     positionSlashMenu()
   }
 
+  /// End of the query (the caret) and the text length as of the last
+  /// edit while the menu is open.
+  private var slashEnd = 0
+  private var slashTextLength = 0
+
+  /// The menu hangs under the caret's line, at the caret, so it follows
+  /// a query that grows or wraps.
   private func positionSlashMenu() {
-    guard let slash = slashStart, let layoutManager, let textContainer else { return }
-    let glyph = layoutManager.glyphIndexForCharacter(at: slash)
-    let fragment = layoutManager.lineFragmentRect(forGlyphAt: min(glyph, max(0, layoutManager.numberOfGlyphs - 1)), effectiveRange: nil)
-    let x = fragment.minX + (glyph < layoutManager.numberOfGlyphs ? layoutManager.location(forGlyphAt: glyph).x : 0)
-    let anchor = NSRect(x: x, y: fragment.minY, width: 1, height: fragment.height)
-      .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+    guard let layoutManager, let textContainer else { return }
+    let caret = selectedRange().location
+    let count = layoutManager.numberOfGlyphs
+    let glyph = min(layoutManager.glyphIndexForCharacter(at: min(caret, max(0, string.utf16.count - 1))), max(0, count - 1))
+    var anchor: NSRect
+    if count == 0 {
+      anchor = NSRect(x: 0, y: 0, width: 1, height: Markdown.baseFont.ascender - Markdown.baseFont.descender)
+    } else if caret >= string.utf16.count, layoutManager.extraLineFragmentTextContainer != nil {
+      anchor = NSRect(x: 0, y: layoutManager.extraLineFragmentRect.minY, width: 1, height: layoutManager.extraLineFragmentRect.height)
+    } else {
+      let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+      let x = fragment.minX + layoutManager.location(forGlyphAt: glyph).x
+      anchor = NSRect(x: x, y: fragment.minY, width: 1, height: fragment.height)
+    }
+    anchor = anchor.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
     let visible = enclosingScrollView?.documentVisibleRect ?? bounds
     slashMenu.place(below: anchor, within: visible, container: textContainer)
   }
@@ -596,6 +622,8 @@ final class NoteTextView: NSTextView {
   override func didChangeText() {
     super.didChangeText()
     syncSlashMenu()
+    // Quote bars and code cards reach outside the lines that changed.
+    needsDisplay = true
   }
 
   // MARK: Typing rules

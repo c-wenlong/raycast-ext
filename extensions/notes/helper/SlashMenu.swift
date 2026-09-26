@@ -146,13 +146,23 @@ final class SlashMenu: NSView, NSTableViewDataSource, NSTableViewDelegate {
   /// coordinates), or above it when there is no room below inside
   /// `visible`; never past the container's right edge.
   func place(below anchor: NSRect, within visible: NSRect, container: NSTextContainer) {
-    let size = menuSize
+    var size = menuSize
+    let below = visible.maxY - 8 - (anchor.maxY + 4)
+    let above = (anchor.minY - 4) - (visible.minY + 8)
     var origin = NSPoint(x: anchor.minX - 4, y: anchor.maxY + 4)
-    let rightEdge = (superview?.bounds.width ?? visible.maxX) - 8
-    origin.x = max(8, min(origin.x, rightEdge - size.width))
-    if origin.y + size.height > visible.maxY - 8, anchor.minY - 4 - size.height >= visible.minY + 8 {
+    if size.height > below, above > below {
+      // No room under the caret: hang the menu above it instead.
       origin.y = anchor.minY - 4 - size.height
     }
+    // A short window shows fewer rows (the list scrolls), never less than two.
+    let room = max(below, above)
+    if size.height > room {
+      let rows = max(2, floor((room - Self.padding * 2 - Self.headerHeight) / Self.rowHeight))
+      size.height = Self.padding * 2 + Self.headerHeight + rows * Self.rowHeight
+      origin.y = above > below ? anchor.minY - 4 - size.height : anchor.maxY + 4
+    }
+    let rightEdge = (superview?.bounds.width ?? visible.maxX) - 8
+    origin.x = max(8, min(origin.x, rightEdge - size.width))
     frame = NSRect(origin: NSPoint(x: origin.x.rounded(), y: origin.y.rounded()), size: size)
     needsLayout = true
   }
