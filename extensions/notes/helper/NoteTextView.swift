@@ -96,30 +96,41 @@ final class NoteTextView: NSTextView {
     return run
   }
 
+  /// The inline marker runs inside `range`, in order, split the way
+  /// `hiddenRun(at:)` splits them: by role and by marker character, so the
+  /// `_**` closers of `**a _b_**` are two runs.
+  private func markerRuns(in range: NSRange) -> [HiddenRun] {
+    guard let storage = textStorage, range.length > 0 else { return [] }
+    var runs: [HiddenRun] = []
+    storage.enumerateAttribute(Markdown.hiddenRun, in: range) { value, merged, _ in
+      guard let raw = value as? String, let role = Markdown.HiddenRole(rawValue: raw), role != .line else { return }
+      var index = merged.location
+      while index < NSMaxRange(merged), let run = hiddenRun(at: index) {
+        runs.append(run)
+        index = NSMaxRange(run.range)
+      }
+    }
+    return runs
+  }
+
   /// The partner of an opening or closing run on the same line: the
   /// matching run with the same marker text, skipping nested pairs of that
   /// text in between (`_a **b** c_` pairs the underscores, not `_` with `**`).
   private func partner(of run: HiddenRun) -> NSRange? {
-    guard let storage = textStorage, run.role != .line else { return nil }
+    guard run.role != .line else { return nil }
     let ns = string as NSString
     let line = ns.lineRange(for: run.range)
     let marker = ns.substring(with: run.range)
     let wanted: Markdown.HiddenRole = run.role == .open ? .close : .open
-    var candidates: [(NSRange, Markdown.HiddenRole)] = []
     let scan = run.role == .open
       ? NSRange(location: NSMaxRange(run.range), length: NSMaxRange(line) - NSMaxRange(run.range))
       : NSRange(location: line.location, length: run.range.location - line.location)
-    storage.enumerateAttribute(Markdown.hiddenRun, in: scan) { value, range, _ in
-      guard let raw = value as? String, let role = Markdown.HiddenRole(rawValue: raw), role != .line,
-        ns.substring(with: range) == marker
-      else { return }
-      candidates.append((range, role))
-    }
+    var candidates = markerRuns(in: scan).filter { ns.substring(with: $0.range) == marker }
     if run.role == .close { candidates.reverse() }
     var depth = 0
-    for (range, role) in candidates {
-      if role == wanted {
-        if depth == 0 { return range }
+    for candidate in candidates {
+      if candidate.role == wanted {
+        if depth == 0 { return candidate.range }
         depth -= 1
       } else {
         depth += 1
@@ -131,15 +142,13 @@ final class NoteTextView: NSTextView {
   /// A selection about to be replaced grows to cover any marker run it
   /// touches and that run's partner, so no half of a pair survives alone.
   private func selectionCoveringPairs(_ selection: NSRange) -> NSRange {
-    guard let storage = textStorage, selection.length > 0 else { return selection }
+    guard selection.length > 0 else { return selection }
     var result = selection
     var changed = true
     while changed {
       changed = false
-      storage.enumerateAttribute(Markdown.hiddenRun, in: result) { value, range, _ in
-        guard let raw = value as? String, let role = Markdown.HiddenRole(rawValue: raw), role != .line else { return }
-        let run = HiddenRun(range: range, role: role)
-        for extra in [range, partner(of: run)].compactMap({ $0 }) {
+      for run in markerRuns(in: result) {
+        for extra in [run.range, partner(of: run)].compactMap({ $0 }) {
           let union = NSUnionRange(result, extra)
           if union != result { result = union; changed = true }
         }
