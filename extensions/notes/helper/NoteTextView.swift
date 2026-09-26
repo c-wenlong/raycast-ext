@@ -41,7 +41,7 @@ final class NoteTextView: NSTextView {
     if !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0,
       let hit = fenceLine(at: range.location) {
       let ns = string as NSString
-      let target: Int
+      var target: Int
       switch hit {
       case .opening(let block):
         target = block.body.location
@@ -50,10 +50,27 @@ final class NoteTextView: NSTextView {
         // Nothing after the closing fence: rest at the end of the body instead.
         target = after < ns.length || ns.hasSuffix("\n") ? min(after, ns.length) : max(block.body.location, NSMaxRange(block.body) - (ns.substring(with: block.body).hasSuffix("\n") ? 1 : 0))
       }
+      // A closed block with no body line has nowhere valid to put the
+      // caret; give it an empty line first (deferred: no edits from
+      // inside a selection change).
+      if let block = codeBlock(containing: target), block.closingLine != nil, block.body.length == 0,
+        target == block.body.location {
+        target = block.openingLine.location
+        DispatchQueue.main.async { [weak self] in self?.insertBodyLine(into: block) }
+      }
       super.setSelectedRanges([NSValue(range: NSRange(location: target, length: 0))], affinity: affinity, stillSelecting: stillSelecting)
       return
     }
     super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+  }
+
+  private func insertBodyLine(into block: Markdown.CodeBlock) {
+    guard let current = codeBlock(containing: block.openingLine.location), current.closingLine != nil, current.body.length == 0 else { return }
+    let at = NSRange(location: current.body.location, length: 0)
+    guard shouldChangeText(in: at, replacementString: "\n") else { return }
+    textStorage?.replaceCharacters(in: at, with: "\n")
+    didChangeText()
+    setSelectedRange(at)
   }
 
   override func moveDown(_ sender: Any?) {
@@ -83,11 +100,17 @@ final class NoteTextView: NSTextView {
 
   override func moveUp(_ sender: Any?) {
     let before = selectedRange().location
-    super.moveUp(sender)
+    let ns = string as NSString
     // Arrow up from the first body line: skip the hidden opening fence.
-    guard let block = codeBlock(containing: before), NSLocationInRange(before, block.body) || before == block.body.location,
-      selectedRange().location <= block.body.location
-    else { return }
+    var escaping = false
+    if let block = codeBlock(containing: before), NSLocationInRange(before, block.body) || before == block.body.location {
+      var contentsEnd = 0
+      var lineStart = 0
+      ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: block.body.location, length: 0))
+      escaping = before >= lineStart && before <= contentsEnd
+    }
+    super.moveUp(sender)
+    guard escaping, let block = codeBlock(containing: before) else { return }
     let start = block.openingLine.location
     if start > 0 {
       setSelectedRange(NSRange(location: start - 1, length: 0))
