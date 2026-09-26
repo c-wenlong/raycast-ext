@@ -15,5 +15,11 @@ export async function launchPanel(args: string[]): Promise<void> {
     detached: true,
     stdio: "ignore",
   });
+  // spawn() reports a missing or non-executable helper asynchronously, so
+  // wait for either the "spawn" or the "error" event before resolving.
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
   child.unref();
 }

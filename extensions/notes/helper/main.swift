@@ -46,28 +46,32 @@ func withSocketAddress(
   }
 }
 
-/// Forwards a command to a running instance. False when nobody is listening.
-func forwardToRunningInstance(_ line: String) -> Bool {
+/// Forwards a command (and the notes folder) to a running instance.
+/// Returns the connect() errno when nobody is listening.
+func forwardToRunningInstance(_ line: String) -> Int32? {
   let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-  guard fd >= 0 else { return false }
+  guard fd >= 0 else { return errno }
   defer { close(fd) }
   guard withSocketAddress(socketPath, { connect(fd, $0, $1) }) == 0 else {
-    return false
+    return errno
   }
-  let payload = Array((line + "\n").utf8)
+  let payload = Array((line + "\t" + notesDir + "\n").utf8)
   _ = payload.withUnsafeBytes { send(fd, $0.baseAddress, $0.count, 0) }
   var reply = [UInt8](repeating: 0, count: 16)
   _ = reply.withUnsafeMutableBytes { recv(fd, $0.baseAddress, 16, 0) }
-  return true
+  return nil
 }
 
 final class CommandServer {
   private let fd: Int32
 
-  init?() {
+  /// `staleSocket` is true when connect() got ECONNREFUSED: a leftover
+  /// file from a dead instance that has to be removed before binding.
+  /// bind() failing with EADDRINUSE means another launch got there first.
+  init?(staleSocket: Bool) {
     try? diskFiles.createDirectory(
       atPath: supportDir, withIntermediateDirectories: true)
-    unlink(socketPath)
+    if staleSocket { unlink(socketPath) }
     fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { return nil }
     guard withSocketAddress(socketPath, { bind(fd, $0, $1) }) == 0,
@@ -92,7 +96,11 @@ final class CommandServer {
           ? String(decoding: buffer[0..<count], as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
           : ""
-        DispatchQueue.main.async { handler(line) }
+        let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+        DispatchQueue.main.async {
+          if parts.count == 2, !parts[1].isEmpty { notesDir = parts[1] }
+          handler(parts.first ?? "")
+        }
         _ = "ok\n".withCString { send(client, $0, 3, 0) }
         close(client)
       }
@@ -132,15 +140,13 @@ func listNotes() -> [Note] {
     .sorted { $0.modified > $1.modified }
 }
 
+/// Mirrors slugify() in src/lib/notes.ts so both editors name files alike.
 func slugify(_ title: String) -> String {
   let folded = title.lowercased().folding(options: .diacriticInsensitive, locale: nil)
-  let allowed = folded.unicodeScalars.map { scalar -> Character in
-    if CharacterSet.alphanumerics.contains(scalar) || scalar == " " || scalar == "-" {
-      return Character(scalar)
-    }
-    return " "
+  let kept = folded.unicodeScalars.filter {
+    ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == " " || $0 == "-"
   }
-  let words = String(allowed).split(whereSeparator: { $0 == " " || $0 == "-" })
+  let words = String(String.UnicodeScalarView(kept)).split(whereSeparator: { $0 == " " || $0 == "-" })
   let slug = words.joined(separator: "-")
   return slug.isEmpty ? "untitled" : slug
 }
@@ -203,7 +209,7 @@ enum Markdown {
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
   static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]+(?!\[[ xX]\])"#, options: .anchorsMatchLines)
   static let quote = try! NSRegularExpression(pattern: #"^(>)[ \t]?(.*)$"#, options: .anchorsMatchLines)
-  static let fence = try! NSRegularExpression(pattern: #"^```[^\n]*\n[\s\S]*?^```[ \t]*$"#, options: .anchorsMatchLines)
+  static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
   static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*|_)(?=\S)(.+?)(?<=\S)\1(?![\*\w])"#)
@@ -499,7 +505,14 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private func newNote() {
     saveNow()
     let path = uniquePath(for: "\(timestampPrefix()) - untitled.md")
-    try? "# \n".write(toFile: path, atomically: false, encoding: .utf8)
+    do {
+      try diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
+      try "# \n".write(toFile: path, atomically: false, encoding: .utf8)
+    } catch {
+      NSSound.beep()
+      panel.title = "Cannot write to \(notesDir)"
+      return
+    }
     refreshList()
     load(path)
     textView.setSelectedRange(NSRange(location: 2, length: 0))
@@ -578,26 +591,46 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     source.setEventHandler { [weak self] in
       guard let self, self.currentPath == path else { return }
       if source.data.contains(.delete) || source.data.contains(.rename) {
-        if !diskFiles.fileExists(atPath: path) {
-          self.currentPath = nil
-          self.refreshList()
-          if let first = self.notes.first { self.load(first.path) } else { self.newNote() }
+        let unsaved = self.textView.string != self.loadedText
+        if diskFiles.fileExists(atPath: path) {
+          // Replaced in place (editors that save via rename): our fd points
+          // at the old inode, so watch the new file and pick up its text.
+          self.watch(path)
+          if !unsaved { self.reloadFromDisk(path) }
+          return
         }
+        if unsaved {
+          // Gone while we still hold edits: write them back rather than
+          // dropping them, then keep editing the recreated file.
+          try? self.textView.string.write(toFile: path, atomically: false, encoding: .utf8)
+          self.loadedText = self.textView.string
+          self.watch(path)
+          self.updateTitle()
+          return
+        }
+        self.currentPath = nil
+        self.refreshList()
+        if let first = self.notes.first { self.load(first.path) } else { self.newNote() }
         return
       }
-      let onDisk = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-      guard onDisk != self.loadedText, self.textView.string == self.loadedText else { return }
-      let selection = self.textView.selectedRange()
-      self.loadedText = onDisk
-      self.textView.string = onDisk
-      self.restyle()
-      let length = (onDisk as NSString).length
-      self.textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
-      self.updateTitle()
+      self.reloadFromDisk(path)
     }
     source.setCancelHandler { close(fd) }
     source.resume()
     watcher = source
+  }
+
+  /// Takes the on-disk text when it changed and we have nothing unsaved.
+  private func reloadFromDisk(_ path: String) {
+    let onDisk = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+    guard onDisk != loadedText, textView.string == loadedText else { return }
+    let selection = textView.selectedRange()
+    loadedText = onDisk
+    textView.string = onDisk
+    restyle()
+    let length = (onDisk as NSString).length
+    textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
+    updateTitle()
   }
 
   // MARK: Editing helpers
@@ -611,14 +644,18 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-    guard let url = link as? URL, url.scheme == Markdown.taskScheme else { return false }
-    toggleTask(atBox: charIndex)
+    guard let url = link as? URL, url.scheme == Markdown.taskScheme,
+      let location = Int(url.lastPathComponent)
+    else { return false }
+    toggleTask(atBox: location)
     return true
   }
 
   private func toggleTask(atBox location: Int) {
     let text = textView.string as NSString
-    guard location + 3 <= text.length else { return }
+    guard location + 3 <= text.length,
+      text.substring(with: NSRange(location: location, length: 1)) == "["
+    else { return }
     let markRange = NSRange(location: location + 1, length: 1)
     let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
     textView.insertText(mark, replacementRange: markRange)
@@ -653,11 +690,18 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
 // MARK: - Entry point
 
-if forwardToRunningInstance(requestedCommand) {
-  exit(0)
-}
+var connectError = forwardToRunningInstance(requestedCommand)
+if connectError == nil { exit(0) }
 
-guard let server = CommandServer() else {
+var server = CommandServer(staleSocket: connectError == ECONNREFUSED)
+if server == nil {
+  // Lost a race with another launch that is now listening: hand over.
+  usleep(200_000)
+  connectError = forwardToRunningInstance(requestedCommand)
+  if connectError == nil { exit(0) }
+  server = CommandServer(staleSocket: connectError == ECONNREFUSED)
+}
+guard let server else {
   FileHandle.standardError.write("notes-panel: could not listen on \(socketPath)\n".data(using: .utf8)!)
   exit(1)
 }

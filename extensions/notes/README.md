@@ -27,7 +27,7 @@ Inside the window:
 
 | Keys | Action |
 |---|---|
-| `⌘[` / `⌘]` | previous / next note, in last-edit order |
+| `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (the `#` heading becomes the title and filename) |
 | `⌘↩` | toggle the task on the current line, or click the `[ ]` box |
 | `⌘P` | jump to Browse Notes in Raycast |
