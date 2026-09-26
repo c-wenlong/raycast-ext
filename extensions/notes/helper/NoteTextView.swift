@@ -398,6 +398,41 @@ final class NoteTextView: NSTextView {
     return super.performKeyEquivalent(with: event)
   }
 
+  // MARK: Link hover and context menu (LinkController in Links.swift)
+
+  /// Returns true when the mouse is over the link bubble (arrow cursor).
+  var onMouseMoved: ((NSEvent) -> Bool)?
+  var onMouseExited: (() -> Void)?
+  /// A menu for a right-click on a link; nil elsewhere.
+  var linkMenu: ((NSEvent) -> NSMenu?)?
+  private var hoverArea: NSTrackingArea?
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverArea { removeTrackingArea(hoverArea) }
+    let area = NSTrackingArea(
+      rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+    addTrackingArea(area)
+    hoverArea = area
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    if onMouseMoved?(event) == true {
+      NSCursor.arrow.set()
+      return
+    }
+    super.mouseMoved(with: event)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    super.mouseExited(with: event)
+    onMouseExited?()
+  }
+
+  override func menu(for event: NSEvent) -> NSMenu? {
+    linkMenu?(event) ?? super.menu(for: event)
+  }
+
   override func keyDown(with event: NSEvent) {
     if event.keyCode == 53 {  // escape
       _ = onCommand?("hide")
@@ -599,9 +634,9 @@ final class NoteTextView: NSTextView {
 
   /// Applies a ListEditing edit as one change with its own undo step.
   /// Returns false only when there was no edit, so callers fall back to
-  /// the default behaviour.
+  /// the default behaviour. LinkController applies its rewrites through it.
   @discardableResult
-  private func apply(_ edit: ListEditing.Edit?) -> Bool {
+  func apply(_ edit: ListEditing.Edit?) -> Bool {
     guard let edit, let storage = textStorage else { return false }
     let ns = string as NSString
     guard NSMaxRange(edit.range) <= ns.length else { return false }

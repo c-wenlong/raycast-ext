@@ -15,6 +15,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var palette: ActionPalette!
   private var zoomHUD: ZoomHUD!
   private var codeBlocks: CodeBlockOverlay!
+  private var links: LinkController!
   private var titlebarChrome: TitlebarChrome!
   private var statusBar: StatusBar!
   private static let baseTextInset = NSSize(width: 18, height: 16)
@@ -203,6 +204,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     applyTextContainerInset()
     panel.contentView?.addSubview(scroll)
     codeBlocks = CodeBlockOverlay(textView: textView)
+    links = LinkController(textView: textView)
 
     zoomHUD = ZoomHUD()
     zoomHUD.install(in: panel.contentView!)
@@ -325,6 +327,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private func hide() {
     palette.hide()
     codeBlocks.closePicker()
+    links.close()
     saveNow()
     panel.orderOut(nil)
   }

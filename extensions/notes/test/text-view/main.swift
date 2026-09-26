@@ -243,6 +243,34 @@ check("one rect per line, the blank line a thin bar", all.count == 3 && all[1].w
 check("a list line's rect starts at its text, not its marker", all.count == 3 && abs(all[2].minX - column - tv.textContainer!.lineFragmentPadding) < 0.5, "\(all)")
 check("rects are shorter than the line pitch", all.allSatisfy { $0.height < 24 }, "\(all)")
 
+// 14. link editing rewrites the whole markdown span
+func rewritten(_ text: String, at index: Int, _ label: String, _ url: String) -> String {
+  guard let edit = LinkController.rewrite(in: text, at: index, text: label, url: url) else { return "<no link>" }
+  return (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+}
+var result = rewritten("x [a](https://x) y", at: 3, "b", "y.com")
+check("edit a link's text and url", result == "x [b](https://y.com) y", result)
+result = rewritten("see https://a.com now", at: 6, "https://a.com", "https://b.com/p")
+check("bare URL with unchanged text takes just the new url", result == "see https://b.com/p now", result)
+result = rewritten("see https://a.com.", at: 6, "A site", "https://a.com")
+check("bare URL with new text becomes a markdown link", result == "see [A site](https://a.com).", result)
+result = LinkController.removal(in: "x [a](https://x) y", at: 3).map { ("x [a](https://x) y" as NSString).replacingCharacters(in: $0.range, with: $0.replacement) } ?? "<no link>"
+check("remove link keeps the text", result == "x a y", result)
+result = rewritten("[a](https://x)", at: 1, "", "  ")
+check("empty url removes the link", result == "a", result)
+result = rewritten("[a](https://x)", at: 1, "  ", " z.org/a b ")
+check("empty text keeps the old text; url trimmed and encoded", result == "[a](https://z.org/a%20b)", result)
+result = rewritten("[a](https://x)", at: 1, "a", "mailto:me@x.org")
+check("a url with a scheme is kept as is", result == "[a](mailto:me@x.org)", result)
+check("no link outside a span", LinkController.rewrite(in: "plain [a](https://x)", at: 2, text: "b", url: "y") == nil)
+load("one [a](https://x) two")
+let linkController = LinkController(textView: tv)
+tv.setSelectedRange(NSRange(location: 21, length: 0))
+linkController.rewriteLink(at: 5, text: "bee", url: "y.com")
+check("rewrite through the view", tv.string == "one [bee](https://y.com) two" && caret() == 27,"\(tv.string) \(caret())")
+tv.undoManager?.undo()
+check("undo takes the rewrite back in one step", tv.string == "one [a](https://x) two", tv.string)
+
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")
 tv.setSelectedRange(NSRange(location: 0, length: 28))
