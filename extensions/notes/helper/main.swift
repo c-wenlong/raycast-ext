@@ -55,7 +55,7 @@ func forwardToRunningInstance(_ line: String) -> Int32? {
   guard withSocketAddress(socketPath, { connect(fd, $0, $1) }) == 0 else {
     return errno
   }
-  let payload = Array((line + "\t" + notesDir + "\n").utf8)
+  let payload = Array((line + "\u{0}" + notesDir).utf8)
   _ = payload.withUnsafeBytes { send(fd, $0.baseAddress, $0.count, 0) }
   var reply = [UInt8](repeating: 0, count: 16)
   _ = reply.withUnsafeMutableBytes { recv(fd, $0.baseAddress, 16, 0) }
@@ -96,7 +96,7 @@ final class CommandServer {
           ? String(decoding: buffer[0..<count], as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
           : ""
-        let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+        let parts = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
         DispatchQueue.main.async {
           if parts.count == 2, !parts[1].isEmpty { notesDir = parts[1] }
           handler(parts.first ?? "")
@@ -175,13 +175,13 @@ func timestampPrefix(_ date: Date = Date()) -> String {
   return formatter.string(from: date)
 }
 
-/// First free path for `filename` in the notes folder, adding -2, -3, ...
-func uniquePath(for filename: String) -> String {
+/// First free path for `filename` in `directory`, adding -2, -3, ...
+func uniquePath(for filename: String, in directory: String = notesDir) -> String {
   let base = (filename as NSString).deletingPathExtension
   var attempt = 1
   while true {
     let candidate = attempt == 1 ? filename : "\(base)-\(attempt).md"
-    let path = (notesDir as NSString).appendingPathComponent(candidate)
+    let path = (directory as NSString).appendingPathComponent(candidate)
     if !diskFiles.fileExists(atPath: path) { return path }
     attempt += 1
   }
@@ -209,7 +209,7 @@ enum Markdown {
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
   static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]+(?!\[[ xX]\])"#, options: .anchorsMatchLines)
   static let quote = try! NSRegularExpression(pattern: #"^(>)[ \t]?(.*)$"#, options: .anchorsMatchLines)
-  static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[ \t]*$|\z)"#, options: .anchorsMatchLines)
+  static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[`~]*[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
   static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*|_)(?=\S)(.+?)(?<=\S)\1(?![\*\w])"#)
@@ -569,7 +569,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let nextSlug = slugify(headingText)
     guard !headingText.trimmingCharacters(in: .whitespaces).isEmpty, nextSlug != currentSlug else { return }
     let prefix = (filename as NSString).substring(with: match.range(at: 1))
-    let nextPath = uniquePath(for: "\(prefix) - \(nextSlug).md")
+    let nextPath = uniquePath(for: "\(prefix) - \(nextSlug).md", in: (path as NSString).deletingLastPathComponent)
     guard (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }
     currentPath = nextPath
     if let index = notes.firstIndex(where: { $0.path == path }) {
@@ -602,9 +602,13 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
         if unsaved {
           // Gone while we still hold edits: write them back rather than
           // dropping them, then keep editing the recreated file.
-          try? self.textView.string.write(toFile: path, atomically: false, encoding: .utf8)
-          self.loadedText = self.textView.string
-          self.watch(path)
+          do {
+            try self.textView.string.write(toFile: path, atomically: false, encoding: .utf8)
+            self.loadedText = self.textView.string
+            self.watch(path)
+          } catch {
+            NSSound.beep()  // still dirty; the next save retries
+          }
           self.updateTitle()
           return
         }
