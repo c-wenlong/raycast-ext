@@ -130,9 +130,12 @@ check(
 
 // fences
 
-check("enter inside a fence is plain", ListEditing.newline(in: "```\n- x", cursor: 7) == nil)
-check("tab inside a fence is plain", ListEditing.indent(in: "```\n- a\n- b", cursor: 11, by: 1) == nil)
+check("enter inside a fence is plain", ListEditing.newline(in: "```\n- x\n```", cursor: 7) == nil)
+check("tab inside a fence is plain", ListEditing.indent(in: "```\n- a\n- b\n```", cursor: 11, by: 1) == nil)
 check("closed fence ends", ListEditing.insideFence("```\ncode\n```\n- x", cursor: 14) == false)
+check("an unclosed fence is not a block, so list rules still run below it", ListEditing.insideFence("```\n- item", cursor: 10) == false && ListEditing.newline(in: "```\n- item", cursor: 10) != nil)
+check("hasUnclosedFence sees the open fence", ListEditing.hasUnclosedFence("```\n- item") && !ListEditing.hasUnclosedFence("```\nx\n```"))
+check("inside a closed fence still counts", ListEditing.insideFence("```\ncode\n```", cursor: 5))
 do {
   let (text, cursor) = applied("```sh", ListEditing.codeFence(in: "```sh", cursor: 5))!
   check("``` opens a block with a closing fence", text == "```sh\n\n```", text)
@@ -374,7 +377,7 @@ do {
   let (cleared, _) = applied(">> q", ListEditing.clearLinePrefix(in: ">> q", cursor: 4))!
   check("clearLinePrefix drops a callout marker whole", cleared == "q", cleared)
   check("Enter off a quote line is not a quote newline", ListEditing.quoteNewline(in: "plain", cursor: 5) == nil)
-  check("Enter inside a fence is not a quote newline", ListEditing.quoteNewline(in: "```\n> x", cursor: 7) == nil)
+  check("Enter inside a fence is not a quote newline", ListEditing.quoteNewline(in: "```\n> x\n```", cursor: 7) == nil)
 }
 
 // Plain text: the block prefix goes
