@@ -337,6 +337,7 @@ final class NoteTextView: NSTextView {
       case "p": command = "browse"
       case "w": command = "hide"
       case "k": command = "palette"
+      case "f": command = "find"
       case "d": command = "duplicate"
       case "\r": command = "toggle-task"
       default: command = nil
@@ -365,10 +366,24 @@ struct PaletteAction {
   let command: String
 }
 
+/// Child panel that lets ⌘K close the palette while its search field is key.
+final class PalettePanel: NSPanel {
+  var onToggleShortcut: (() -> Void)?
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if flags == .command, event.charactersIgnoringModifiers == "k" {
+      onToggleShortcut?()
+      return true
+    }
+    return super.performKeyEquivalent(with: event)
+  }
+}
+
 /// Search field over a list of actions, shown as a sheet-like child panel.
-/// Up/down move, return runs, escape closes, typing filters.
+/// Up/down move, return runs, escape or ⌘K closes, typing filters.
 final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-  private let panel: NSPanel
+  private let panel: PalettePanel
   private let search = NSSearchField()
   private let table = NSTableView()
   private let actions: [PaletteAction]
@@ -379,10 +394,11 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   init(actions: [PaletteAction], run: @escaping (String) -> Void) {
     self.actions = actions
     self.run = run
-    panel = NSPanel(
+    panel = PalettePanel(
       contentRect: NSRect(x: 0, y: 0, width: ActionPalette.width, height: 380),
       styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
     super.init()
+    panel.onToggleShortcut = { [weak self] in self?.hide() }
 
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
@@ -692,7 +708,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     case "duplicate":
       duplicateNote()
     case "find":
-      textView.performFindPanelAction(NSMenuItem())
+      let item = NSMenuItem()
+      item.tag = NSFindPanelAction.showFindPanel.rawValue
+      textView.performFindPanelAction(item)
     case "copy":
       NSPasteboard.general.clearContents()
       NSPasteboard.general.setString(textView.string, forType: .string)
@@ -765,13 +783,30 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     load(path)
   }
 
+  /// Copies the open note. The heading gets " copy" appended and a
+  /// generated filename follows that heading's slug, so the title-driven
+  /// rename on the next save leaves the copy's name alone.
   private func duplicateNote() {
     saveNow()
     guard let path = currentPath else { return }
-    let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-    let copyPath = uniquePath(for: "\(name) copy.md", in: (path as NSString).deletingLastPathComponent)
+    let filename = (path as NSString).lastPathComponent
+    let directory = (path as NSString).deletingLastPathComponent
+    var text = loadedText
+    var copyName = "\((filename as NSString).deletingPathExtension) copy.md"
+
+    if let heading = headingPattern.firstMatch(in: text, range: fullRange(text)) {
+      let headingRange = heading.range(at: 1)
+      let copyTitle = (text as NSString).substring(with: headingRange) + " copy"
+      text = (text as NSString).replacingCharacters(in: headingRange, with: copyTitle)
+      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)) {
+        let prefix = (filename as NSString).substring(with: match.range(at: 1))
+        copyName = "\(prefix) - \(slugify(copyTitle)).md"
+      }
+    }
+
+    let copyPath = uniquePath(for: copyName, in: directory)
     do {
-      try diskFiles.copyItem(atPath: path, toPath: copyPath)
+      try text.write(toFile: copyPath, atomically: false, encoding: .utf8)
     } catch {
       NSSound.beep()
       return
@@ -791,7 +826,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     alert.addButton(withTitle: "Cancel")
     alert.alertStyle = .warning
     guard alert.runModal() == .alertFirstButtonReturn else { return }
-    saveTimer?.invalidate()
+    saveNow()
     watcher?.cancel()
     watcher = nil
     do {
