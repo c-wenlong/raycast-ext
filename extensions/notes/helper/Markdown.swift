@@ -125,13 +125,20 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       guard drawn.insert(run.location).inserted else { return }
       let runGlyphs = glyphRange(forCharacterRange: run, actualCharacterRange: nil)
       guard runGlyphs.length > 0 else { return }
-      let first = lineFragmentRect(forGlyphAt: runGlyphs.location, effectiveRange: nil)
-      let last = lineFragmentUsedRect(forGlyphAt: NSMaxRange(runGlyphs) - 1, effectiveRange: nil)
-      let inset = 2 * Markdown.zoom
+      // From just above the first line's ascenders to just below the last
+      // line's descenders, so a one-line and a many-line quote line up
+      // with their text the same way.
+      let firstGlyph = runGlyphs.location
+      let lastGlyph = NSMaxRange(runGlyphs) - 1
+      let first = lineFragmentRect(forGlyphAt: firstGlyph, effectiveRange: nil)
+      let last = lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+      let font = Markdown.baseFont
+      let pad = 2 * Markdown.zoom
+      let top = first.minY + location(forGlyphAt: firstGlyph).y - font.ascender - pad
+      let bottom = last.minY + location(forGlyphAt: lastGlyph).y - font.descender + pad
       let bar = NSRect(
         x: origin.x + first.minX + container.lineFragmentPadding + Markdown.zoom,
-        y: origin.y + first.minY + inset,
-        width: Markdown.quoteBarWidth, height: max(0, last.maxY - first.minY - inset * 2))
+        y: origin.y + top, width: Markdown.quoteBarWidth, height: max(0, bottom - top))
       NSGraphicsContext.saveGraphicsState()
       NSColor.labelColor.withAlphaComponent(0.85).setFill()
       NSBezierPath(roundedRect: bar, xRadius: bar.width / 2, yRadius: bar.width / 2).fill()
