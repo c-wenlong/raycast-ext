@@ -36,6 +36,8 @@ Inside the window:
 | `⇧⌘C` | copy the note's markdown |
 | `⌃X` | move the note to the Trash |
 | `⌘P` | jump to Browse Notes in Raycast |
+| `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (shown in a "Zoomed to 120%" bubble, remembered) |
+| `⌘M` | minimise the window |
 | `⌘W` or `Esc` | hide |
 | `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again to remove |
 | `⌘L` | link the selection, caret between the `()` |
