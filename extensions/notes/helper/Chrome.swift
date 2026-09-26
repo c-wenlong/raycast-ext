@@ -390,6 +390,13 @@ final class StatusBar {
 final class FormatBar: NSView, NSMenuDelegate {
   static let height: CGFloat = 32
   private let pill = PillView()
+
+  /// The bar spans the window but only the pill is solid: clicks beside
+  /// it fall through to the note and to the round × button.
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let local = convert(point, from: superview)
+    return pill.frame.contains(local) ? super.hitTest(point) : nil
+  }
   private let apply: (NoteTextView.Format) -> Void
   private var menus: [ObjectIdentifier: NSMenu] = [:]
 
