@@ -1,4 +1,5 @@
-import { link, readdir, stat, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, link, readdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import {
   appendToFile,
@@ -345,15 +346,24 @@ export async function renameNoteFromTitleIfNeeded(
   }
 
   const directory = path.dirname(notePath);
-  const nextPath = await claimUniquePath(directory, nextFilename, notePath);
-  await unlink(notePath);
-  return nextPath;
+  return moveToUniquePath(directory, nextFilename, notePath);
 }
 
-// Hard-links sourcePath at the first free name. link() fails with EEXIST
-// when the target already exists, so two renames can never land on the
-// same file; the caller removes the old name afterwards.
-async function claimUniquePath(
+// Errors that mean "this filesystem has no hard links" rather than "the
+// name is taken": fall back to a plain rename in that case.
+const NO_LINK_SUPPORT = new Set([
+  "EPERM",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "ENOSYS",
+  "EXDEV",
+]);
+
+// Moves sourcePath to the first free name. link() fails with EEXIST when
+// the target exists, so two renames can never land on the same file. The
+// old name is removed afterwards; if that fails the new link is dropped
+// again so the note never has two names.
+async function moveToUniquePath(
   dir: string,
   filename: string,
   sourcePath: string,
@@ -369,13 +379,51 @@ async function claimUniquePath(
 
     try {
       await link(sourcePath, candidatePath);
-      return candidatePath;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (code === "EEXIST") {
         attempt += 1;
         continue;
       }
+      if (NO_LINK_SUPPORT.has(code)) {
+        return renameToUniquePath(dir, filename, sourcePath);
+      }
       throw error;
+    }
+
+    try {
+      await unlink(sourcePath);
+    } catch (error) {
+      await unlink(candidatePath).catch(() => undefined);
+      throw error;
+    }
+    return candidatePath;
+  }
+}
+
+// Fallback for filesystems without hard links: check, then rename. There
+// is a small window between the check and the rename; it only applies
+// where link() is unavailable.
+async function renameToUniquePath(
+  dir: string,
+  filename: string,
+  sourcePath: string,
+): Promise<string> {
+  const extension = path.extname(filename);
+  const basename = path.basename(filename, extension);
+
+  let attempt = 1;
+  while (true) {
+    const candidate =
+      attempt === 1 ? filename : `${basename}-${attempt}${extension}`;
+    const candidatePath = path.join(dir, candidate);
+
+    try {
+      await access(candidatePath, constants.F_OK);
+      attempt += 1;
+    } catch {
+      await rename(sourcePath, candidatePath);
+      return candidatePath;
     }
   }
 }
