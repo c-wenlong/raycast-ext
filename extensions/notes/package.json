@@ -11,6 +11,12 @@
   "license": "MIT",
   "commands": [
     {
+      "name": "toggleNotesWindow",
+      "title": "Toggle Notes Window",
+      "description": "Show or hide the floating notes window (bind to \u2325\u2318N)",
+      "mode": "no-view"
+    },
+    {
       "name": "browseNotes",
       "title": "Browse Notes",
       "description": "Browse, search, pin, and manage your notes",
@@ -57,7 +63,8 @@
     "dev": "ray develop",
     "lint": "ray lint",
     "fix-lint": "ray lint --fix",
-    "test": "esbuild test/lib.test.ts --bundle --platform=node --format=cjs --alias:@raycast/api=./test/raycast-stub.js --outfile=dist/test.cjs --log-level=warning && node dist/test.cjs"
+    "test": "esbuild test/lib.test.ts --bundle --platform=node --format=cjs --alias:@raycast/api=./test/raycast-stub.js --outfile=dist/test.cjs --log-level=warning && node dist/test.cjs",
+    "build-helper": "swiftc -O -swift-version 5 -o assets/notes-panel helper/main.swift"
   },
   "dependencies": {
     "@raycast/api": "^1.104.8"

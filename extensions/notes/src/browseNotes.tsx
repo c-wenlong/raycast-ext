@@ -7,6 +7,7 @@ import {
   Icon,
   List,
   Toast,
+  closeMainWindow,
   confirmAlert,
   showInFinder,
   showToast,
@@ -32,6 +33,7 @@ import {
   duplicateNoteFile,
   listMarkdownFiles,
 } from "./lib/notes";
+import { launchPanel } from "./lib/panel";
 import { getPinnedPaths, removePin, togglePin } from "./lib/pins";
 
 function countOpenTasks(content: string): number {
@@ -192,6 +194,19 @@ export default function BrowseNotesCommand() {
     }
   }
 
+  async function handleOpenFloating(path: string) {
+    try {
+      await launchPanel(["open", path]);
+      await closeMainWindow();
+    } catch (error) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Failed to open the notes window",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
   async function handleCopy(path: string) {
     try {
       const content = await readFileUtf8(path);
@@ -267,6 +282,12 @@ export default function BrowseNotesCommand() {
                     }}
                   />
                 }
+              />
+              <Action
+                title="Open in Floating Window"
+                icon={Icon.AppWindowSidebarLeft}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+                onAction={() => handleOpenFloating(note.path)}
               />
               <Action
                 title={isPinned ? "Unpin Note" : "Pin Note"}
