@@ -195,6 +195,9 @@ final class NoteTextView: NSTextView {
 
   override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
     defer { lastCaret = selectedRange().location }
+    // Every way out of here (including a caret relocated off a marker or
+    // fence line) tells the slash menu where the caret ended up.
+    defer { if slashMenuIsOpen, !stillSelecting { syncSlashMenu(caretMoved: true) } }
     if !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0,
       let run = hiddenRun(strictlyContaining: range.location) {
       let forward = range.location >= lastCaret
@@ -226,7 +229,6 @@ final class NoteTextView: NSTextView {
       return
     }
     super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
-    if slashMenuIsOpen, !stillSelecting { syncSlashMenu(caretMoved: true) }
   }
 
   /// End of the block's last body line (before its newline).
