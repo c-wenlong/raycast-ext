@@ -279,10 +279,16 @@ enum Markdown {
     }
   }
 
-  /// `revealing` is the line the caret is on: inline markers (`**`, `_`,
-  /// `~~`, backticks, link brackets and targets) show dimmed there so the
-  /// markdown can be edited, and collapse to nothing everywhere else.
-  static func apply(to storage: NSTextStorage, revealing: NSRange? = nil) {
+  /// Marks every run of characters that is collapsed to nothing on screen
+  /// (heading and list markers, `**`, `_`, `~~`, backticks, link brackets
+  /// and targets). The caret never rests inside such a run.
+  static let hiddenRun = NSAttributedString.Key("hiddenRun")
+
+  /// An empty pair left by ⌘B / ⌘I / ⇧⌘S / ⌘E before anything is typed
+  /// inside it; hidden like a matched pair so the markers never show.
+  static let emptyPair = try! NSRegularExpression(pattern: #"(?<!\*)\*\*\*\*(?!\*)|(?<!_)____(?!_)|(?<!~)~~~~(?!~)|(?<!`)``(?!`)"#)
+
+  static func apply(to storage: NSTextStorage) {
     let text = storage.string
     let all = fullRange(text)
     let dim = NSColor.tertiaryLabelColor
@@ -368,7 +374,7 @@ enum Markdown {
       if ns.substring(with: range).contains("\t") {
         storage.addAttribute(.foregroundColor, value: dim, range: range)
       } else {
-        storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: range)
+        storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance, hiddenRun: true], range: range)
       }
     }
     // Leading spaces of a list item are widened to `indentSpaceWidth` each
@@ -442,16 +448,16 @@ enum Markdown {
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)
     }
-    // Inline markers: dimmed on the caret's line, collapsed elsewhere.
+    // Inline markers are never shown; the styled text is the only thing
+    // on screen, and NoteTextView keeps the caret out of the hidden runs.
     let mono = monoFont
     let collapseKern = -monoAdvance
     func marker(_ range: NSRange) {
       guard range.location != NSNotFound, range.length > 0 else { return }
-      if let reveal = revealing, NSIntersectionRange(reveal, range).length > 0 || NSLocationInRange(range.location, reveal) {
-        storage.addAttribute(.foregroundColor, value: dim, range: range)
-      } else {
-        storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern], range: range)
-      }
+      storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern, hiddenRun: true], range: range)
+    }
+    for match in emptyPair.matches(in: text, range: all) where !inCode(match.range) {
+      marker(match.range)
     }
     for match in bold.matches(in: text, range: all) where !inCode(match.range) {
       let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont

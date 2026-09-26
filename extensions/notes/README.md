@@ -54,8 +54,12 @@ Inside the window:
 | paste a URL over a selection | turn the selection into `[text](url)` |
 | `⌘Z` / `⇧⌘Z` | undo / redo; each typing rule and formatting key is one step |
 
-The text stays raw markdown; headings, bold, italic, code, quotes, links and
-task boxes are styled in place. Edits save 0.4s after you stop typing, and
+The file stays raw markdown, but the window never shows the markers:
+headings, bold, italic, strike, code, quotes, links, list markers and task
+boxes are styled in place and the `#`, `**`, `_`, backticks and `- ` are
+collapsed. The caret skips over them, Backspace and Delete look through
+them to the styled text, and a pair left empty disappears, so styled text
+is removed by removing the text. Edits save 0.4s after you stop typing, and
 the window reloads a note that another program changes.
 
 The window is a native helper, `helper/main.swift`, compiled into

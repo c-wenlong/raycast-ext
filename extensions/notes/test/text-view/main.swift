@@ -107,6 +107,38 @@ tv.setSelectedRange(NSRange(location: 9, length: 0))
 tv.suppressFenceEdits = false
 check("caret at end of a fence-terminated note goes to the body", caret() == 5, "\(caret())")
 
+// 8. hidden inline markers are not editable
+load("a **bold** c")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.moveRight(nil)
+check("right arrow skips the opening marker", caret() == 4, "\(caret())")
+tv.moveLeft(nil)
+check("left arrow skips it back", caret() == 2, "\(caret())")
+tv.setSelectedRange(NSRange(location: 10, length: 0))
+tv.deleteBackward(nil)
+check("backspace after bold deletes the last bold char", tv.string == "a **bol** c" && caret() == 7, "\(tv.string) \(caret())")
+load("a **b** c")
+tv.setSelectedRange(NSRange(location: 7, length: 0))
+tv.deleteBackward(nil)
+check("emptying a bold pair removes it", tv.string == "a  c" && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+load("a **bold** c")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.deleteForward(nil)
+check("delete forward looks through the opening marker", tv.string == "a **old** c", tv.string)
+load("x `k` y")
+tv.setSelectedRange(NSRange(location: 5, length: 0))
+tv.deleteBackward(nil)
+check("emptying a code span removes the backticks", tv.string == "x  y", tv.string.debugDescription)
+load("## Title")
+tv.setSelectedRange(NSRange(location: 3, length: 0))
+tv.deleteBackward(nil)
+check("backspace after a heading marker removes it", tv.string == "Title" && caret() == 0, "\(tv.string) \(caret())")
+load("a ****b")
+Markdown.apply(to: tv.textStorage!)
+var emptyHidden = false
+if let v = tv.textStorage!.attribute(Markdown.hiddenRun, at: 3, effectiveRange: nil) as? Bool { emptyHidden = v }
+check("an empty pair is hidden", emptyHidden)
+
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")
 tv.setSelectedRange(NSRange(location: 0, length: 28))

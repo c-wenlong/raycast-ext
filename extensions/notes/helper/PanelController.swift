@@ -573,24 +573,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   // MARK: Editing helpers
 
-  /// Line the caret was on at the last restyle; markers are revealed there.
-  private var revealedLine = NSRange(location: NSNotFound, length: 0)
-
-  private func caretLine() -> NSRange {
-    (textView.string as NSString).lineRange(for: NSRange(location: textView.selectedRange().location, length: 0))
-  }
-
-  /// Moving the caret to another line changes which markers are shown.
-  func textViewDidChangeSelection(_ notification: Notification) {
-    guard textView.isEditable, caretLine() != revealedLine else { return }
-    restyle()
-  }
-
   func restyle() {
     guard let storage = textView.textStorage else { return }
     let selection = textView.selectedRange()
-    revealedLine = caretLine()
-    Markdown.apply(to: storage, revealing: revealedLine)
+    Markdown.apply(to: storage)
     textView.setSelectedRange(selection)
     textView.typingAttributes = [.font: Markdown.baseFont, .foregroundColor: NSColor.labelColor]
     codeBlocks?.update()
