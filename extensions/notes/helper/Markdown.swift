@@ -144,7 +144,7 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     // Sized from the body font (not the line) so paragraph spacing never
     // stretches it, and so ⌘+ / ⌘- zoom scales it with the text.
     let font = Markdown.baseFont
-    let side = (defaultLineHeight(for: font) * 0.75).rounded()
+    let side = Markdown.taskBoxSide
     let center = NSPoint(x: origin.x + span.midX, y: baseline - font.capHeight / 2)
     let square = NSRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
 
@@ -176,7 +176,15 @@ enum Markdown {
   /// Marks the (clear) "-", "*" or "+" of a bullet item, which
   /// TaskBoxLayoutManager draws as a round dot.
   static let bulletDot = NSAttributedString.Key("bulletDot")
-  static var bulletDotDiameter: CGFloat { 5 * zoom }
+  static var bulletDotDiameter: CGFloat { 4.5 * zoom }
+  /// Side of a task box: 14pt at 15pt text, as in Raycast Notes.
+  static var taskBoxSide: CGFloat { (baseFont.pointSize * 14 / 15).rounded() }
+
+  /// The note's background, as in Raycast Notes: near-black in dark mode.
+  static let canvas = NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+      ? NSColor(white: 26 / 255, alpha: 1) : NSColor(white: 0.985, alpha: 1)
+  }
 
   static var baseFont: NSFont { NSFont.systemFont(ofSize: 15 * zoom) }
   static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 13.5 * zoom, weight: .regular) }
@@ -191,15 +199,18 @@ enum Markdown {
   }
   /// Space above H1, H2, H3 before zoom.
   static let headingSpaceBefore: [CGFloat] = [18, 14, 10]
-  /// Line height as a multiple of the font's own, for prose and for code.
-  static let bodyLineHeight: CGFloat = 1.25
+  /// Line height as a multiple of the font's own, for prose and for code,
+  /// and the gap between paragraphs: together a 28pt pitch at 15pt text,
+  /// matching Raycast Notes.
+  static let bodyLineHeight: CGFloat = 1.15
   static let codeLineHeight: CGFloat = 1.15
-  /// On-screen width of one space of list indentation, so a nested item
-  /// sits under its parent's text rather than a few pixels in.
-  static var indentSpaceWidth: CGFloat { 6 * zoom }
-  /// Height of a blank line between blocks (not the one the caret is on).
-  static var blankLineHeight: CGFloat { (10 * zoom).rounded() }
-  static let blankLine = try! NSRegularExpression(pattern: #"^[ \t]*$"#, options: .anchorsMatchLines)
+  static var paragraphGap: CGFloat { 7.5 * zoom }
+  /// Width of one list level: the marker column, and the indent of each
+  /// nested level. The marker (dot, number) sits `listMarkerLead` in from
+  /// the column's left edge; a task box sits flush.
+  static var listColumn: CGFloat { 22 * zoom }
+  static var listMarkerLead: CGFloat { 2.5 * zoom }
+  static let listLine = try! NSRegularExpression(pattern: #"^([ \t]*)(?:[-*+]|\d+\.)[ \t]+"#)
   static let taskScheme = "notes-task"
 
   /// Marks every character of a fenced code block, opening fence line
@@ -298,13 +309,40 @@ enum Markdown {
   /// inside it; hidden like a matched pair so the markers never show.
   static let emptyPair = try! NSRegularExpression(pattern: #"(?<!\*)\*\*\*\*(?!\*)|(?<!_)____(?!_)|(?<!~)~~~~(?!~)|(?<!`)``(?!`)"#)
 
+  /// Nesting level of every list line, keyed by line start: a list line
+  /// indented past the previous one is a level deeper, one indented back
+  /// returns to the level of the ancestor it lines up with. A line that is
+  /// neither a list item nor blank ends the list.
+  static func listLevels(in text: String) -> [Int: Int] {
+    let ns = text as NSString
+    var levels: [Int: Int] = [:]
+    var open: [Int] = []  // indent widths of the enclosing items
+    var index = 0
+    while index < ns.length {
+      let line = ns.lineRange(for: NSRange(location: index, length: 0))
+      index = NSMaxRange(line)
+      let content = ns.substring(with: line)
+      let contentRange = NSRange(location: 0, length: (content as NSString).length)
+      if let match = listLine.firstMatch(in: content, range: contentRange) {
+        let indent = (content as NSString).substring(with: match.range(at: 1))
+          .reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        while let last = open.last, last >= indent { open.removeLast() }
+        levels[line.location] = open.count
+        open.append(indent)
+      } else if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        open.removeAll()
+      }
+    }
+    return levels
+  }
+
   static func apply(to storage: NSTextStorage) {
     let text = storage.string
     let all = fullRange(text)
     let dim = NSColor.tertiaryLabelColor
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineHeightMultiple = bodyLineHeight
-    paragraph.paragraphSpacing = 4 * zoom
+    paragraph.paragraphSpacing = paragraphGap
 
     var hadCards = false
     if storage.length > 0 {
@@ -361,20 +399,6 @@ enum Markdown {
     }
 
     let ns = text as NSString
-    // A blank line separates blocks, so it shows as a gap about the size of
-    // a paragraph break rather than a full empty line. The caret's own
-    // line keeps its full height, so typing on it never makes it jump.
-    let selection = storage.layoutManagers.first?.firstTextView?.selectedRange()
-    let caretLine = selection.map { ns.lineRange(for: NSRange(location: min($0.location, ns.length), length: 0)) }
-    let blankStyle = NSMutableParagraphStyle()
-    blankStyle.minimumLineHeight = blankLineHeight
-    blankStyle.maximumLineHeight = blankLineHeight
-    for match in blankLine.matches(in: text, range: all) {
-      let line = ns.lineRange(for: match.range)
-      guard line.length > 0, line != caretLine, !inCode(line) else { continue }
-      storage.addAttribute(.paragraphStyle, value: blankStyle, range: line)
-    }
-
     // Markers that stay in the file but take no room on screen: clear
     // colour plus a kern cancelling each monospace glyph's advance, so the
     // text starts where the marker did. A tab jumps to the next tab stop,
@@ -387,21 +411,30 @@ enum Markdown {
         storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance, hiddenRun: HiddenRole.line.rawValue], range: range)
       }
     }
-    // Leading spaces of a list item are widened to `indentSpaceWidth` each
-    // (tabs keep their tab stops), so nesting reads at a glance.
+    // List lines are laid out on a grid of `listColumn`s, as in Raycast
+    // Notes: the leading whitespace collapses to one column per nesting
+    // level, the marker starts `lead` in from there, and the whitespace
+    // after the marker stretches so the text starts at the next column.
+    // Wrapped lines line up with the text. Tabs keep their tab stops (a
+    // kern cannot cancel one), so such a line keeps the plain layout.
+    let levels = listLevels(in: text)
     let spaceWidth = (" " as NSString).size(withAttributes: [.font: baseFont]).width
-    func widenIndent(_ range: NSRange) {
-      guard range.location != NSNotFound else { return }
-      for offset in 0..<range.length where ns.character(at: range.location + offset) == 0x20 {
-        storage.addAttribute(.kern, value: indentSpaceWidth - spaceWidth, range: NSRange(location: range.location + offset, length: 1))
+    func layoutList(line: NSRange, indent: NSRange, lead: CGFloat, markerWidth: CGFloat, gap: NSRange, textStart: Int) {
+      let prefix = NSRange(location: line.location, length: textStart - line.location)
+      guard !ns.substring(with: prefix).contains("\t") else { return }
+      let level = CGFloat(levels[line.location] ?? 0)
+      for offset in 0..<indent.length {
+        let space = NSRange(location: indent.location + offset, length: 1)
+        storage.addAttribute(.kern, value: (offset == 0 ? level * listColumn : 0) - spaceWidth, range: space)
       }
-    }
-    // Wrapped lines of a list item line up with its text, not its marker.
-    func hang(line: NSRange, prefixEnd: Int) {
-      let prefix = NSRange(location: line.location, length: prefixEnd - line.location)
-      guard prefix.length > 0, !ns.substring(with: prefix).contains("\t") else { return }
+      if gap.length > 0 {
+        let gapWidth = storage.attributedSubstring(from: gap).size().width
+        let stretch = max(0, listColumn - lead - markerWidth - gapWidth)
+        storage.addAttribute(.kern, value: stretch, range: NSRange(location: gap.location, length: 1))
+      }
       let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
-      style.headIndent = storage.attributedSubstring(from: prefix).size().width
+      style.firstLineHeadIndent = lead
+      style.headIndent = lead + storage.attributedSubstring(from: prefix).size().width
       storage.addAttribute(.paragraphStyle, value: style, range: ns.lineRange(for: line))
     }
 
@@ -428,14 +461,18 @@ enum Markdown {
       // The bullet and the space after it stay in the file (a task needs a
       // list marker in markdown) but collapse to nothing on screen: clear
       // colour plus a kern that cancels each glyph's advance, so the box
-      // sits where the line starts, as in Raycast Notes.
+      // sits where the line starts, as in Raycast Notes. The three box
+      // characters are squeezed to the drawn box's width.
       collapse(NSRange(location: match.range(at: 2).location, length: box.location - match.range(at: 2).location))
-      widenIndent(match.range(at: 1))
+      storage.addAttribute(.kern, value: taskBoxSide / 3 - monoAdvance, range: box)
       let body = match.range(at: 4)
       if done, body.location != NSNotFound, body.length > 0 {
         storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
       }
-      hang(line: match.range, prefixEnd: body.location != NSNotFound ? body.location : NSMaxRange(match.range))
+      let textStart = body.location != NSNotFound ? body.location : NSMaxRange(match.range)
+      layoutList(
+        line: match.range, indent: match.range(at: 1), lead: 0, markerWidth: taskBoxSide,
+        gap: NSRange(location: NSMaxRange(box), length: textStart - NSMaxRange(box)), textStart: textStart)
     }
     for match in bullet.matches(in: text, range: all) where !inCode(match.range) {
       let marker = match.range(at: 2)
@@ -446,8 +483,11 @@ enum Markdown {
       } else {
         storage.addAttribute(.foregroundColor, value: accent, range: marker)
       }
-      widenIndent(match.range(at: 1))
-      hang(line: match.range, prefixEnd: NSMaxRange(match.range))
+      layoutList(
+        line: match.range, indent: match.range(at: 1), lead: listMarkerLead,
+        markerWidth: storage.attributedSubstring(from: marker).size().width,
+        gap: NSRange(location: NSMaxRange(marker), length: NSMaxRange(match.range) - NSMaxRange(marker)),
+        textStart: NSMaxRange(match.range))
     }
     for match in quote.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))

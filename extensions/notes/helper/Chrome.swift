@@ -108,7 +108,7 @@ final class ChromeButton: NSButton {
     if showsChevron {
       // Symbol sits left of centre; the chevron goes in the right 12pt.
       let chevron = NSBezierPath()
-      let x = bounds.maxX - 11
+      let x = bounds.maxX - 9
       let y = bounds.midY
       // Points down (the view is flipped, so larger y is lower).
       let down: CGFloat = isFlipped ? 1.5 : -1.5
@@ -129,6 +129,44 @@ final class ChromeButton: NSButton {
       cell.imagePosition = .imageLeading
       cell.alignment = .left
     }
+  }
+}
+
+/// A gradient from the editor background at a window edge to clear, so
+/// text scrolling under the header or footer fades out instead of being
+/// cut, as in Raycast. Ignores the mouse.
+final class FadeOverlay: NSView {
+  enum Edge { case top, bottom }
+  private let edge: Edge
+  var color: NSColor = .textBackgroundColor { didSet { needsDisplay = true } }
+
+  init(edge: Edge) {
+    self.edge = edge
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func draw(_ dirtyRect: NSRect) {
+    // Opaque for the outer third, then eased to clear.
+    let opaque = color
+    let clear = color.withAlphaComponent(0)
+    guard let gradient = NSGradient(colorsAndLocations: (opaque, 0), (opaque, 0.35), (color.withAlphaComponent(0.6), 0.65), (clear, 1)) else { return }
+    gradient.draw(in: bounds, angle: edge == .top ? 270 : 90)
+  }
+
+  /// Pins the overlay to `parent`'s top or bottom edge with `height`.
+  func install(in parent: NSView, height: CGFloat) {
+    parent.addSubview(self)
+    NSLayoutConstraint.activate([
+      leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+      trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+      heightAnchor.constraint(equalToConstant: height),
+      edge == .top ? topAnchor.constraint(equalTo: parent.topAnchor) : bottomAnchor.constraint(equalTo: parent.bottomAnchor),
+    ])
   }
 }
 
@@ -261,7 +299,7 @@ private final class PassThroughLabel: NSTextField {
 /// round formatting button at the bottom right.
 final class StatusBar {
   /// Space the text needs below its last line so the bar never covers it.
-  static let reservedHeight: CGFloat = 36
+  static let reservedHeight: CGFloat = 30
   private let label: NSTextField = PassThroughLabel(labelWithString: "")
   let formatButton: ChromeButton
 
@@ -271,8 +309,8 @@ final class StatusBar {
     label.alignment = .center
     label.translatesAutoresizingMaskIntoConstraints = false
 
-    formatButton = ChromeButton(glyph: "T", font: NSFont.systemFont(ofSize: 16, weight: .semibold), label: "Formatting")
-    formatButton.cornerRadius = 18
+    formatButton = ChromeButton(glyph: "T", font: NSFont.systemFont(ofSize: 14, weight: .semibold), label: "Formatting")
+    formatButton.cornerRadius = 15
     formatButton.fill = ChromeColors.round
     formatButton.stroke = ChromeColors.border
     formatButton.translatesAutoresizingMaskIntoConstraints = false
@@ -291,10 +329,10 @@ final class StatusBar {
     NSLayoutConstraint.activate([
       label.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
       label.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
-      formatButton.widthAnchor.constraint(equalToConstant: 36),
-      formatButton.heightAnchor.constraint(equalToConstant: 36),
-      formatButton.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -14),
-      formatButton.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -14),
+      formatButton.widthAnchor.constraint(equalToConstant: 30),
+      formatButton.heightAnchor.constraint(equalToConstant: 30),
+      formatButton.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -12),
+      formatButton.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
     ])
   }
 
@@ -337,7 +375,7 @@ final class StatusBar {
 /// style and list menus plus link, code, code block and quote buttons in
 /// one pill at the bottom centre, with a round close button at the right.
 final class FormatBar: NSView, NSMenuDelegate {
-  static let height: CGFloat = 40
+  static let height: CGFloat = 32
   private let pill = PillView()
   private let closeButton: ChromeButton
   private let apply: (NoteTextView.Format) -> Void
@@ -364,7 +402,7 @@ final class FormatBar: NSView, NSMenuDelegate {
   init(apply: @escaping (NoteTextView.Format) -> Void, onClose: @escaping () -> Void) {
     self.apply = apply
     self.onClose = onClose
-    closeButton = ChromeButton(symbol: "xmark", pointSize: 11, weight: .bold, label: "Close formatting")
+    closeButton = ChromeButton(symbol: "xmark", pointSize: 9, weight: .bold, label: "Close formatting")
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
 
@@ -373,18 +411,18 @@ final class FormatBar: NSView, NSMenuDelegate {
     let stack = NSStackView()
     stack.orientation = .horizontal
     stack.spacing = 2
-    stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+    stack.edgeInsets = NSEdgeInsets(top: 3, left: 6, bottom: 3, right: 6)
     stack.translatesAutoresizingMaskIntoConstraints = false
     pill.addSubview(stack)
 
     for slot in Self.slots {
       let button = slot.label == "Heading"
-        ? ChromeButton(glyph: "H", font: NSFont.systemFont(ofSize: 14, weight: .semibold), label: slot.label)
-        : ChromeButton(symbol: slot.symbol, pointSize: 13, label: slot.label)
+        ? ChromeButton(glyph: "H", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: slot.label)
+        : ChromeButton(symbol: slot.symbol, pointSize: 11, label: slot.label)
       button.target = self
       button.action = #selector(slotClicked(_:))
-      button.widthAnchor.constraint(equalToConstant: slot.menu.isEmpty ? 30 : 42).isActive = true
-      button.heightAnchor.constraint(equalToConstant: 30).isActive = true
+      button.widthAnchor.constraint(equalToConstant: slot.menu.isEmpty ? 24 : 36).isActive = true
+      button.heightAnchor.constraint(equalToConstant: 24).isActive = true
       if !slot.menu.isEmpty {
         let menu = NSMenu()
         for option in slot.menu {
@@ -399,7 +437,7 @@ final class FormatBar: NSView, NSMenuDelegate {
       stack.addArrangedSubview(button)
     }
 
-    closeButton.cornerRadius = 14
+    closeButton.cornerRadius = 12
     closeButton.fill = ChromeColors.round
     closeButton.stroke = ChromeColors.border
     closeButton.translatesAutoresizingMaskIntoConstraints = false
@@ -418,8 +456,8 @@ final class FormatBar: NSView, NSMenuDelegate {
       pill.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
       pill.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
       pill.heightAnchor.constraint(equalToConstant: Self.height - 2),
-      closeButton.widthAnchor.constraint(equalToConstant: 28),
-      closeButton.heightAnchor.constraint(equalToConstant: 28),
+      closeButton.widthAnchor.constraint(equalToConstant: 24),
+      closeButton.heightAnchor.constraint(equalToConstant: 24),
       closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
       closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
       heightAnchor.constraint(equalToConstant: Self.height),
