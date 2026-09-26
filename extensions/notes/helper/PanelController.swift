@@ -156,6 +156,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.isRichText = false
     textView.font = Markdown.baseFont
     textView.linkTextAttributes = [:]
+    // Only a background for selections: the default also recolours the
+    // text, which would reveal the characters hidden under boxes.
+    textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
     textView.isAutomaticLinkDetectionEnabled = false
     textView.isAutomaticQuoteSubstitutionEnabled = false
     textView.isAutomaticDashSubstitutionEnabled = false

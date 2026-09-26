@@ -8,6 +8,123 @@ final class NoteTextView: NSTextView {
 
   // Code block cards reach into the inset margin, outside the clip the
   // layout manager draws in, so the view paints them with its background.
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    (layoutManager as? TaskBoxLayoutManager)?.drawTaskBoxes(in: dirtyRect, origin: textContainerOrigin)
+  }
+
+  // MARK: Code blocks behave as one component
+  //
+  // The caret never rests on a fence line: clicks and arrow keys that land
+  // there move into the body or past the block, Backspace on an empty block
+  // removes the whole block, and the newline before the closing fence
+  // cannot be deleted forward.
+
+  private func codeBlock(containing location: Int) -> Markdown.CodeBlock? {
+    Markdown.codeBlocks(in: string).first { NSLocationInRange(location, $0.range) || location == NSMaxRange($0.range) && $0.closingLine != nil }
+  }
+
+  private enum FenceHit { case opening(Markdown.CodeBlock), closing(Markdown.CodeBlock) }
+
+  private func fenceLine(at location: Int) -> FenceHit? {
+    guard let block = codeBlock(containing: location) else { return nil }
+    if NSLocationInRange(location, block.openingLine) || location == NSMaxRange(block.openingLine) && block.body.length == 0 && block.closingLine == nil {
+      return .opening(block)
+    }
+    if let closing = block.closingLine, NSLocationInRange(location, closing) || location == NSMaxRange(closing) && NSMaxRange(closing) == (string as NSString).length && !string.hasSuffix("\n") {
+      return .closing(block)
+    }
+    return nil
+  }
+
+  override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+    if !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0,
+      let hit = fenceLine(at: range.location) {
+      let ns = string as NSString
+      let target: Int
+      switch hit {
+      case .opening(let block):
+        target = block.body.location
+      case .closing(let block):
+        let after = NSMaxRange(block.closingLine!)
+        // Nothing after the closing fence: rest at the end of the body instead.
+        target = after < ns.length || ns.hasSuffix("\n") ? min(after, ns.length) : max(block.body.location, NSMaxRange(block.body) - (ns.substring(with: block.body).hasSuffix("\n") ? 1 : 0))
+      }
+      super.setSelectedRanges([NSValue(range: NSRange(location: target, length: 0))], affinity: affinity, stillSelecting: stillSelecting)
+      return
+    }
+    super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+  }
+
+  override func moveDown(_ sender: Any?) {
+    let before = selectedRange().location
+    let ns = string as NSString
+    // Arrow down from the last body line: leave the block. Add a line
+    // after it when the block ends the note.
+    var escaping = false
+    if let block = codeBlock(containing: before), block.closingLine != nil,
+      NSLocationInRange(before, block.body) || before == block.body.location {
+      let lastLine = ns.lineRange(for: NSRange(location: max(block.body.location, NSMaxRange(block.body) - 1), length: 0))
+      escaping = NSLocationInRange(before, lastLine) || before == NSMaxRange(lastLine)
+    }
+    super.moveDown(sender)
+    guard escaping, let block = codeBlock(containing: before), let closing = block.closingLine else { return }
+    let end = NSMaxRange(closing)
+    if end < ns.length {
+      setSelectedRange(NSRange(location: end, length: 0))
+    } else if ns.hasSuffix("\n") {
+      setSelectedRange(NSRange(location: ns.length, length: 0))
+    } else if shouldChangeText(in: NSRange(location: ns.length, length: 0), replacementString: "\n") {
+      textStorage?.replaceCharacters(in: NSRange(location: ns.length, length: 0), with: "\n")
+      didChangeText()
+      setSelectedRange(NSRange(location: ns.length + 1, length: 0))
+    }
+  }
+
+  override func moveUp(_ sender: Any?) {
+    let before = selectedRange().location
+    super.moveUp(sender)
+    // Arrow up from the first body line: skip the hidden opening fence.
+    guard let block = codeBlock(containing: before), NSLocationInRange(before, block.body) || before == block.body.location,
+      selectedRange().location <= block.body.location
+    else { return }
+    let start = block.openingLine.location
+    if start > 0 {
+      setSelectedRange(NSRange(location: start - 1, length: 0))
+    } else {
+      setSelectedRange(NSRange(location: block.body.location, length: 0))
+    }
+  }
+
+  override func deleteForward(_ sender: Any?) {
+    let selection = selectedRange()
+    if selection.length == 0, let block = codeBlock(containing: selection.location), let closing = block.closingLine,
+      selection.location + 1 == closing.location {
+      return  // the newline before the closing fence belongs to the block
+    }
+    super.deleteForward(sender)
+  }
+
+  /// Backspace at the start of an empty code block removes the block.
+  private func deleteEmptyCodeBlock(at location: Int) -> Bool {
+    guard let block = codeBlock(containing: location), location == block.body.location,
+      (string as NSString).substring(with: block.body).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return false }
+    let ns = string as NSString
+    var range = NSRange(location: block.openingLine.location, length: NSMaxRange(block.closingLine ?? block.range) - block.openingLine.location)
+    if NSMaxRange(range) < ns.length, ns.character(at: NSMaxRange(range) - 1) != 0x0A {
+      // closing fence without its own newline: also take the one that follows
+      range.length += 1
+    }
+    breakUndoCoalescing()
+    guard shouldChangeText(in: range, replacementString: "") else { return true }
+    textStorage?.replaceCharacters(in: range, with: "")
+    setSelectedRange(NSRange(location: range.location, length: 0))
+    didChangeText()
+    breakUndoCoalescing()
+    return true
+  }
+
   override func drawBackground(in rect: NSRect) {
     super.drawBackground(in: rect)
     (layoutManager as? TaskBoxLayoutManager)?.drawCodeCards(in: rect, origin: textContainerOrigin)
@@ -164,8 +281,12 @@ final class NoteTextView: NSTextView {
 
   override func deleteBackward(_ sender: Any?) {
     let selection = selectedRange()
-    if selection.length == 0, !hasMarkedText(), apply(ListEditing.backspace(in: string, cursor: selection.location)) {
-      return
+    if selection.length == 0, !hasMarkedText() {
+      if deleteEmptyCodeBlock(at: selection.location) { return }
+      if let block = codeBlock(containing: selection.location), selection.location == block.body.location {
+        return  // keep the opening fence; the block is one component
+      }
+      if apply(ListEditing.backspace(in: string, cursor: selection.location)) { return }
     }
     super.deleteBackward(sender)
   }
