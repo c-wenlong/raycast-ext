@@ -229,7 +229,11 @@ enum Markdown {
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?(?:^ {0,3}(?:\1`*|\2~*)[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
-  static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*|_)(?=\S)(.+?)(?<=\S)\1(?![\*\w])"#)
+  // Groups 1/2 for `*`, 3/4 for `_`. Each marker is a lone character (so
+  // a bold marker is never half an italic one) and only refuses its own
+  // character next to it, so `_b_` nests inside `**...**` and `**b**`
+  // inside `*...*`.
+  static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*)(?!\*)(?=\S)(.+?)(?<=\S)(?<!\*)\1(?![\*\w])|(?<![_\w])(_)(?!_)(?=\S)(.+?)(?<=\S)(?<!_)\3(?![_\w])"#)
   static let strike = try! NSRegularExpression(pattern: #"(~~)(?=\S)(.+?)(?<=\S)\1"#)
   static let code = try! NSRegularExpression(pattern: #"(`)([^`\n]+)\1"#)
   static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
@@ -279,10 +283,22 @@ enum Markdown {
     }
   }
 
-  /// `revealing` is the line the caret is on: inline markers (`**`, `_`,
-  /// `~~`, backticks, link brackets and targets) show dimmed there so the
-  /// markdown can be edited, and collapse to nothing everywhere else.
-  static func apply(to storage: NSTextStorage, revealing: NSRange? = nil) {
+  /// Marks every run of characters that is collapsed to nothing on screen
+  /// (heading and list markers, `**`, `_`, `~~`, backticks, link brackets
+  /// and targets). The caret never rests inside such a run.
+  static let hiddenRun = NSAttributedString.Key("hiddenRun")
+
+  /// Values of `hiddenRun`: which side of a pair a run is, or a line-start
+  /// marker (heading, bullet, task box). Adjacent runs of different roles
+  /// stay separate, so the caret can sit between the halves of an empty
+  /// pair.
+  enum HiddenRole: String { case open, close, line }
+
+  /// An empty pair left by ⌘B / ⌘I / ⇧⌘S / ⌘E before anything is typed
+  /// inside it; hidden like a matched pair so the markers never show.
+  static let emptyPair = try! NSRegularExpression(pattern: #"(?<!\*)\*\*\*\*(?!\*)|(?<!_)____(?!_)|(?<!~)~~~~(?!~)|(?<!`)``(?!`)"#)
+
+  static func apply(to storage: NSTextStorage) {
     let text = storage.string
     let all = fullRange(text)
     let dim = NSColor.tertiaryLabelColor
@@ -368,7 +384,7 @@ enum Markdown {
       if ns.substring(with: range).contains("\t") {
         storage.addAttribute(.foregroundColor, value: dim, range: range)
       } else {
-        storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: range)
+        storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance, hiddenRun: HiddenRole.line.rawValue], range: range)
       }
     }
     // Leading spaces of a list item are widened to `indentSpaceWidth` each
@@ -442,22 +458,39 @@ enum Markdown {
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)
     }
-    // Inline markers: dimmed on the caret's line, collapsed elsewhere.
+    // Inline markers are never shown; the styled text is the only thing
+    // on screen, and NoteTextView keeps the caret out of the hidden runs.
     let mono = monoFont
     let collapseKern = -monoAdvance
-    func marker(_ range: NSRange) {
+    func marker(_ range: NSRange, _ role: HiddenRole) {
       guard range.location != NSNotFound, range.length > 0 else { return }
-      if let reveal = revealing, NSIntersectionRange(reveal, range).length > 0 || NSLocationInRange(range.location, reveal) {
-        storage.addAttribute(.foregroundColor, value: dim, range: range)
-      } else {
-        storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern], range: range)
+      storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern, hiddenRun: role.rawValue], range: range)
+    }
+    for match in emptyPair.matches(in: text, range: all) where !inCode(match.range) {
+      // A whole line of **** or ____ is a horizontal rule, not a pair;
+      // an empty code or strike pair on its own line is still a pair.
+      let matched = ns.substring(with: match.range)
+      let line = ns.lineRange(for: match.range)
+      if (matched.hasPrefix("*") || matched.hasPrefix("_")),
+        ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines) == matched
+      { continue }
+      let half = match.range.length / 2
+      marker(NSRange(location: match.range.location, length: half), .open)
+      marker(NSRange(location: match.range.location + half, length: half), .close)
+    }
+    // Adds a trait to every font run inside `range` (so bold inside italic
+    // keeps its italic), leaving already hidden markers untouched.
+    func addTrait(_ trait: NSFontTraitMask, in range: NSRange) {
+      storage.enumerateAttribute(.font, in: range) { value, run, _ in
+        guard storage.attribute(hiddenRun, at: run.location, effectiveRange: nil) == nil else { return }
+        let current = value as? NSFont ?? baseFont
+        storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: trait), range: run)
       }
     }
     for match in bold.matches(in: text, range: all) where !inCode(match.range) {
-      let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
-      storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .boldFontMask), range: match.range(at: 2))
-      marker(match.range(at: 1))
-      marker(NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length))
+      addTrait(.boldFontMask, in: match.range(at: 2))
+      marker(match.range(at: 1), .open)
+      marker(NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length), .close)
     }
     // "**bold**" also matches the italic pattern as "*" + "*bold*" + "*";
     // an italic marker that is part of a bold marker is not one.
@@ -468,27 +501,27 @@ enum Markdown {
     func inBoldMarker(_ location: Int) -> Bool { boldMarkers.contains { NSLocationInRange(location, $0) } }
     for match in italic.matches(in: text, range: all) where !inCode(match.range) {
       guard !inBoldMarker(match.range.location), !inBoldMarker(NSMaxRange(match.range) - 1) else { continue }
-      let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
-      storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .italicFontMask), range: match.range(at: 2))
-      marker(match.range(at: 1))
-      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1))
+      let group = match.range(at: 1).location != NSNotFound ? 1 : 3
+      addTrait(.italicFontMask, in: match.range(at: group + 1))
+      marker(match.range(at: group), .open)
+      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1), .close)
     }
     for match in strike.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: match.range(at: 2))
-      marker(match.range(at: 1))
-      marker(NSRange(location: match.range.location + match.range.length - 2, length: 2))
+      marker(match.range(at: 1), .open)
+      marker(NSRange(location: match.range.location + match.range.length - 2, length: 2), .close)
     }
     for match in code.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttributes(
         [.font: monoFont, .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.18)], range: match.range(at: 2))
-      marker(match.range(at: 1))
-      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1))
+      marker(match.range(at: 1), .open)
+      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1), .close)
     }
     for match in link.matches(in: text, range: all) where !inCode(match.range) {
       let target = (text as NSString).substring(with: match.range(at: 4))
-      marker(match.range(at: 1))
+      marker(match.range(at: 1), .open)
       // "](url)" collapses as one run
-      marker(NSRange(location: match.range(at: 3).location, length: NSMaxRange(match.range(at: 5)) - match.range(at: 3).location))
+      marker(NSRange(location: match.range(at: 3).location, length: NSMaxRange(match.range(at: 5)) - match.range(at: 3).location), .close)
       storage.addAttributes([.foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range(at: 2))
       if let url = URL(string: target) {
         storage.addAttribute(.link, value: url, range: match.range(at: 2))
