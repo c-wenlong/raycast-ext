@@ -390,7 +390,7 @@ final class FormatBar: NSView, NSMenuDelegate {
   }
 
   private static let slots: [Slot] = [
-    Slot(symbol: "textformat.size", label: "Heading", format: nil, menu: FormatOptions.all.filter { ["h1", "h2", "h3"].contains($0.id) }),
+    Slot(symbol: "textformat.size", label: "Heading", format: nil, menu: FormatOptions.all.filter { ["h1", "h2", "h3", "h4"].contains($0.id) }),
     Slot(symbol: "italic", label: "Text style", format: nil, menu: FormatOptions.all.filter { ["bold", "italic", "strike"].contains($0.id) }),
     Slot(symbol: "link", label: "Link", format: .link, menu: []),
     Slot(symbol: "chevron.left.forwardslash.chevron.right", label: "Code", format: .wrap("`"), menu: []),
@@ -503,6 +503,7 @@ enum FormatOptions {
     Option(id: "h1", title: "Heading 1", keys: "⌥⌘1", symbol: "textformat.size.larger", format: .prefix(.heading(1))),
     Option(id: "h2", title: "Heading 2", keys: "⌥⌘2", symbol: "textformat.size", format: .prefix(.heading(2))),
     Option(id: "h3", title: "Heading 3", keys: "⌥⌘3", symbol: "textformat.size.smaller", format: .prefix(.heading(3))),
+    Option(id: "h4", title: "Heading 4", keys: "⌥⌘4", symbol: "textformat.size.smaller", format: .prefix(.heading(4))),
     Option(id: "bold", title: "Bold", keys: "⌘B", symbol: "bold", format: .wrap("**")),
     Option(id: "italic", title: "Italic", keys: "⌘I", symbol: "italic", format: .wrap("_")),
     Option(id: "strike", title: "Strikethrough", keys: "⇧⌘S", symbol: "strikethrough", format: .wrap("~~")),

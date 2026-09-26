@@ -106,6 +106,51 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     }
   }
 
+  /// Draws the bar down the left of every quote crossing `rect` (text view
+  /// coordinates), one bar per run of quote lines, and "Empty quote" on a
+  /// quote line with no text. NoteTextView calls it from drawBackground.
+  func drawQuoteBars(in rect: NSRect, origin: NSPoint) {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
+    let band = NSRect(x: 0, y: rect.minY - origin.y, width: container.size.width, height: rect.height)
+    let glyphs = glyphRange(forBoundingRect: band, in: container)
+    guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
+    let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+    guard chars.location != NSNotFound, chars.length > 0, NSMaxRange(chars) <= storage.length else { return }
+    let whole = NSRange(location: 0, length: storage.length)
+    var drawn = Set<Int>()
+    storage.enumerateAttribute(Markdown.quoteBar, in: chars) { value, range, _ in
+      guard value != nil else { return }
+      var run = range
+      _ = storage.attribute(Markdown.quoteBar, at: range.location, longestEffectiveRange: &run, in: whole)
+      guard drawn.insert(run.location).inserted else { return }
+      let runGlyphs = glyphRange(forCharacterRange: run, actualCharacterRange: nil)
+      guard runGlyphs.length > 0 else { return }
+      let first = lineFragmentRect(forGlyphAt: runGlyphs.location, effectiveRange: nil)
+      let last = lineFragmentUsedRect(forGlyphAt: NSMaxRange(runGlyphs) - 1, effectiveRange: nil)
+      let inset = 2 * Markdown.zoom
+      let bar = NSRect(
+        x: origin.x + first.minX + container.lineFragmentPadding + Markdown.zoom,
+        y: origin.y + first.minY + inset,
+        width: Markdown.quoteBarWidth, height: max(0, last.maxY - first.minY - inset * 2))
+      NSGraphicsContext.saveGraphicsState()
+      NSColor.labelColor.withAlphaComponent(0.85).setFill()
+      NSBezierPath(roundedRect: bar, xRadius: bar.width / 2, yRadius: bar.width / 2).fill()
+      NSGraphicsContext.restoreGraphicsState()
+    }
+    storage.enumerateAttribute(Markdown.quotePlaceholder, in: chars) { value, range, _ in
+      guard value != nil else { return }
+      let glyph = glyphIndexForCharacter(at: range.location)
+      guard glyph < numberOfGlyphs else { return }
+      let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+      let baseline = origin.y + fragment.minY + location(forGlyphAt: glyph).y
+      let font = Markdown.baseFont
+      let point = NSPoint(
+        x: origin.x + fragment.minX + container.lineFragmentPadding + Markdown.quoteIndent,
+        y: baseline - font.ascender)
+      ("Empty quote" as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
+    }
+  }
+
   /// Draws the code cards behind `rect` (text view coordinates), reaching
   /// `Markdown.codeCardOutset` into the inset margin. NoteTextView calls it
   /// from `drawBackground(in:)`, which (unlike this class's own background
@@ -260,10 +305,18 @@ enum Markdown {
       NSFont.systemFont(ofSize: 24 * zoom, weight: .bold),
       NSFont.systemFont(ofSize: 20 * zoom, weight: .bold),
       NSFont.systemFont(ofSize: 17 * zoom, weight: .bold),
+      NSFont.systemFont(ofSize: 15 * zoom, weight: .semibold),
     ]
   }
-  /// Space above H1, H2, H3 before zoom.
-  static let headingSpaceBefore: [CGFloat] = [18, 14, 10]
+  /// Space above H1 to H4 before zoom.
+  static let headingSpaceBefore: [CGFloat] = [18, 14, 10, 8]
+  /// A quote's text sits this far in; the bar is drawn in the gap.
+  static var quoteIndent: CGFloat { 16 * zoom }
+  static var quoteBarWidth: CGFloat { 3 * zoom }
+  /// Marks every character of a quote line (bar drawn by the layout
+  /// manager); `quotePlaceholder` marks a quote line with no text.
+  static let quoteBar = NSAttributedString.Key("quoteBar")
+  static let quotePlaceholder = NSAttributedString.Key("quotePlaceholder")
   /// Line height as a multiple of the font's own, for prose and for code,
   /// and the gap between paragraphs: together a 28pt pitch at 15pt text,
   /// matching Raycast Notes.
@@ -296,7 +349,7 @@ enum Markdown {
       ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.045)
   }
 
-  static let heading = try! NSRegularExpression(pattern: #"^(#{1,3})[ \t]+(.*)$"#, options: .anchorsMatchLines)
+  static let heading = try! NSRegularExpression(pattern: #"^(#{1,4})[ \t]+(.*)$"#, options: .anchorsMatchLines)
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
   // Possessive `[ \t]++` so "-  [ ] x" cannot backtrack to one space and
   // pass as a bullet as well as a task.
@@ -504,7 +557,7 @@ enum Markdown {
     }
 
     for match in heading.matches(in: text, range: all) where !inCode(match.range) {
-      let level = min(match.range(at: 1).length, 3) - 1
+      let level = min(match.range(at: 1).length, 4) - 1
       storage.addAttribute(.font, value: headingFonts[level], range: match.range)
       // "## " is hidden, as in Raycast Notes; the size says the level.
       let marker = match.range(at: 1)
@@ -554,11 +607,19 @@ enum Markdown {
         gap: NSRange(location: NSMaxRange(marker), length: NSMaxRange(match.range) - NSMaxRange(marker)),
         textStart: NSMaxRange(match.range))
     }
+    // A quote's ">" is hidden; the layout manager draws a bar down the
+    // left of the quote, spanning consecutive quote lines, and a hint on
+    // an empty one. The text is indented past the bar.
     for match in quote.matches(in: text, range: all) where !inCode(match.range) {
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttributes(
-        [.foregroundColor: NSColor.secondaryLabelColor,
-         .font: NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)], range: match.range(at: 2))
+      let body = match.range(at: 2)
+      collapse(NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location))
+      let line = ns.lineRange(for: match.range)
+      let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+      style.firstLineHeadIndent = quoteIndent
+      style.headIndent = quoteIndent
+      style.paragraphSpacing = 2 * zoom
+      storage.addAttributes([.paragraphStyle: style, quoteBar: true], range: line)
+      if body.length == 0 { storage.addAttribute(quotePlaceholder, value: true, range: line) }
     }
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)

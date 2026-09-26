@@ -226,6 +226,7 @@ final class NoteTextView: NSTextView {
       return
     }
     super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+    if slashMenuIsOpen, !stillSelecting { syncSlashMenu() }
   }
 
   /// End of the block's last body line (before its newline).
@@ -348,6 +349,7 @@ final class NoteTextView: NSTextView {
   override func drawBackground(in rect: NSRect) {
     super.drawBackground(in: rect)
     (layoutManager as? TaskBoxLayoutManager)?.drawCodeCards(in: rect, origin: textContainerOrigin)
+    (layoutManager as? TaskBoxLayoutManager)?.drawQuoteBars(in: rect, origin: textContainerOrigin)
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -434,6 +436,7 @@ final class NoteTextView: NSTextView {
   }
 
   override func keyDown(with event: NSEvent) {
+    if slashMenuHandles(event) { return }
     if event.keyCode == 53 {  // escape
       _ = onCommand?("hide")
       return
@@ -448,6 +451,8 @@ final class NoteTextView: NSTextView {
     case link
     case prefix(ListEditing.LinePrefix)
     case codeBlock
+    /// Plain text: drops the line's block prefix, if any.
+    case plain
   }
 
   /// ⌥⌘ and ⇧⌘ digits go by key code: with Option or Shift held the
@@ -477,6 +482,7 @@ final class NoteTextView: NSTextView {
       case 18: return .prefix(.heading(1))
       case 19: return .prefix(.heading(2))
       case 20: return .prefix(.heading(3))
+      case 21: return .prefix(.heading(4))
       case 8: return .codeBlock  // c
       default: return nil
       }
@@ -490,7 +496,7 @@ final class NoteTextView: NSTextView {
     apply(edit(for: format))
   }
 
-  private func edit(for format: Format) -> ListEditing.Edit {
+  private func edit(for format: Format) -> ListEditing.Edit? {
     let text = string
     let selection = selectedRange()
     switch format {
@@ -498,7 +504,98 @@ final class NoteTextView: NSTextView {
     case .link: return ListEditing.link(in: text, selection: selection, url: nil)
     case .prefix(let prefix): return ListEditing.setLinePrefix(in: text, cursor: selection.location, prefix: prefix)
     case .codeBlock: return ListEditing.toggleCodeBlock(in: text, selection: selection)
+    case .plain: return ListEditing.clearLinePrefix(in: text, cursor: selection.location)
     }
+  }
+
+  // MARK: Slash menu
+  //
+  // Typing "/" at the start of a line, or after a space, opens a menu of
+  // block formats under the caret. Typing on filters it; up/down, return
+  // and escape go to it while it is open. Picking an entry removes the
+  // "/query" and applies the format to the line, as one undo step.
+
+  private lazy var slashMenu = SlashMenu { [weak self] entry in self?.pickSlashEntry(entry) }
+  /// Offset of the "/" that opened the menu, while it is open.
+  private var slashStart: Int?
+
+  var slashMenuIsOpen: Bool { slashStart != nil }
+
+  private func openSlashMenu(at slash: Int) {
+    slashStart = slash
+    if slashMenu.superview == nil { addSubview(slashMenu, positioned: .above, relativeTo: nil) }
+    slashMenu.filter("")
+    positionSlashMenu()
+    slashMenu.isHidden = false
+  }
+
+  func closeSlashMenu() {
+    slashStart = nil
+    slashMenu.isHidden = true
+  }
+
+  /// Keeps the menu in step with the text: filters on what follows the
+  /// "/", closes when the caret leaves it or nothing matches.
+  private func syncSlashMenu() {
+    guard let slash = slashStart else { return }
+    let ns = string as NSString
+    let caret = selectedRange().location
+    guard selectedRange().length == 0, slash < ns.length, ns.character(at: slash) == 0x2F, caret > slash else {
+      closeSlashMenu()
+      return
+    }
+    let query = ns.substring(with: NSRange(location: slash + 1, length: caret - slash - 1))
+    guard query.rangeOfCharacter(from: .newlines) == nil, slashMenu.filter(query) else {
+      closeSlashMenu()
+      return
+    }
+    positionSlashMenu()
+  }
+
+  private func positionSlashMenu() {
+    guard let slash = slashStart, let layoutManager, let textContainer else { return }
+    let glyph = layoutManager.glyphIndexForCharacter(at: slash)
+    let fragment = layoutManager.lineFragmentRect(forGlyphAt: min(glyph, max(0, layoutManager.numberOfGlyphs - 1)), effectiveRange: nil)
+    let x = fragment.minX + (glyph < layoutManager.numberOfGlyphs ? layoutManager.location(forGlyphAt: glyph).x : 0)
+    let anchor = NSRect(x: x, y: fragment.minY, width: 1, height: fragment.height)
+      .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+    let visible = enclosingScrollView?.documentVisibleRect ?? bounds
+    slashMenu.place(below: anchor, within: visible, container: textContainer)
+  }
+
+  private func pickSlashEntry(_ entry: SlashMenu.Entry) {
+    guard let slash = slashStart, let storage = textStorage else { return }
+    let caret = selectedRange().location
+    closeSlashMenu()
+    let typed = NSRange(location: slash, length: max(0, caret - slash))
+    guard NSMaxRange(typed) <= storage.length else { return }
+    breakUndoCoalescing()
+    undoManager?.beginUndoGrouping()
+    if shouldChangeText(in: typed, replacementString: "") {
+      storage.replaceCharacters(in: typed, with: "")
+      setSelectedRange(NSRange(location: slash, length: 0))
+      didChangeText()
+    }
+    apply(edit(for: entry.format))
+    undoManager?.endUndoGrouping()
+  }
+
+  /// Keys the open menu takes before the text view sees them.
+  private func slashMenuHandles(_ event: NSEvent) -> Bool {
+    guard slashMenuIsOpen else { return false }
+    switch event.keyCode {
+    case 125: slashMenu.move(by: 1)
+    case 126: slashMenu.move(by: -1)
+    case 36, 48: slashMenu.pick()  // return, tab
+    case 53: closeSlashMenu()  // escape
+    default: return false
+    }
+    return true
+  }
+
+  override func didChangeText() {
+    super.didChangeText()
+    syncSlashMenu()
   }
 
   // MARK: Typing rules
@@ -507,7 +604,9 @@ final class NoteTextView: NSTextView {
     let selection = selectedRange()
     if selection.length == 0, !hasMarkedText() {
       let text = string
-      let edit = ListEditing.codeFence(in: text, cursor: selection.location) ?? ListEditing.newline(in: text, cursor: selection.location)
+      let edit = ListEditing.codeFence(in: text, cursor: selection.location)
+        ?? ListEditing.quoteNewline(in: text, cursor: selection.location)
+        ?? ListEditing.newline(in: text, cursor: selection.location)
       if apply(edit) { return }
     }
     super.insertNewline(sender)
@@ -592,11 +691,20 @@ final class NoteTextView: NSTextView {
     super.insertText(string, replacementRange: replacementRange)
     let typed = (string as? String) ?? (string as? NSAttributedString)?.string
     // Programmatic replacements (the task box toggle) pass a non-empty range.
-    guard typed == " ", replacementRange.location == NSNotFound || replacementRange.length == 0,
-      !hasMarkedText()
-    else { return }
+    guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
+    if typed == "/", !slashMenuIsOpen, selection.location > 0 {
+      let ns = self.string as NSString
+      let before = selection.location - 1
+      let lineStart = ns.lineRange(for: NSRange(location: before, length: 0)).location
+      let previous = before > lineStart ? ns.character(at: before - 1) : 0x20
+      if previous == 0x20 || previous == 0x09, !ListEditing.insideFence(self.string, cursor: before) {
+        openSlashMenu(at: before)
+      }
+      return
+    }
+    guard typed == " " else { return }
     apply(ListEditing.afterSpace(in: self.string, cursor: selection.location))
   }
 

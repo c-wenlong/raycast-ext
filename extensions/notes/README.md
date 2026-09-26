@@ -28,6 +28,7 @@ Inside the window:
 | Keys | Action |
 |---|---|
 | `⌘K` | action palette: type to filter, `↑` `↓` to move, `↩` to run |
+| `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (the `#` heading becomes the title and filename) |
 | `⌘D` | duplicate note |
@@ -41,8 +42,8 @@ Inside the window:
 | `⌘W` or `Esc` | hide |
 | `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again to remove |
 | `⌘L` | link the selection, caret between the `()` |
-| `⌥⌘1` / `⌥⌘2` / `⌥⌘3` | heading 1 / 2 / 3; again to remove |
-| `⇧⌘B` | quote the line |
+| `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
+| `⇧⌘B` | quote the line; `↩` continues the quote, `↩` on an empty quote line ends it |
 | `⇧⌘7` / `⇧⌘8` / `⇧⌘9` | numbered / bullet / task item |
 | `⌥⌘C` | wrap the lines in a code block, or unwrap the block the caret is in |
 | `[]` then `Space` | start a task, `- [ ] ` |
@@ -56,8 +57,8 @@ Inside the window:
 
 The file stays raw markdown, but the window never shows the markers:
 headings, bold, italic, strike, code, quotes, links, list markers and task
-boxes are styled in place and the `#`, `**`, `_`, backticks and `- ` are
-collapsed. The caret skips over them, Backspace and Delete look through
+boxes are styled in place and the `#`, `>`, `**`, `_`, backticks and `- ` are
+collapsed (a quote shows as a bar down its left, spanning its lines). The caret skips over them, Backspace and Delete look through
 them to the styled text, and a pair left empty disappears, so styled text
 is removed by removing the text. Edits save 0.4s after you stop typing, and
 the window reloads a note that another program changes.
