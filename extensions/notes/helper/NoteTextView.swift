@@ -52,34 +52,80 @@ final class NoteTextView: NSTextView {
   // in the direction it was moving. Backspace and Delete look through a
   // run to the character beyond it, and a pair left empty disappears.
 
+  private struct HiddenRun {
+    let range: NSRange
+    let role: Markdown.HiddenRole
+  }
+
+  /// The collapsed run covering character `index`, if any. Runs with
+  /// different roles that touch each other are reported separately.
+  private func hiddenRun(at index: Int) -> HiddenRun? {
+    guard let storage = textStorage, index >= 0, index < storage.length else { return nil }
+    var run = NSRange(location: NSNotFound, length: 0)
+    guard let raw = storage.attribute(Markdown.hiddenRun, at: index, longestEffectiveRange: &run, in: NSRange(location: 0, length: storage.length)) as? String,
+      let role = Markdown.HiddenRole(rawValue: raw)
+    else { return nil }
+    return HiddenRun(range: run, role: role)
+  }
+
   /// The collapsed run that `location` is strictly inside, if any.
   private func hiddenRun(strictlyContaining location: Int) -> NSRange? {
-    guard let storage = textStorage, location > 0, location < storage.length else { return nil }
-    var run = NSRange(location: NSNotFound, length: 0)
-    guard storage.attribute(Markdown.hiddenRun, at: location, longestEffectiveRange: &run, in: NSRange(location: 0, length: storage.length)) != nil,
-      run.location < location, NSMaxRange(run) > location
-    else { return nil }
-    return run
+    guard location > 0, let run = hiddenRun(at: location), run.range.location < location else { return nil }
+    return run.range
   }
 
   /// The collapsed run that ends exactly at `location`, if any.
-  private func hiddenRun(endingAt location: Int) -> NSRange? {
-    guard let storage = textStorage, location > 0, location <= storage.length else { return nil }
-    var run = NSRange(location: NSNotFound, length: 0)
-    guard storage.attribute(Markdown.hiddenRun, at: location - 1, longestEffectiveRange: &run, in: NSRange(location: 0, length: storage.length)) != nil,
-      NSMaxRange(run) == location
-    else { return nil }
+  private func hiddenRun(endingAt location: Int) -> HiddenRun? {
+    guard location > 0, let run = hiddenRun(at: location - 1), NSMaxRange(run.range) == location else { return nil }
     return run
   }
 
   /// The collapsed run that starts exactly at `location`, if any.
-  private func hiddenRun(startingAt location: Int) -> NSRange? {
-    guard let storage = textStorage, location >= 0, location < storage.length else { return nil }
-    var run = NSRange(location: NSNotFound, length: 0)
-    guard storage.attribute(Markdown.hiddenRun, at: location, longestEffectiveRange: &run, in: NSRange(location: 0, length: storage.length)) != nil,
-      run.location == location
-    else { return nil }
+  private func hiddenRun(startingAt location: Int) -> HiddenRun? {
+    guard let run = hiddenRun(at: location), run.range.location == location else { return nil }
     return run
+  }
+
+  /// The partner of an opening or closing run on the same line: the next
+  /// closing run after an opening one, the previous opening run before a
+  /// closing one.
+  private func partner(of run: HiddenRun) -> NSRange? {
+    guard let storage = textStorage, run.role != .line else { return nil }
+    let ns = string as NSString
+    let line = ns.lineRange(for: run.range)
+    var found: NSRange?
+    if run.role == .open {
+      let after = NSRange(location: NSMaxRange(run.range), length: NSMaxRange(line) - NSMaxRange(run.range))
+      storage.enumerateAttribute(Markdown.hiddenRun, in: after) { value, range, stop in
+        if (value as? String) == Markdown.HiddenRole.close.rawValue { found = range; stop.pointee = true }
+      }
+    } else {
+      let before = NSRange(location: line.location, length: run.range.location - line.location)
+      storage.enumerateAttribute(Markdown.hiddenRun, in: before) { value, range, _ in
+        if (value as? String) == Markdown.HiddenRole.open.rawValue { found = range }
+      }
+    }
+    return found
+  }
+
+  /// A selection about to be replaced grows to cover any marker run it
+  /// touches and that run's partner, so no half of a pair survives alone.
+  private func selectionCoveringPairs(_ selection: NSRange) -> NSRange {
+    guard let storage = textStorage, selection.length > 0 else { return selection }
+    var result = selection
+    var changed = true
+    while changed {
+      changed = false
+      storage.enumerateAttribute(Markdown.hiddenRun, in: result) { value, range, _ in
+        guard let raw = value as? String, let role = Markdown.HiddenRole(rawValue: raw), role != .line else { return }
+        let run = HiddenRun(range: range, role: role)
+        for extra in [range, partner(of: run)].compactMap({ $0 }) {
+          let union = NSUnionRange(result, extra)
+          if union != result { result = union; changed = true }
+        }
+      }
+    }
+    return result
   }
 
   private var lastCaret = 0
@@ -210,10 +256,19 @@ final class NoteTextView: NSTextView {
       selection.location + 1 == closing.location {
       return  // the newline before the closing fence belongs to the block
     }
-    if selection.length == 0, let run = hiddenRun(startingAt: selection.location) {
+    if selection.length > 0 {
+      setSelectedRange(selectionCoveringPairs(selection))
+      super.deleteForward(sender)
+      return
+    }
+    if let run = hiddenRun(startingAt: selection.location) {
       // Look through the marker: delete the first character after it.
-      let after = NSMaxRange(run)
-      guard after < (string as NSString).length else { return }
+      let after = NSMaxRange(run.range)
+      if after >= (string as NSString).length || hiddenRun(startingAt: after)?.role == .close {
+        // Nothing but the pair itself: remove it.
+        removeEmptyPair(around: selection.location)
+        return
+      }
       setSelectedRange(NSRange(location: after, length: 0))
       super.deleteForward(sender)
       removeEmptyPair(around: selectedRange().location)
@@ -411,22 +466,35 @@ final class NoteTextView: NSTextView {
       }
       if apply(ListEditing.backspace(in: string, cursor: selection.location)) { return }
       if let run = hiddenRun(endingAt: selection.location) {
-        let ns = string as NSString
-        let lineStart = ns.lineRange(for: NSRange(location: run.location, length: 0)).location
-        if run.location == lineStart {
+        switch run.role {
+        case .line:
           // A line-start marker (heading): remove the whole marker.
-          guard shouldChangeText(in: run, replacementString: "") else { return }
-          textStorage?.replaceCharacters(in: run, with: "")
+          guard shouldChangeText(in: run.range, replacementString: "") else { return }
+          textStorage?.replaceCharacters(in: run.range, with: "")
           didChangeText()
-          setSelectedRange(NSRange(location: run.location, length: 0))
-          return
+          setSelectedRange(NSRange(location: run.range.location, length: 0))
+        case .open:
+          // Caret at the start of styled text: delete the character before
+          // the pair, or nothing at the start of a line.
+          let lineStart = (string as NSString).lineRange(for: NSRange(location: run.range.location, length: 0)).location
+          guard run.range.location > lineStart else { return }
+          setSelectedRange(NSRange(location: run.range.location, length: 0))
+          super.deleteBackward(sender)
+          setSelectedRange(NSRange(location: selectedRange().location + run.range.length, length: 0))
+        case .close:
+          if hiddenRun(endingAt: run.range.location)?.role == .open {
+            removeEmptyPair(around: run.range.location)  // caret after an empty pair
+            return
+          }
+          // Look through the closing marker: delete the last styled character.
+          setSelectedRange(NSRange(location: run.range.location, length: 0))
+          super.deleteBackward(sender)
+          removeEmptyPair(around: selectedRange().location)
         }
-        // Look through the closing marker: delete the last styled character.
-        setSelectedRange(NSRange(location: run.location, length: 0))
-        super.deleteBackward(sender)
-        removeEmptyPair(around: selectedRange().location)
         return
       }
+    } else if selection.length > 0, !hasMarkedText() {
+      setSelectedRange(selectionCoveringPairs(selection))
     }
     super.deleteBackward(sender)
   }
@@ -435,6 +503,10 @@ final class NoteTextView: NSTextView {
   /// rewritten as a separate undo step, so ⌘Z gives back the literal text.
   /// `apply` edits the text storage directly, so this never re-enters.
   override func insertText(_ string: Any, replacementRange: NSRange) {
+    // Typing over a selection: the selection takes whole marker pairs with it.
+    if replacementRange.location == NSNotFound, selectedRange().length > 0, !hasMarkedText() {
+      setSelectedRange(selectionCoveringPairs(selectedRange()))
+    }
     super.insertText(string, replacementRange: replacementRange)
     let typed = (string as? String) ?? (string as? NSAttributedString)?.string
     // Programmatic replacements (the task box toggle) pass a non-empty range.

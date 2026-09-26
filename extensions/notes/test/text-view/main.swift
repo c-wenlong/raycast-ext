@@ -134,10 +134,45 @@ tv.setSelectedRange(NSRange(location: 3, length: 0))
 tv.deleteBackward(nil)
 check("backspace after a heading marker removes it", tv.string == "Title" && caret() == 0, "\(tv.string) \(caret())")
 load("a ****b")
+check("an empty pair is hidden", tv.textStorage!.attribute(Markdown.hiddenRun, at: 3, effectiveRange: nil) != nil)
+load("****")
+check("a rule line is not treated as an empty pair", tv.textStorage!.attribute(Markdown.hiddenRun, at: 1, effectiveRange: nil) == nil)
+
+// 9. formatting with no selection, then typing
+load("a ")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.applyFormat(.wrap("**"))
 Markdown.apply(to: tv.textStorage!)
-var emptyHidden = false
-if let v = tv.textStorage!.attribute(Markdown.hiddenRun, at: 3, effectiveRange: nil) as? Bool { emptyHidden = v }
-check("an empty pair is hidden", emptyHidden)
+check("⌘B leaves the caret between the halves", tv.string == "a ****" && caret() == 4, "\(tv.string) \(caret())")
+tv.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+check("typing fills the pair", tv.string == "a **x**", tv.string)
+load("a ****")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.moveRight(nil)
+check("right arrow enters an empty pair", caret() == 4, "\(caret())")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.deleteForward(nil)
+check("delete before a trailing empty pair removes it", tv.string == "a ", tv.string.debugDescription)
+
+// 10. backspace after an opening marker
+load("ab **bold**")
+tv.setSelectedRange(NSRange(location: 5, length: 0))
+tv.deleteBackward(nil)
+check("backspace at bold start deletes the char before the pair", tv.string == "ab**bold**" && caret() == 4, "\(tv.string) \(caret())")
+load("**bold**")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.deleteBackward(nil)
+check("backspace at bold start of a line does nothing", tv.string == "**bold**", tv.string)
+
+// 11. deleting a selection takes whole pairs
+load("a **bold** c")
+tv.setSelectedRange(NSRange(location: 0, length: 5))
+tv.deleteBackward(nil)
+check("deleting across a marker removes the whole pair", tv.string == " c", tv.string.debugDescription)
+load("a **bold** c")
+tv.setSelectedRange(NSRange(location: 4, length: 3))
+tv.insertText("z", replacementRange: NSRange(location: NSNotFound, length: 0))
+check("typing over styled text keeps the pair intact", tv.string == "a **zd** c", tv.string)
 
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")
