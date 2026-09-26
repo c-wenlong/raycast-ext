@@ -76,6 +76,8 @@ enum Markdown {
 
   static var baseFont: NSFont { NSFont.systemFont(ofSize: 15 * zoom) }
   static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 13.5 * zoom, weight: .regular) }
+  /// Width of one monospace glyph at the current zoom.
+  static var monoAdvance: CGFloat { ("-" as NSString).size(withAttributes: [.font: monoFont]).width }
   static var headingFonts: [NSFont] {
     [
       NSFont.systemFont(ofSize: 24 * zoom, weight: .bold),
@@ -132,7 +134,19 @@ enum Markdown {
       storage.addAttributes(
         [.foregroundColor: NSColor.clear, .font: monoFont, taskBox: done,
          .link: URL(string: "\(taskScheme)://toggle/\(box.location)")!], range: box)
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 2))
+      // The bullet and the space after it stay in the file (a task needs a
+      // list marker in markdown) but collapse to nothing on screen: clear
+      // colour plus a kern that cancels each glyph's advance, so the box
+      // sits where the line starts, as in Raycast Notes.
+      let bulletRange = NSRange(location: match.range(at: 2).location, length: box.location - match.range(at: 2).location)
+      if (text as NSString).substring(with: bulletRange).contains("\t") {
+        // A tab jumps to the next tab stop, which a kern cannot cancel;
+        // leave that rare form visible but dim.
+        storage.addAttribute(.foregroundColor, value: dim, range: bulletRange)
+      } else {
+        storage.addAttributes(
+          [.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: bulletRange)
+      }
       let body = match.range(at: 4)
       if done, body.location != NSNotFound, body.length > 0 {
         storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
