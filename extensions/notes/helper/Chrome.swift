@@ -34,6 +34,10 @@ final class ChromeButton: NSButton {
   var cornerRadius: CGFloat = 7
   var fill: NSColor = .clear
   var stroke: NSColor?
+  /// Draws a small chevron at the right, for buttons that open a menu.
+  var showsChevron = false {
+    didSet { needsDisplay = true }
+  }
   private var hovering = false {
     didSet { needsDisplay = true }
   }
@@ -101,6 +105,30 @@ final class ChromeButton: NSButton {
       path.stroke()
     }
     super.draw(dirtyRect)
+    if showsChevron {
+      // Symbol sits left of centre; the chevron goes in the right 12pt.
+      let chevron = NSBezierPath()
+      let x = bounds.maxX - 11
+      let y = bounds.midY
+      // Points down (the view is flipped, so larger y is lower).
+      let down: CGFloat = isFlipped ? 1.5 : -1.5
+      chevron.move(to: NSPoint(x: x - 3, y: y - down))
+      chevron.line(to: NSPoint(x: x, y: y + down))
+      chevron.line(to: NSPoint(x: x + 3, y: y - down))
+      chevron.lineWidth = 1.5
+      chevron.lineCapStyle = .round
+      NSColor.secondaryLabelColor.setStroke()
+      chevron.stroke()
+    }
+  }
+
+  /// With a chevron, keep the symbol left of centre so both fit.
+  override func layout() {
+    super.layout()
+    if showsChevron, let cell = cell as? NSButtonCell {
+      cell.imagePosition = .imageLeading
+      cell.alignment = .left
+    }
   }
 }
 
@@ -270,11 +298,152 @@ final class StatusBar {
     ])
   }
 
+  private var formatBar: FormatBar?
+
+  /// Shows the floating bar in place of the count and the "T" button.
+  func showFormatBar(apply: @escaping (NoteTextView.Format) -> Void) {
+    guard formatBar == nil, let parent = formatButton.superview else { return }
+    let bar = FormatBar(apply: apply) { [weak self] in self?.hideFormatBar() }
+    parent.addSubview(bar)
+    NSLayoutConstraint.activate([
+      bar.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+      bar.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+      bar.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
+    ])
+    formatBar = bar
+    label.isHidden = true
+    formatButton.isHidden = true
+  }
+
+  func hideFormatBar() {
+    formatBar?.removeFromSuperview()
+    formatBar = nil
+    label.isHidden = false
+    formatButton.isHidden = false
+  }
+
+  var isFormatBarVisible: Bool { formatBar != nil }
+
   /// `position` is "2/7" or nil when the note is not in the list.
   func update(characters: Int, position: String?) {
     let count = "\(characters) character\(characters == 1 ? "" : "s")"
     label.stringValue = position.map { "\($0)  ·  \(count)" } ?? count
   }
+}
+
+// MARK: - Floating format bar
+
+/// The bar the "T" button expands into, like Raycast's: heading, text
+/// style and list menus plus link, code, code block and quote buttons in
+/// one pill at the bottom centre, with a round close button at the right.
+final class FormatBar: NSView, NSMenuDelegate {
+  static let height: CGFloat = 40
+  private let pill = PillView()
+  private let closeButton: ChromeButton
+  private let apply: (NoteTextView.Format) -> Void
+  private let onClose: () -> Void
+  private var menus: [ObjectIdentifier: NSMenu] = [:]
+
+  private struct Slot {
+    let symbol: String
+    let label: String
+    let format: NoteTextView.Format?
+    let menu: [FormatOptions.Option]
+  }
+
+  private static let slots: [Slot] = [
+    Slot(symbol: "textformat.size", label: "Heading", format: nil, menu: FormatOptions.all.filter { ["h1", "h2", "h3"].contains($0.id) }),
+    Slot(symbol: "italic", label: "Text style", format: nil, menu: FormatOptions.all.filter { ["bold", "italic", "strike"].contains($0.id) }),
+    Slot(symbol: "link", label: "Link", format: .link, menu: []),
+    Slot(symbol: "chevron.left.forwardslash.chevron.right", label: "Code", format: .wrap("`"), menu: []),
+    Slot(symbol: "curlybraces.square", label: "Code block", format: .codeBlock, menu: []),
+    Slot(symbol: "text.quote", label: "Quote", format: .prefix(.quote), menu: []),
+    Slot(symbol: "list.bullet", label: "List", format: nil, menu: FormatOptions.all.filter { ["bullet", "ordered", "task"].contains($0.id) }),
+  ]
+
+  init(apply: @escaping (NoteTextView.Format) -> Void, onClose: @escaping () -> Void) {
+    self.apply = apply
+    self.onClose = onClose
+    closeButton = ChromeButton(symbol: "xmark", pointSize: 11, weight: .bold, label: "Close formatting")
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+
+    pill.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(pill)
+    let stack = NSStackView()
+    stack.orientation = .horizontal
+    stack.spacing = 2
+    stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    pill.addSubview(stack)
+
+    for slot in Self.slots {
+      let button = slot.label == "Heading"
+        ? ChromeButton(glyph: "H", font: NSFont.systemFont(ofSize: 14, weight: .semibold), label: slot.label)
+        : ChromeButton(symbol: slot.symbol, pointSize: 13, label: slot.label)
+      button.target = self
+      button.action = #selector(slotClicked(_:))
+      button.widthAnchor.constraint(equalToConstant: slot.menu.isEmpty ? 30 : 42).isActive = true
+      button.heightAnchor.constraint(equalToConstant: 30).isActive = true
+      if !slot.menu.isEmpty {
+        let menu = NSMenu()
+        for option in slot.menu {
+          let item = NSMenuItem(title: option.title, action: #selector(menuPicked(_:)), keyEquivalent: "")
+          item.target = self
+          item.representedObject = option.id
+          menu.addItem(item)
+        }
+        menus[ObjectIdentifier(button)] = menu
+        button.showsChevron = true
+      }
+      stack.addArrangedSubview(button)
+    }
+
+    closeButton.cornerRadius = 14
+    closeButton.fill = ChromeColors.round
+    closeButton.stroke = ChromeColors.border
+    closeButton.translatesAutoresizingMaskIntoConstraints = false
+    closeButton.target = self
+    closeButton.action = #selector(closeClicked)
+    addSubview(closeButton)
+
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
+      stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
+      stack.topAnchor.constraint(equalTo: pill.topAnchor),
+      stack.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
+      pill.centerXAnchor.constraint(equalTo: centerXAnchor),
+      pill.centerYAnchor.constraint(equalTo: centerYAnchor),
+      pill.heightAnchor.constraint(equalToConstant: Self.height - 2),
+      closeButton.widthAnchor.constraint(equalToConstant: 28),
+      closeButton.heightAnchor.constraint(equalToConstant: 28),
+      closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+      closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      heightAnchor.constraint(equalToConstant: Self.height),
+    ])
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  @objc private func slotClicked(_ sender: ChromeButton) {
+    if let menu = menus[ObjectIdentifier(sender)] {
+      let origin = NSPoint(x: 0, y: sender.bounds.height + 6)
+      menu.popUp(positioning: nil, at: origin, in: sender)
+      return
+    }
+    guard let stack = pill.subviews.first as? NSStackView,
+      let index = stack.arrangedSubviews.firstIndex(of: sender),
+      let format = Self.slots[index].format
+    else { return }
+    apply(format)
+  }
+
+  @objc private func menuPicked(_ sender: NSMenuItem) {
+    guard let id = sender.representedObject as? String, let option = FormatOptions.all.first(where: { $0.id == id }) else { return }
+    apply(option.format)
+  }
+
+  @objc private func closeClicked() { onClose() }
 }
 
 // MARK: - Formatting picker

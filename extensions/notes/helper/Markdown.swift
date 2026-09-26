@@ -279,7 +279,10 @@ enum Markdown {
     }
   }
 
-  static func apply(to storage: NSTextStorage) {
+  /// `revealing` is the line the caret is on: inline markers (`**`, `_`,
+  /// `~~`, backticks, link brackets and targets) show dimmed there so the
+  /// markdown can be edited, and collapse to nothing everywhere else.
+  static func apply(to storage: NSTextStorage, revealing: NSRange? = nil) {
     let text = storage.string
     let all = fullRange(text)
     let dim = NSColor.tertiaryLabelColor
@@ -439,11 +442,22 @@ enum Markdown {
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)
     }
+    // Inline markers: dimmed on the caret's line, collapsed elsewhere.
+    let mono = monoFont
+    let collapseKern = -monoAdvance
+    func marker(_ range: NSRange) {
+      guard range.location != NSNotFound, range.length > 0 else { return }
+      if let reveal = revealing, NSIntersectionRange(reveal, range).length > 0 || NSLocationInRange(range.location, reveal) {
+        storage.addAttribute(.foregroundColor, value: dim, range: range)
+      } else {
+        storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern], range: range)
+      }
+    }
     for match in bold.matches(in: text, range: all) where !inCode(match.range) {
       let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
       storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .boldFontMask), range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length))
     }
     // "**bold**" also matches the italic pattern as "*" + "*bold*" + "*";
     // an italic marker that is part of a bold marker is not one.
@@ -456,36 +470,40 @@ enum Markdown {
       guard !inBoldMarker(match.range.location), !inBoldMarker(NSMaxRange(match.range) - 1) else { continue }
       let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
       storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .italicFontMask), range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - 1, length: 1))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1))
     }
     for match in strike.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - 2, length: 2))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - 2, length: 2))
     }
     for match in code.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttributes(
         [.font: monoFont, .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.18)], range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - 1, length: 1))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1))
     }
     for match in link.matches(in: text, range: all) where !inCode(match.range) {
       let target = (text as NSString).substring(with: match.range(at: 4))
-      for index in [1, 3, 5] {
-        storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: index))
-      }
+      marker(match.range(at: 1))
+      // "](url)" collapses as one run
+      marker(NSRange(location: match.range(at: 3).location, length: NSMaxRange(match.range(at: 5)) - match.range(at: 3).location))
       storage.addAttributes([.foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 4))
       if let url = URL(string: target) {
         storage.addAttribute(.link, value: url, range: match.range(at: 2))
       }
     }
     for match in bareURL.matches(in: text, range: all) where !inCode(match.range) {
-      let target = (text as NSString).substring(with: match.range)
+      // Trailing sentence punctuation is prose, not part of the address.
+      var range = match.range
+      while range.length > 0, ".,;:!?'\"".contains(Character(UnicodeScalar((text as NSString).character(at: NSMaxRange(range) - 1))!)) {
+        range.length -= 1
+      }
+      let target = (text as NSString).substring(with: range)
       guard let url = URL(string: target) else { continue }
       storage.addAttributes(
-        [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range)
+        [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: range)
     }
     storage.endEditing()
 

@@ -15,7 +15,6 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var palette: ActionPalette!
   private var zoomHUD: ZoomHUD!
   private var codeBlocks: CodeBlockOverlay!
-  private var formatPicker: ActionPalette!
   private var titlebarChrome: TitlebarChrome!
   private var statusBar: StatusBar!
   private static let baseTextInset = NSSize(width: 18, height: 16)
@@ -219,9 +218,6 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     ]) { [weak self] command in
       self?.handle(command)
     }
-    formatPicker = ActionPalette(actions: FormatOptions.paletteActions) { [weak self] command in
-      self?.handle(command)
-    }
   }
 
   // MARK: Commands
@@ -250,11 +246,14 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     case "toggle-task":
       toggleTaskOnCurrentLine()
     case "palette":
-      formatPicker.hide()
       palette.isVisible ? palette.hide() : palette.show(over: panel)
     case "format":
       palette.hide()
-      formatPicker.isVisible ? formatPicker.hide() : formatPicker.show(over: panel)
+      if statusBar.isFormatBarVisible {
+        statusBar.hideFormatBar()
+      } else {
+        statusBar.showFormatBar { [weak self] format in self?.applyFormat(format) }
+      }
     case "duplicate":
       duplicateNote()
     case "find":
@@ -301,7 +300,6 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   private func hide() {
     palette.hide()
-    formatPicker.hide()
     codeBlocks.closePicker()
     saveNow()
     panel.orderOut(nil)
@@ -574,10 +572,24 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   // MARK: Editing helpers
 
+  /// Line the caret was on at the last restyle; markers are revealed there.
+  private var revealedLine = NSRange(location: NSNotFound, length: 0)
+
+  private func caretLine() -> NSRange {
+    (textView.string as NSString).lineRange(for: NSRange(location: textView.selectedRange().location, length: 0))
+  }
+
+  /// Moving the caret to another line changes which markers are shown.
+  func textViewDidChangeSelection(_ notification: Notification) {
+    guard textView.isEditable, caretLine() != revealedLine else { return }
+    restyle()
+  }
+
   func restyle() {
     guard let storage = textView.textStorage else { return }
     let selection = textView.selectedRange()
-    Markdown.apply(to: storage)
+    revealedLine = caretLine()
+    Markdown.apply(to: storage, revealing: revealedLine)
     textView.setSelectedRange(selection)
     textView.typingAttributes = [.font: Markdown.baseFont, .foregroundColor: NSColor.labelColor]
     codeBlocks?.update()
