@@ -330,5 +330,28 @@ do {
   check("⌘L with no selection puts the caret in the brackets", text == "a[]()b" && cursor == 2, "\(text) \(cursor)")
 }
 
+// renumbering stays local to the edited run
+
+do {
+  let src = "1. one\nplain\n2. two"
+  let (text, _) = applied(src, ListEditing.newline(in: src, cursor: 6))!
+  check("enter does not renumber a list past a plain line", text == "1. one\n2. \nplain\n2. two", text)
+}
+do {
+  let src = "5. a\n\n1. one"
+  let (text, _) = applied(src, ListEditing.newline(in: src, cursor: cursorAtEnd(src)))!
+  check("blank-separated earlier list untouched", text == "5. a\n\n1. one\n2. ", text)
+}
+do {
+  let src = "1. one\n2. \n3. three"
+  let (text, _) = applied(src, ListEditing.newline(in: src, cursor: 10))!
+  check("ending a list restarts the one after it", text == "1. one\n\n1. three", text)
+}
+do {
+  let edit = ListEditing.link(in: "text", selection: NSRange(location: 0, length: 4), url: "https://en.wikipedia.org/wiki/Function_(mathematics)")
+  let (text, _) = applied("text", edit)!
+  check("parentheses in a pasted url are encoded", text == "[text](https://en.wikipedia.org/wiki/Function_%28mathematics%29)", text)
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

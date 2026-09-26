@@ -164,10 +164,31 @@ enum ListEditing {
 
   /// Rewrites the block around `lineIndex` with `newLines`, renumbered, and
   /// maps `cursorLine`/`cursorColumn` (inside newLines) to a text offset.
+  /// Renumbers only the runs of consecutive list lines that touch the
+  /// edited line (or its neighbours, for a line that just stopped being an
+  /// item), so numbers elsewhere in the block are left alone.
+  static func renumberAround(_ lines: [String], line: Int) -> [String] {
+    var result = lines
+    var index = 0
+    while index < lines.count {
+      guard parse(line: lines[index]) != nil else {
+        index += 1
+        continue
+      }
+      var end = index
+      while end + 1 < lines.count, parse(line: lines[end + 1]) != nil { end += 1 }
+      if index <= line + 1, end >= line - 1 {
+        result.replaceSubrange(index...end, with: renumber(Array(lines[index...end])))
+      }
+      index = end + 1
+    }
+    return result
+  }
+
   private static func apply(
     block: ClosedRange<Int>, in lines: [Line], newLines: [String], cursorLine: Int, cursorColumn: Int, eol: String
   ) -> Edit {
-    let renumbered = renumber(newLines)
+    let renumbered = renumberAround(newLines, line: cursorLine)
     let start = lines[block.lowerBound].range.location
     let end = NSMaxRange(lines[block.upperBound].range)
     var cursor = start
@@ -433,7 +454,12 @@ enum ListEditing {
   /// brackets when nothing was selected.
   static func link(in text: String, selection: NSRange, url: String?) -> Edit {
     let selected = (text as NSString).substring(with: selection)
-    let replacement = "[\(selected)](\(url ?? ""))"
+    // Parentheses and spaces would end the target early, so encode them.
+    let target = (url ?? "")
+      .replacingOccurrences(of: "(", with: "%28")
+      .replacingOccurrences(of: ")", with: "%29")
+      .replacingOccurrences(of: " ", with: "%20")
+    let replacement = "[\(selected)](\(target))"
     let cursor: Int
     if url != nil {
       cursor = selection.location + (replacement as NSString).length
