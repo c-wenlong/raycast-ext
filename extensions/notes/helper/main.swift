@@ -630,6 +630,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    saveNow()
+    return .terminateNow
+  }
+
   /// Accessory apps start without a menu bar, and without one the Edit
   /// key equivalents (⌘Z, ⌘C, ⌘V, ⌘A...) have nothing to route to.
   private func installMainMenu() {
