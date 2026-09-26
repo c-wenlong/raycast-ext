@@ -1,5 +1,5 @@
 // Renders the real notes panel (controls, cards, boxes) to a PNG without
-// touching the running instance: `npm run render-panel -- <note.md> <out.png> [caret]`.
+// touching the running instance: `npm run render-panel -- <note.md> <out.png> [caret] [command,command]` (either optional, any order).
 // The window is moved off screen and its frame autosave is disabled first.
 
 import AppKit
@@ -22,12 +22,21 @@ panel.setFrameAutosaveName("")
 panel.setFrame(NSRect(x: -3000, y: -3000, width: 560, height: 480), display: false)
 controller.handle("open \(notePath)")
 panel.setFrameOrigin(NSPoint(x: -3000, y: -3000))
-if args.count >= 3, let caret = Int(args[2]), let textView = panel.contentView?.subviews.compactMap({ ($0 as? NSScrollView)?.documentView as? NSTextView }).first {
+// Remaining arguments: an integer is the caret offset, anything else a
+// comma-separated list of commands, in any order. The caret is always
+// placed first so commands that edit at the caret land where asked.
+let extras = Array(args.dropFirst(2))
+if let caret = extras.compactMap({ Int($0) }).first,
+  let textView = panel.contentView?.subviews.compactMap({ ($0 as? NSScrollView)?.documentView as? NSTextView }).first {
   textView.setSelectedRange(NSRange(location: caret, length: 0))
   textView.scrollRangeToVisible(textView.selectedRange())
 }
+for extra in extras where Int(extra) == nil {
+  for command in extra.split(separator: ",") { controller.handle(String(command)) }
+}
 RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-let view = panel.contentView!
+// The whole window frame (title bar included), not just the content view.
+let view = panel.contentView!.superview ?? panel.contentView!
 let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
 view.cacheDisplay(in: view.bounds, to: rep)
 try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args[1]))

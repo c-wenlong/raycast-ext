@@ -37,6 +37,10 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       _ = storage.attribute(Markdown.taskBox, at: range.location, longestEffectiveRange: &box, in: window)
       drawTaskBox(characters: box, done: done, origin: origin)
     }
+    storage.enumerateAttribute(Markdown.bulletDot, in: chars) { value, range, _ in
+      guard value != nil else { return }
+      drawBulletDot(characters: range, origin: origin)
+    }
   }
 
   /// Draws the code cards behind `rect` (text view coordinates), reaching
@@ -108,6 +112,26 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       width: container.size.width + outset * 2, height: max(0, bottom - first.minY))
   }
 
+  /// A filled accent circle centred on the (clear) list marker, at the
+  /// height of the body font's lowercase letters, like a typeset bullet.
+  private func drawBulletDot(characters: NSRange, origin: NSPoint) {
+    let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+    guard glyphs.location != NSNotFound, glyphs.length > 0,
+      let container = textContainer(forGlyphAt: glyphs.location, effectiveRange: nil)
+    else { return }
+    let span = boundingRect(forGlyphRange: glyphs, in: container)
+    let line = lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+    let baseline = origin.y + line.minY + location(forGlyphAt: glyphs.location).y
+    let font = Markdown.baseFont
+    let diameter = Markdown.bulletDotDiameter
+    let center = NSPoint(x: origin.x + span.midX, y: baseline - font.xHeight / 2)
+    NSGraphicsContext.saveGraphicsState()
+    Markdown.accent.setFill()
+    NSBezierPath(ovalIn: NSRect(
+      x: center.x - diameter / 2, y: center.y - diameter / 2, width: diameter, height: diameter)).fill()
+    NSGraphicsContext.restoreGraphicsState()
+  }
+
   private func drawTaskBox(characters: NSRange, done: Bool, origin: NSPoint) {
     let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
     guard glyphs.location != NSNotFound, glyphs.length > 0,
@@ -149,6 +173,10 @@ enum Markdown {
   static let accent = NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 1)
   /// Marks a task's "[ ]" / "[x]" characters; the value is `true` when done.
   static let taskBox = NSAttributedString.Key("taskBox")
+  /// Marks the (clear) "-", "*" or "+" of a bullet item, which
+  /// TaskBoxLayoutManager draws as a round dot.
+  static let bulletDot = NSAttributedString.Key("bulletDot")
+  static var bulletDotDiameter: CGFloat { 5 * zoom }
 
   static var baseFont: NSFont { NSFont.systemFont(ofSize: 15 * zoom) }
   static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 13.5 * zoom, weight: .regular) }
@@ -158,9 +186,20 @@ enum Markdown {
     [
       NSFont.systemFont(ofSize: 24 * zoom, weight: .bold),
       NSFont.systemFont(ofSize: 20 * zoom, weight: .bold),
-      NSFont.systemFont(ofSize: 17 * zoom, weight: .semibold),
+      NSFont.systemFont(ofSize: 17 * zoom, weight: .bold),
     ]
   }
+  /// Space above H1, H2, H3 before zoom.
+  static let headingSpaceBefore: [CGFloat] = [18, 14, 10]
+  /// Line height as a multiple of the font's own, for prose and for code.
+  static let bodyLineHeight: CGFloat = 1.25
+  static let codeLineHeight: CGFloat = 1.15
+  /// On-screen width of one space of list indentation, so a nested item
+  /// sits under its parent's text rather than a few pixels in.
+  static var indentSpaceWidth: CGFloat { 6 * zoom }
+  /// Height of a blank line between blocks (not the one the caret is on).
+  static var blankLineHeight: CGFloat { (10 * zoom).rounded() }
+  static let blankLine = try! NSRegularExpression(pattern: #"^[ \t]*$"#, options: .anchorsMatchLines)
   static let taskScheme = "notes-task"
 
   /// Marks every character of a fenced code block, opening fence line
@@ -183,7 +222,9 @@ enum Markdown {
 
   static let heading = try! NSRegularExpression(pattern: #"^(#{1,3})[ \t]+(.*)$"#, options: .anchorsMatchLines)
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
-  static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]+(?!\[[ xX]\])"#, options: .anchorsMatchLines)
+  // Possessive `[ \t]++` so "-  [ ] x" cannot backtrack to one space and
+  // pass as a bullet as well as a task.
+  static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
   static let quote = try! NSRegularExpression(pattern: #"^(>)[ \t]?(.*)$"#, options: .anchorsMatchLines)
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?(?:^ {0,3}(?:\1`*|\2~*)[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
@@ -238,13 +279,16 @@ enum Markdown {
     }
   }
 
-  static func apply(to storage: NSTextStorage) {
+  /// `revealing` is the line the caret is on: inline markers (`**`, `_`,
+  /// `~~`, backticks, link brackets and targets) show dimmed there so the
+  /// markdown can be edited, and collapse to nothing everywhere else.
+  static func apply(to storage: NSTextStorage, revealing: NSRange? = nil) {
     let text = storage.string
     let all = fullRange(text)
     let dim = NSColor.tertiaryLabelColor
     let paragraph = NSMutableParagraphStyle()
-    paragraph.lineSpacing = 3
-    paragraph.paragraphSpacing = 4
+    paragraph.lineHeightMultiple = bodyLineHeight
+    paragraph.paragraphSpacing = 4 * zoom
 
     var hadCards = false
     if storage.length > 0 {
@@ -263,7 +307,7 @@ enum Markdown {
       let mono = monoFont
       let collapse = -monoAdvance
       let codeBody = NSMutableParagraphStyle()
-      codeBody.lineSpacing = 3
+      codeBody.lineHeightMultiple = codeLineHeight
       codeBody.defaultTabInterval = monoAdvance * 4
       codeBody.tabStops = []
       let header = NSMutableParagraphStyle()
@@ -300,10 +344,62 @@ enum Markdown {
       codeRanges.contains { NSIntersectionRange($0, range).length > 0 }
     }
 
+    let ns = text as NSString
+    // A blank line separates blocks, so it shows as a gap about the size of
+    // a paragraph break rather than a full empty line. The caret's own
+    // line keeps its full height, so typing on it never makes it jump.
+    let selection = storage.layoutManagers.first?.firstTextView?.selectedRange()
+    let caretLine = selection.map { ns.lineRange(for: NSRange(location: min($0.location, ns.length), length: 0)) }
+    let blankStyle = NSMutableParagraphStyle()
+    blankStyle.minimumLineHeight = blankLineHeight
+    blankStyle.maximumLineHeight = blankLineHeight
+    for match in blankLine.matches(in: text, range: all) {
+      let line = ns.lineRange(for: match.range)
+      guard line.length > 0, line != caretLine, !inCode(line) else { continue }
+      storage.addAttribute(.paragraphStyle, value: blankStyle, range: line)
+    }
+
+    // Markers that stay in the file but take no room on screen: clear
+    // colour plus a kern cancelling each monospace glyph's advance, so the
+    // text starts where the marker did. A tab jumps to the next tab stop,
+    // which a kern cannot cancel; such a run stays visible but dim.
+    func collapse(_ range: NSRange) {
+      guard range.length > 0 else { return }
+      if ns.substring(with: range).contains("\t") {
+        storage.addAttribute(.foregroundColor, value: dim, range: range)
+      } else {
+        storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: range)
+      }
+    }
+    // Leading spaces of a list item are widened to `indentSpaceWidth` each
+    // (tabs keep their tab stops), so nesting reads at a glance.
+    let spaceWidth = (" " as NSString).size(withAttributes: [.font: baseFont]).width
+    func widenIndent(_ range: NSRange) {
+      guard range.location != NSNotFound else { return }
+      for offset in 0..<range.length where ns.character(at: range.location + offset) == 0x20 {
+        storage.addAttribute(.kern, value: indentSpaceWidth - spaceWidth, range: NSRange(location: range.location + offset, length: 1))
+      }
+    }
+    // Wrapped lines of a list item line up with its text, not its marker.
+    func hang(line: NSRange, prefixEnd: Int) {
+      let prefix = NSRange(location: line.location, length: prefixEnd - line.location)
+      guard prefix.length > 0, !ns.substring(with: prefix).contains("\t") else { return }
+      let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+      style.headIndent = storage.attributedSubstring(from: prefix).size().width
+      storage.addAttribute(.paragraphStyle, value: style, range: ns.lineRange(for: line))
+    }
+
     for match in heading.matches(in: text, range: all) where !inCode(match.range) {
       let level = min(match.range(at: 1).length, 3) - 1
       storage.addAttribute(.font, value: headingFonts[level], range: match.range)
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
+      // "## " is hidden, as in Raycast Notes; the size says the level.
+      let marker = match.range(at: 1)
+      collapse(NSRange(location: marker.location, length: match.range(at: 2).location - marker.location))
+      let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+      style.lineHeightMultiple = 1.1
+      style.paragraphSpacingBefore = headingSpaceBefore[level] * zoom
+      style.paragraphSpacing = 6 * zoom
+      storage.addAttribute(.paragraphStyle, value: style, range: ns.lineRange(for: match.range))
     }
     for match in task.matches(in: text, range: all) where !inCode(match.range) {
       let box = match.range(at: 3)
@@ -317,22 +413,25 @@ enum Markdown {
       // list marker in markdown) but collapse to nothing on screen: clear
       // colour plus a kern that cancels each glyph's advance, so the box
       // sits where the line starts, as in Raycast Notes.
-      let bulletRange = NSRange(location: match.range(at: 2).location, length: box.location - match.range(at: 2).location)
-      if (text as NSString).substring(with: bulletRange).contains("\t") {
-        // A tab jumps to the next tab stop, which a kern cannot cancel;
-        // leave that rare form visible but dim.
-        storage.addAttribute(.foregroundColor, value: dim, range: bulletRange)
-      } else {
-        storage.addAttributes(
-          [.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: bulletRange)
-      }
+      collapse(NSRange(location: match.range(at: 2).location, length: box.location - match.range(at: 2).location))
+      widenIndent(match.range(at: 1))
       let body = match.range(at: 4)
       if done, body.location != NSNotFound, body.length > 0 {
         storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
       }
+      hang(line: match.range, prefixEnd: body.location != NSNotFound ? body.location : NSMaxRange(match.range))
     }
     for match in bullet.matches(in: text, range: all) where !inCode(match.range) {
-      storage.addAttribute(.foregroundColor, value: accent, range: match.range(at: 2))
+      let marker = match.range(at: 2)
+      if marker.length == 1, ns.character(at: marker.location) < 0x30 {
+        // "-", "*" or "+": the character stays (clear, one monospace glyph
+        // wide) and TaskBoxLayoutManager draws a round dot over it.
+        storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, bulletDot: true], range: marker)
+      } else {
+        storage.addAttribute(.foregroundColor, value: accent, range: marker)
+      }
+      widenIndent(match.range(at: 1))
+      hang(line: match.range, prefixEnd: NSMaxRange(match.range))
     }
     for match in quote.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
@@ -343,45 +442,71 @@ enum Markdown {
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)
     }
+    // Inline markers: dimmed on the caret's line, collapsed elsewhere.
+    let mono = monoFont
+    let collapseKern = -monoAdvance
+    func marker(_ range: NSRange) {
+      guard range.location != NSNotFound, range.length > 0 else { return }
+      if let reveal = revealing, NSIntersectionRange(reveal, range).length > 0 || NSLocationInRange(range.location, reveal) {
+        storage.addAttribute(.foregroundColor, value: dim, range: range)
+      } else {
+        storage.addAttributes([.foregroundColor: NSColor.clear, .font: mono, .kern: collapseKern], range: range)
+      }
+    }
     for match in bold.matches(in: text, range: all) where !inCode(match.range) {
       let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
       storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .boldFontMask), range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - match.range(at: 1).length, length: match.range(at: 1).length))
     }
+    // "**bold**" also matches the italic pattern as "*" + "*bold*" + "*";
+    // an italic marker that is part of a bold marker is not one.
+    let boldMarkers = bold.matches(in: text, range: all).flatMap { match -> [NSRange] in
+      let width = match.range(at: 1).length
+      return [match.range(at: 1), NSRange(location: NSMaxRange(match.range) - width, length: width)]
+    }
+    func inBoldMarker(_ location: Int) -> Bool { boldMarkers.contains { NSLocationInRange(location, $0) } }
     for match in italic.matches(in: text, range: all) where !inCode(match.range) {
+      guard !inBoldMarker(match.range.location), !inBoldMarker(NSMaxRange(match.range) - 1) else { continue }
       let current = storage.attribute(.font, at: match.range(at: 2).location, effectiveRange: nil) as? NSFont ?? baseFont
       storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: .italicFontMask), range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - 1, length: 1))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1))
     }
     for match in strike.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - 2, length: 2))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - 2, length: 2))
     }
     for match in code.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttributes(
         [.font: monoFont, .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.18)], range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 1))
-      storage.addAttribute(.foregroundColor, value: dim, range: NSRange(location: match.range.location + match.range.length - 1, length: 1))
+      marker(match.range(at: 1))
+      marker(NSRange(location: match.range.location + match.range.length - 1, length: 1))
     }
     for match in link.matches(in: text, range: all) where !inCode(match.range) {
       let target = (text as NSString).substring(with: match.range(at: 4))
-      for index in [1, 3, 5] {
-        storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: index))
-      }
+      marker(match.range(at: 1))
+      // "](url)" collapses as one run
+      marker(NSRange(location: match.range(at: 3).location, length: NSMaxRange(match.range(at: 5)) - match.range(at: 3).location))
       storage.addAttributes([.foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range(at: 2))
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 4))
       if let url = URL(string: target) {
         storage.addAttribute(.link, value: url, range: match.range(at: 2))
       }
     }
     for match in bareURL.matches(in: text, range: all) where !inCode(match.range) {
-      let target = (text as NSString).substring(with: match.range)
+      // Trailing sentence punctuation is prose, not part of the address.
+      // (GFM autolink rule; only ASCII units are checked, so a trailing
+      // emoji's surrogate half is never touched.)
+      var range = match.range
+      let trailing: Set<unichar> = Set(".,;:!?'\"".utf16)
+      while range.length > 0, trailing.contains((text as NSString).character(at: NSMaxRange(range) - 1)) {
+        range.length -= 1
+      }
+      let target = (text as NSString).substring(with: range)
       guard let url = URL(string: target) else { continue }
       storage.addAttributes(
-        [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range)
+        [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: range)
     }
     storage.endEditing()
 
