@@ -979,6 +979,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   /// Takes the on-disk text when it changed and we have nothing unsaved.
   private func reloadFromDisk(_ path: String) {
+    if !textView.isEditable {
+      // Was undecodable; if it reads as UTF-8 now, open it for real.
+      if (try? String(contentsOfFile: path, encoding: .utf8)) != nil { load(path) }
+      return
+    }
     let onDisk = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     guard onDisk != loadedText, textView.string == loadedText else { return }
     let selection = textView.selectedRange()
