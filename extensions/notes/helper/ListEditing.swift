@@ -351,11 +351,32 @@ enum ListEditing {
 
   /// True when `cursor` sits inside an open ``` or ~~~ block, where list
   /// rules must stay out of the way.
+  /// True when `cursor` sits inside a fenced block: past the start of
+  /// its opening fence line, up to the start of its closing fence line.
+  /// An opening fence that is never closed is literal text, as Markdown
+  /// draws it.
   static func insideFence(_ text: String, cursor: Int) -> Bool {
+    var inside = false
+    scanFences(text) { openStart, closeStart in
+      if cursor > openStart, cursor <= closeStart { inside = true }
+    }
+    return inside
+  }
+
+  /// True when a fence opened in `text` is never closed.
+  static func hasUnclosedFence(_ text: String) -> Bool {
+    var unclosed = false
+    scanFences(text, unclosed: { unclosed = true }) { _, _ in }
+    return unclosed
+  }
+
+  /// Walks the fence lines, reporting each closed block's opening and
+  /// closing line starts, and (once) an opening fence left unclosed.
+  private static func scanFences(_ text: String, unclosed: () -> Void = {}, block: (Int, Int) -> Void) {
     let ns = text as NSString
-    var open: String? = nil
+    var open: (marker: String, start: Int)? = nil
     var location = 0
-    while location < min(cursor, ns.length) {
+    while location < ns.length {
       var lineEnd = 0
       var contentsEnd = 0
       ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
@@ -363,15 +384,18 @@ enum ListEditing {
       if let match = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
         let marker = (line as NSString).substring(with: match.range(at: 1))
         if let current = open {
-          if marker.first == current.first, marker.count >= current.count, match.range(at: 2).length == 0 { open = nil }
+          if marker.first == current.marker.first, marker.count >= current.marker.count, match.range(at: 2).length == 0 {
+            block(current.start, location)
+            open = nil
+          }
         } else {
-          open = marker
+          open = (marker, location)
         }
       }
       if lineEnd == location { break }
       location = lineEnd
     }
-    return open != nil
+    if open != nil { unclosed() }
   }
 
   /// Enter or space right after ``` or ~~~ (optionally with a language)
@@ -387,7 +411,7 @@ enum ListEditing {
     guard let match = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length))
     else { return nil }
     // When a later fence already closes this one, it opens an existing block.
-    guard insideFence(text, cursor: ns.length) else { return nil }
+    guard hasUnclosedFence(text) else { return nil }
     let marker = (line as NSString).substring(with: match.range(at: 1))
     let trimmed = line.replacingOccurrences(of: #"[ \t]+$"#, with: "", options: .regularExpression)
     let eol = lineBreak(in: text)

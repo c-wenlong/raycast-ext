@@ -676,6 +676,15 @@ final class NoteTextView: NSTextView {
         return  // keep the opening fence; the block is one component
       }
       if apply(ListEditing.backspace(in: string, cursor: selection.location)) { return }
+      // Deleting the only character of a pair from inside it (`k` in
+      // `` `k` ``) takes the markers too, as deleting from after it does.
+      if selection.location > 0, hiddenRun(endingAt: selection.location - 1)?.role == .open,
+        hiddenRun(startingAt: selection.location)?.role == .close,
+        let removed = deleteVisibleCharacter(before: selection.location)
+      {
+        setSelectedRange(NSRange(location: removed.location, length: 0))
+        return
+      }
       if let run = hiddenRun(endingAt: selection.location) {
         switch run.role {
         case .line:
