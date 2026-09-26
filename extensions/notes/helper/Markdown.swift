@@ -21,12 +21,23 @@ final class TaskBoxLayoutManager: NSLayoutManager {
   override func fillBackgroundRectArray(
     _ rectArray: UnsafePointer<NSRect>, count rectCount: Int, forCharacterRange charRange: NSRange, color: NSColor
   ) {
-    guard let storage = textStorage, let container = textContainers.first, charRange.length > 0,
-      let origin = firstTextView?.textContainerOrigin
-    else {
+    guard let origin = firstTextView?.textContainerOrigin else {
       super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: color)
       return
     }
+    let rects = hugRects(forCharacterRange: charRange).map { $0.offsetBy(dx: origin.x, dy: origin.y) }
+    guard !rects.isEmpty else { return }
+    rects.withUnsafeBufferPointer {
+      super.fillBackgroundRectArray($0.baseAddress!, count: rects.count, forCharacterRange: charRange, color: color)
+    }
+  }
+
+  /// One rect per line fragment of `charRange`, in container coordinates:
+  /// from the hanging indent (or the first selected glyph, if later) to
+  /// the last selected glyph, as tall as the tallest font on that line's
+  /// selected part. A fragment holding only the line break gets a 2pt bar.
+  func hugRects(forCharacterRange charRange: NSRange) -> [NSRect] {
+    guard let storage = textStorage, let container = textContainers.first, charRange.length > 0 else { return [] }
     let ns = storage.string as NSString
     let glyphs = glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
     var rects: [NSRect] = []
@@ -37,32 +48,33 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       let onLine = NSIntersectionRange(fragmentGlyphs, glyphs)
       guard onLine.length > 0 else { break }
       let chars = characterRange(forGlyphRange: onLine, actualGlyphRange: nil)
-      let font = storage.attribute(.font, at: chars.location, effectiveRange: nil) as? NSFont ?? Markdown.baseFont
+      var ascent = CGFloat(0)
+      var descent = CGFloat(0)
+      storage.enumerateAttribute(.font, in: chars) { value, _, _ in
+        let font = value as? NSFont ?? Markdown.baseFont
+        ascent = max(ascent, font.ascender)
+        descent = min(descent, font.descender)
+      }
       let baseline = fragment.minY + location(forGlyphAt: onLine.location).y
-      let top = baseline - font.ascender
-      let height = font.ascender - font.descender
       var visible = onLine
       if NSMaxRange(chars) <= ns.length, ns.character(at: NSMaxRange(chars) - 1) == 0x0A { visible.length -= 1 }
       // A list line's marker is not highlighted: the fill starts where the
       // text does (the hanging indent), as in Raycast Notes.
       let style = storage.attribute(.paragraphStyle, at: chars.location, effectiveRange: nil) as? NSParagraphStyle
-      let textLeft = fragment.minX + (style?.headIndent ?? 0)
-      var rect: NSRect
+      let textLeft = fragment.minX + container.lineFragmentPadding + (style?.headIndent ?? 0)
+      let top = baseline - ascent
+      let height = ascent - descent
       if visible.length > 0 {
         let bounds = boundingRect(forGlyphRange: visible, in: container)
         let left = max(bounds.minX, textLeft)
-        rect = NSRect(x: left, y: top, width: max(0, bounds.maxX - left), height: height)
+        rects.append(NSRect(x: left, y: top, width: max(0, bounds.maxX - left), height: height))
       } else {
         let x = max(fragment.minX + location(forGlyphAt: onLine.location).x, textLeft)
-        rect = NSRect(x: x, y: top, width: 2, height: height)
+        rects.append(NSRect(x: x, y: top, width: 2, height: height))
       }
-      rects.append(rect.offsetBy(dx: origin.x, dy: origin.y))
       index = NSMaxRange(fragmentGlyphs)
     }
-    guard !rects.isEmpty else { return }
-    rects.withUnsafeBufferPointer {
-      super.fillBackgroundRectArray($0.baseAddress!, count: rects.count, forCharacterRange: charRange, color: color)
-    }
+    return rects
   }
 
   /// Draws the task boxes that fall inside `rect` (text view coordinates).
