@@ -309,9 +309,10 @@ final class StatusBar {
     label.alignment = .center
     label.translatesAutoresizingMaskIntoConstraints = false
 
-    formatButton = ChromeButton(glyph: "T", font: NSFont.systemFont(ofSize: 14, weight: .semibold), label: "Formatting")
-    formatButton.cornerRadius = 15
-    formatButton.fill = ChromeColors.round
+    // Same size and wash as the format bar's close button.
+    formatButton = ChromeButton(glyph: "T", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Formatting")
+    formatButton.cornerRadius = 12
+    formatButton.fill = ChromeColors.pill
     formatButton.stroke = ChromeColors.border
     formatButton.translatesAutoresizingMaskIntoConstraints = false
     self.onFormat = onFormat
@@ -329,10 +330,10 @@ final class StatusBar {
     NSLayoutConstraint.activate([
       label.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
       label.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
-      formatButton.widthAnchor.constraint(equalToConstant: 30),
-      formatButton.heightAnchor.constraint(equalToConstant: 30),
+      formatButton.widthAnchor.constraint(equalToConstant: 24),
+      formatButton.heightAnchor.constraint(equalToConstant: 24),
       formatButton.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -12),
-      formatButton.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -10),
+      formatButton.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -13),
     ])
   }
 
@@ -438,7 +439,7 @@ final class FormatBar: NSView, NSMenuDelegate {
     }
 
     closeButton.cornerRadius = 12
-    closeButton.fill = ChromeColors.round
+    closeButton.fill = ChromeColors.pill
     closeButton.stroke = ChromeColors.border
     closeButton.translatesAutoresizingMaskIntoConstraints = false
     closeButton.target = self
