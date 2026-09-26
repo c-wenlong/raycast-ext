@@ -141,6 +141,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
       styleMask: [.titled, .closable, .resizable, .miniaturizable, .nonactivatingPanel],
       backing: .buffered, defer: false)
+    panel.contentMinSize = NSSize(width: 420, height: 240)
     panel.level = .floating
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     panel.isReleasedWhenClosed = false

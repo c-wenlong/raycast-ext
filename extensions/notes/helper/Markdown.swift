@@ -496,8 +496,11 @@ enum Markdown {
     }
     for match in bareURL.matches(in: text, range: all) where !inCode(match.range) {
       // Trailing sentence punctuation is prose, not part of the address.
+      // (GFM autolink rule; only ASCII units are checked, so a trailing
+      // emoji's surrogate half is never touched.)
       var range = match.range
-      while range.length > 0, ".,;:!?'\"".contains(Character(UnicodeScalar((text as NSString).character(at: NSMaxRange(range) - 1))!)) {
+      let trailing: Set<unichar> = Set(".,;:!?'\"".utf16)
+      while range.length > 0, trailing.contains((text as NSString).character(at: NSMaxRange(range) - 1)) {
         range.length -= 1
       }
       let target = (text as NSString).substring(with: range)

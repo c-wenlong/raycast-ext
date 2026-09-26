@@ -1,5 +1,5 @@
 // Renders the real notes panel (controls, cards, boxes) to a PNG without
-// touching the running instance: `npm run render-panel -- <note.md> <out.png> [caret] [command,command]`.
+// touching the running instance: `npm run render-panel -- <note.md> <out.png> [caret] [command,command]` (either optional, any order).
 // The window is moved off screen and its frame autosave is disabled first.
 
 import AppKit
@@ -22,12 +22,15 @@ panel.setFrameAutosaveName("")
 panel.setFrame(NSRect(x: -3000, y: -3000, width: 560, height: 480), display: false)
 controller.handle("open \(notePath)")
 panel.setFrameOrigin(NSPoint(x: -3000, y: -3000))
-if args.count >= 3, let caret = Int(args[2]), let textView = panel.contentView?.subviews.compactMap({ ($0 as? NSScrollView)?.documentView as? NSTextView }).first {
-  textView.setSelectedRange(NSRange(location: caret, length: 0))
-  textView.scrollRangeToVisible(textView.selectedRange())
-}
-if args.count >= 4 {
-  for command in args[3].split(separator: ",") { controller.handle(String(command)) }
+// Remaining arguments: an integer is the caret offset, anything else a
+// comma-separated list of commands, in any order.
+for extra in args.dropFirst(2) {
+  if let caret = Int(extra), let textView = panel.contentView?.subviews.compactMap({ ($0 as? NSScrollView)?.documentView as? NSTextView }).first {
+    textView.setSelectedRange(NSRange(location: caret, length: 0))
+    textView.scrollRangeToVisible(textView.selectedRange())
+  } else {
+    for command in extra.split(separator: ",") { controller.handle(String(command)) }
+  }
 }
 RunLoop.main.run(until: Date().addingTimeInterval(0.4))
 // The whole window frame (title bar included), not just the content view.

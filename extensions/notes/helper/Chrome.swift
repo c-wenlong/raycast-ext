@@ -412,8 +412,11 @@ final class FormatBar: NSView, NSMenuDelegate {
       stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
       stack.topAnchor.constraint(equalTo: pill.topAnchor),
       stack.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
-      pill.centerXAnchor.constraint(equalTo: centerXAnchor),
+      { let c = pill.centerXAnchor.constraint(equalTo: centerXAnchor); c.priority = .defaultHigh; return c }(),
       pill.centerYAnchor.constraint(equalTo: centerYAnchor),
+      // Never run into the close button or off the left edge in a narrow window.
+      pill.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
+      pill.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
       pill.heightAnchor.constraint(equalToConstant: Self.height - 2),
       closeButton.widthAnchor.constraint(equalToConstant: 28),
       closeButton.heightAnchor.constraint(equalToConstant: 28),
