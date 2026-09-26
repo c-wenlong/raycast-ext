@@ -328,11 +328,14 @@ final class LinkController: NSObject {
   }
 
   /// The part of the note the text shows in: the visible rect, less the
-  /// bottom bar that floats over it.
+  /// header and bottom bar that float over it.
   private func visibleTextRect() -> NSRect {
     guard let textView else { return .zero }
     var visible = textView.visibleRect
-    visible.size.height -= textView.enclosingScrollView?.contentInsets.bottom ?? 0
+    if let insets = textView.enclosingScrollView?.contentInsets {
+      visible.origin.y += insets.top
+      visible.size.height -= insets.top + insets.bottom
+    }
     return visible
   }
 
@@ -342,8 +345,10 @@ final class LinkController: NSObject {
   @discardableResult
   private func positionBubble() -> Bool {
     guard let span = bubbleSpan, let rect = linkRect(span, near: bubbleAnchor) else { return false }
-    let size = bubble.preferredSize
     let visible = visibleTextRect()
+    // Never wider than the note: a long address truncates in its middle
+    // rather than pushing the bubble's start off the left edge.
+    let size = bubble.size(fitting: visible.width - 16)
     var origin = NSPoint(x: rect.minX - 6, y: rect.maxY + 2)
     if origin.y + size.height > visible.maxY - 4 {
       origin.y = rect.minY - 2 - size.height
@@ -572,6 +577,9 @@ final class LinkBubble: NSView {
   private let editButton = ChromeButton(symbol: "pencil", pointSize: 12, label: "Edit")
   private let copyButton = ChromeButton(symbol: "doc.on.doc", pointSize: 12, label: "Copy")
   private var buttons: [ChromeButton] { [openButton, editButton, copyButton] }
+  /// The address's own width (up to maxURLWidth), and the width it gets
+  /// after `size(fitting:)`.
+  private var naturalLabelWidth: CGFloat = 0
   private var labelWidth: CGFloat = 0
   private var copyReset: DispatchWorkItem?
 
@@ -629,11 +637,21 @@ final class LinkBubble: NSView {
   override func rightMouseDown(with event: NSEvent) {}
   override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
 
-  var preferredSize: NSSize {
-    NSSize(
-      width: Self.leading + labelWidth + Self.gap + Self.buttonSize * CGFloat(buttons.count)
-        + Self.buttonGap * CGFloat(buttons.count - 1) + Self.trailing,
-      height: Self.height)
+  /// Everything but the address: padding, gap and the buttons.
+  private var chromeWidth: CGFloat {
+    Self.leading + Self.gap + Self.buttonSize * CGFloat(buttons.count)
+      + Self.buttonGap * CGFloat(buttons.count - 1) + Self.trailing
+  }
+
+  /// The bubble's size when it may be at most `maxWidth` wide: the address
+  /// gives up width first (it truncates in the middle), the buttons never.
+  func size(fitting maxWidth: CGFloat) -> NSSize {
+    let width = max(0, min(naturalLabelWidth, floor(maxWidth - chromeWidth)))
+    if width != labelWidth {
+      labelWidth = width
+      needsLayout = true
+    }
+    return NSSize(width: chromeWidth + labelWidth, height: Self.height)
   }
 
   func setURL(_ url: String) {
@@ -641,7 +659,8 @@ final class LinkBubble: NSView {
     label.stringValue = url
     label.toolTip = url
     let natural = (url as NSString).size(withAttributes: [.font: label.font!]).width
-    labelWidth = min(ceil(natural) + 4, Self.maxURLWidth)
+    naturalLabelWidth = min(ceil(natural) + 4, Self.maxURLWidth)
+    labelWidth = naturalLabelWidth
     copyReset?.cancel()
     copyButton.image = Self.copyImage
     needsLayout = true
