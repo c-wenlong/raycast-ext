@@ -321,6 +321,8 @@ enum Markdown {
   /// A quote's text sits this far in; the bar is drawn in the gap.
   static var quoteIndent: CGFloat { 16 * zoom }
   static var quoteBarWidth: CGFloat { 3 * zoom }
+  /// Space above and below a quote (more than the paragraph gap).
+  static var quoteGap: CGFloat { 12 * zoom }
   /// Marks every character of a quote line (bar drawn by the layout
   /// manager); `quotePlaceholder` marks a quote line with no text.
   static let quoteBar = NSAttributedString.Key("quoteBar")
@@ -618,23 +620,36 @@ enum Markdown {
     // A quote's ">" is hidden; the layout manager draws a bar down the
     // left of the quote, spanning consecutive quote lines, and a hint on
     // an empty one. The text is indented past the bar.
-    for match in quote.matches(in: text, range: all) where !inCode(match.range) {
+    let quoteMatches = quote.matches(in: text, range: all).filter { !inCode($0.range) }
+    let quoteLineStarts = Set(quoteMatches.map { ns.lineRange(for: $0.range).location })
+    for match in quoteMatches {
       let body = match.range(at: 2)
       // The marker keeps the body font (each character kerned away by its
       // own width) so an empty quote line is as tall as one with text and
-      // the bar lines up the same way on both.
+      // the bar lines up the same way on both. A tab cannot be kerned
+      // away (it jumps to a tab stop), so such a marker stays, dimmed.
       let markerRange = NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location)
-      for offset in 0..<markerRange.length {
-        let character = NSRange(location: markerRange.location + offset, length: 1)
-        let width = (ns.substring(with: character) as NSString).size(withAttributes: [.font: baseFont]).width
-        storage.addAttributes(
-          [.foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
+      if ns.substring(with: markerRange).contains("\t") {
+        storage.addAttribute(.foregroundColor, value: dim, range: markerRange)
+      } else {
+        for offset in 0..<markerRange.length {
+          let character = NSRange(location: markerRange.location + offset, length: 1)
+          let width = (ns.substring(with: character) as NSString).size(withAttributes: [.font: baseFont]).width
+          storage.addAttributes(
+            [.foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
+        }
       }
+      // Lines within a quote sit close; the quote as a whole keeps the
+      // paragraph gap above and below, plus a little air.
       let line = ns.lineRange(for: match.range)
+      let previousIsQuote = line.location > 0
+        && quoteLineStarts.contains(ns.lineRange(for: NSRange(location: line.location - 1, length: 0)).location)
+      let nextIsQuote = NSMaxRange(line) < ns.length && quoteLineStarts.contains(NSMaxRange(line))
       let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
       style.firstLineHeadIndent = quoteIndent
       style.headIndent = quoteIndent
-      style.paragraphSpacing = 2 * zoom
+      style.paragraphSpacingBefore = previousIsQuote ? 0 : quoteGap
+      style.paragraphSpacing = nextIsQuote ? 2 * zoom : quoteGap
       storage.addAttributes([.paragraphStyle: style, quoteBar: true], range: line)
       if ns.substring(with: body).trimmingCharacters(in: .whitespaces).isEmpty {
         storage.addAttribute(quotePlaceholder, value: true, range: line)

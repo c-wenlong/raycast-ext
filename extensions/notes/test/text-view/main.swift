@@ -363,6 +363,11 @@ check("empty and full quote lines have the same height", abs(emptyLine.height - 
 let menu = SlashMenu { _ in }
 menu.filter("")
 menu.place(below: NSRect(x: 0, y: 100, width: 1, height: 20), within: NSRect(x: 0, y: 0, width: 400, height: 200), container: tv.textContainer!)
+load("a\n> one\n> two\nb\n>\tc")
+let firstQuote = tv.textStorage!.attribute(.paragraphStyle, at: 2, effectiveRange: nil) as! NSParagraphStyle
+let lastQuote = tv.textStorage!.attribute(.paragraphStyle, at: 8, effectiveRange: nil) as! NSParagraphStyle
+check("a quote keeps air above its first line and below its last", firstQuote.paragraphSpacingBefore == Markdown.quoteGap && lastQuote.paragraphSpacing == Markdown.quoteGap && firstQuote.paragraphSpacing == 2 * Markdown.zoom && lastQuote.paragraphSpacingBefore == 0)
+check("a tab after > stays visible rather than kerned", tv.textStorage!.attribute(Markdown.hiddenRun, at: 16, effectiveRange: nil) == nil && tv.textStorage!.attribute(Markdown.quoteBar, at: 16, effectiveRange: nil) != nil)
 check("a short window trims the menu to fit", menu.frame.maxY <= 200 && menu.frame.minY >= 0 && menu.frame.height >= 2 * SlashMenu.rowHeight, "\(menu.frame)")
 
 // 7. render a selection over task lines
