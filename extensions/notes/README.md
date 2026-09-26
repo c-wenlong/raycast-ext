@@ -28,7 +28,7 @@ Inside the window:
 | Keys | Action |
 |---|---|
 | `⌘K` | action palette: type to filter, `↑` `↓` to move, `↩` to run |
-| `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
+| `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (the `#` heading becomes the title and filename) |
 | `⌘D` | duplicate note |
@@ -44,6 +44,7 @@ Inside the window:
 | `⌘L` | link the selection, caret between the `()` |
 | `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
 | `⇧⌘B` | quote the line; `↩` continues the quote, `↩` on an empty quote line ends it |
+| `>> ` or `/callout` | callout: the lines sit in an outlined box; `↩` continues it, `↩` on an empty line ends it (a nested quote to other markdown viewers) |
 | `⇧⌘7` / `⇧⌘8` / `⇧⌘9` | numbered / bullet / task item |
 | `⌥⌘C` | wrap the lines in a code block, or unwrap the block the caret is in |
 | `[]` then `Space` | start a task, `- [ ] ` |

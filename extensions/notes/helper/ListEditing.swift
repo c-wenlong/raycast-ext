@@ -204,10 +204,11 @@ enum ListEditing {
 
   // MARK: Public operations
 
-  private static let quoteLine = try! NSRegularExpression(pattern: #"^>[ \t]?(.*)$"#)
+  private static let quoteLine = try! NSRegularExpression(pattern: #"^(>>?)[ \t]?(.*)$"#)
 
-  /// Enter on a quote line: the quote continues on the next line, or
-  /// ends when the line is empty. Nil when the cursor is not in a quote.
+  /// Enter on a quote (">") or callout (">>") line: the block continues
+  /// on the next line, or ends when the line is empty. Nil when the
+  /// cursor is not in one.
   static func quoteNewline(in text: String, cursor: Int) -> Edit? {
     guard !insideFence(text, cursor: cursor) else { return nil }
     let ns = text as NSString
@@ -216,11 +217,11 @@ enum ListEditing {
     ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
     let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
     guard let match = quoteLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else { return nil }
-    let content = (line as NSString).substring(with: match.range(at: 1))
+    let content = (line as NSString).substring(with: match.range(at: 2))
     if content.trimmingCharacters(in: .whitespaces).isEmpty {
       return Edit(range: NSRange(location: lineStart, length: contentsEnd - lineStart), replacement: "", cursor: lineStart)
     }
-    let inserted = lineBreak(in: text) + "> "
+    let inserted = lineBreak(in: text) + (line as NSString).substring(with: match.range(at: 1)) + " "
     return Edit(range: NSRange(location: cursor, length: 0), replacement: inserted, cursor: cursor + (inserted as NSString).length)
   }
 
@@ -507,12 +508,13 @@ enum ListEditing {
   }
 
   enum LinePrefix: Equatable {
-    case heading(Int), quote, bullet, ordered, task
+    case heading(Int), quote, callout, bullet, ordered, task
 
     var text: String {
       switch self {
       case .heading(let level): return String(repeating: "#", count: level) + " "
       case .quote: return "> "
+      case .callout: return ">> "
       case .bullet: return "- "
       case .ordered: return "1. "
       case .task: return "- [ ] "
@@ -521,7 +523,7 @@ enum ListEditing {
   }
 
   private static let anyPrefix = try! NSRegularExpression(
-    pattern: #"^([ \t]*)(#{1,6} |> |[-*+] \[[ xX]\] |[-*+] |\d+\. )"#)
+    pattern: #"^([ \t]*)(#{1,6} |>> |> |[-*+] \[[ xX]\] |[-*+] |\d+\. )"#)
 
   /// Sets or clears a block prefix on the current line (⌥⌘1/2/3, ⇧⌘B,
   /// ⇧⌘7/8/9). Choosing the prefix the line already has removes it.
