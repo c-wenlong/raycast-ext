@@ -359,6 +359,9 @@ enum ListEditing {
     var inside = false
     scanFences(text) { openStart, closeStart in
       if cursor > openStart, cursor <= closeStart { inside = true }
+      // Nothing that closes at or after the cursor's block can change
+      // the answer: the scan stops at the first block ending past it.
+      return closeStart < cursor
     }
     return inside
   }
@@ -366,13 +369,14 @@ enum ListEditing {
   /// True when a fence opened in `text` is never closed.
   static func hasUnclosedFence(_ text: String) -> Bool {
     var unclosed = false
-    scanFences(text, unclosed: { unclosed = true }) { _, _ in }
+    scanFences(text, unclosed: { unclosed = true }) { _, _ in true }
     return unclosed
   }
 
   /// Walks the fence lines, reporting each closed block's opening and
-  /// closing line starts, and (once) an opening fence left unclosed.
-  private static func scanFences(_ text: String, unclosed: () -> Void = {}, block: (Int, Int) -> Void) {
+  /// closing line starts (the closure returns whether to keep going),
+  /// and (once, at the end) an opening fence left unclosed.
+  private static func scanFences(_ text: String, unclosed: () -> Void = {}, block: (Int, Int) -> Bool) {
     let ns = text as NSString
     var open: (marker: String, start: Int)? = nil
     var location = 0
@@ -385,8 +389,8 @@ enum ListEditing {
         let marker = (line as NSString).substring(with: match.range(at: 1))
         if let current = open {
           if marker.first == current.marker.first, marker.count >= current.marker.count, match.range(at: 2).length == 0 {
-            block(current.start, location)
             open = nil
+            if !block(current.start, location) { return }
           }
         } else {
           open = (marker, location)
