@@ -350,6 +350,7 @@ final class NoteTextView: NSTextView {
     super.drawBackground(in: rect)
     (layoutManager as? TaskBoxLayoutManager)?.drawCodeCards(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawQuoteBars(in: rect, origin: textContainerOrigin)
+    (layoutManager as? TaskBoxLayoutManager)?.drawCalloutBoxes(in: rect, origin: textContainerOrigin)
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {

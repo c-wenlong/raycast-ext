@@ -363,6 +363,16 @@ do {
   check("Enter mid-quote carries the rest to the next quote line", mid == "> one\n>  two" && midCursor == 8, mid.debugDescription)
   let (ended, endCursor) = applied("> ", ListEditing.quoteNewline(in: "> ", cursor: 2))!
   check("Enter on an empty quote ends it", ended == "" && endCursor == 0, ended.debugDescription)
+  let (callout, calloutCursor) = applied(">> box", ListEditing.quoteNewline(in: ">> box", cursor: 6))!
+  check("Enter on a callout line continues the callout", callout == ">> box\n>> " && calloutCursor == 10, callout.debugDescription)
+  let (endedCallout, _) = applied(">> ", ListEditing.quoteNewline(in: ">> ", cursor: 3))!
+  check("Enter on an empty callout ends it", endedCallout == "", endedCallout.debugDescription)
+  let (asCallout, _) = applied("text", ListEditing.setLinePrefix(in: "text", cursor: 4, prefix: .callout))!
+  check("setLinePrefix makes a callout", asCallout == ">> text", asCallout)
+  let (fromQuote, _) = applied("> q", ListEditing.setLinePrefix(in: "> q", cursor: 3, prefix: .callout))!
+  check("a quote becomes a callout, not a nested quote", fromQuote == ">> q", fromQuote)
+  let (cleared, _) = applied(">> q", ListEditing.clearLinePrefix(in: ">> q", cursor: 4))!
+  check("clearLinePrefix drops a callout marker whole", cleared == "q", cleared)
   check("Enter off a quote line is not a quote newline", ListEditing.quoteNewline(in: "plain", cursor: 5) == nil)
   check("Enter inside a fence is not a quote newline", ListEditing.quoteNewline(in: "```\n> x", cursor: 7) == nil)
 }

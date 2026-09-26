@@ -296,6 +296,24 @@ tv.setSelectedRange(NSRange(location: 18, length: 0))
 tv.insertNewline(nil)
 check("Enter in a quote continues it", tv.string.hasPrefix("#### Four\n> quoted\n> \n> \n"), tv.string.debugDescription)
 
+// 14b. callouts
+load(">> one\n>> two\n\n>>\n> q")
+check("the >> marker is hidden", tv.textStorage!.attribute(Markdown.hiddenRun, at: 0, effectiveRange: nil) != nil && tv.textStorage!.attribute(Markdown.hiddenRun, at: 1, effectiveRange: nil) != nil)
+var calloutRun = NSRange()
+_ = tv.textStorage!.attribute(Markdown.calloutBox, at: 0, longestEffectiveRange: &calloutRun, in: NSRange(location: 0, length: tv.textStorage!.length))
+check("consecutive callout lines share one box", calloutRun == NSRange(location: 0, length: 14), "\(calloutRun)")
+let calloutStyle = tv.textStorage!.attribute(.paragraphStyle, at: 3, effectiveRange: nil) as! NSParagraphStyle
+check("callout text is inset on both sides", calloutStyle.headIndent == Markdown.calloutPad && calloutStyle.tailIndent == -Markdown.calloutPad)
+check("an empty callout line gets its placeholder", tv.textStorage!.attribute(Markdown.calloutPlaceholder, at: 15, effectiveRange: nil) != nil)
+check("a callout is not a quote", tv.textStorage!.attribute(Markdown.quoteBar, at: 3, effectiveRange: nil) == nil)
+check("a quote after a callout is still a quote", tv.textStorage!.attribute(Markdown.quoteBar, at: 18, effectiveRange: nil) != nil && tv.textStorage!.attribute(Markdown.calloutBox, at: 18, effectiveRange: nil) == nil)
+load(">>note\n>>> deep\n>\n>>")
+check("\">>note\" (no space) is neither callout nor quote, as the editing rules would not remove it", tv.textStorage!.attribute(Markdown.calloutBox, at: 2, effectiveRange: nil) == nil && tv.textStorage!.attribute(Markdown.quoteBar, at: 2, effectiveRange: nil) == nil)
+check("\">>> deep\" is neither", tv.textStorage!.attribute(Markdown.calloutBox, at: 9, effectiveRange: nil) == nil && tv.textStorage!.attribute(Markdown.quoteBar, at: 9, effectiveRange: nil) == nil)
+check("a bare > is an empty quote", tv.textStorage!.attribute(Markdown.quotePlaceholder, at: 16, effectiveRange: nil) != nil)
+check("a bare >> is an empty callout", tv.textStorage!.attribute(Markdown.calloutPlaceholder, at: 18, effectiveRange: nil) != nil)
+check("slash finds the callout", SlashMenu.matches("call").map(\.id) == ["callout"] && SlashMenu.matches("box").map(\.id) == ["callout"])
+
 // 15. slash menu
 check("slash entries match by title word prefix", SlashMenu.matches("head").map(\.id) == ["h1", "h2", "h3", "h4"])
 check("slash entries match aliases", SlashMenu.matches("todo").map(\.id) == ["task"])

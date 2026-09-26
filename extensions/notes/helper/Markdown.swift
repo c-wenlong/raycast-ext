@@ -111,7 +111,8 @@ final class TaskBoxLayoutManager: NSLayoutManager {
   /// quote line with no text. NoteTextView calls it from drawBackground.
   func drawQuoteBars(in rect: NSRect, origin: NSPoint) {
     guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
-    let band = NSRect(x: 0, y: rect.minY - origin.y, width: container.size.width, height: rect.height)
+    let reach = 2 * Markdown.zoom  // the bar's padding past its text
+    let band = NSRect(x: 0, y: rect.minY - origin.y - reach, width: container.size.width, height: rect.height + reach * 2)
     let glyphs = glyphRange(forBoundingRect: band, in: container)
     guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
     let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
@@ -156,6 +157,61 @@ final class TaskBoxLayoutManager: NSLayoutManager {
         x: origin.x + fragment.minX + container.lineFragmentPadding + Markdown.quoteIndent,
         y: baseline - font.ascender)
       ("Empty quote" as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
+    }
+  }
+
+  /// Draws the outlined box around every callout crossing `rect` (text
+  /// view coordinates), one box per run of callout lines, and "Empty
+  /// callout" on a callout line with no text. NoteTextView calls it from
+  /// drawBackground.
+  func drawCalloutBoxes(in rect: NSRect, origin: NSPoint) {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
+    // The box reaches `calloutPad` past its text, so look that far past
+    // the redraw area for callout glyphs.
+    let reach = Markdown.calloutPad + 1
+    let band = NSRect(x: 0, y: rect.minY - origin.y - reach, width: container.size.width, height: rect.height + reach * 2)
+    let glyphs = glyphRange(forBoundingRect: band, in: container)
+    guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
+    let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+    guard chars.location != NSNotFound, chars.length > 0, NSMaxRange(chars) <= storage.length else { return }
+    let whole = NSRange(location: 0, length: storage.length)
+    let font = Markdown.baseFont
+    var drawn = Set<Int>()
+    storage.enumerateAttribute(Markdown.calloutBox, in: chars) { value, range, _ in
+      guard value != nil else { return }
+      var run = range
+      _ = storage.attribute(Markdown.calloutBox, at: range.location, longestEffectiveRange: &run, in: whole)
+      guard drawn.insert(run.location).inserted else { return }
+      let runGlyphs = glyphRange(forCharacterRange: run, actualCharacterRange: nil)
+      guard runGlyphs.length > 0 else { return }
+      let firstGlyph = runGlyphs.location
+      let lastGlyph = NSMaxRange(runGlyphs) - 1
+      let first = lineFragmentRect(forGlyphAt: firstGlyph, effectiveRange: nil)
+      let last = lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+      // Padded out from the text's ascenders and descenders, full width.
+      let top = first.minY + location(forGlyphAt: firstGlyph).y - font.ascender - Markdown.calloutPad
+      let bottom = last.minY + location(forGlyphAt: lastGlyph).y - font.descender + Markdown.calloutPad
+      let box = NSRect(
+        x: origin.x + container.lineFragmentPadding, y: origin.y + top,
+        width: container.size.width - container.lineFragmentPadding * 2, height: max(0, bottom - top))
+      NSGraphicsContext.saveGraphicsState()
+      let path = NSBezierPath(
+        roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: Markdown.calloutRadius, yRadius: Markdown.calloutRadius)
+      Markdown.calloutBorder.setStroke()
+      path.lineWidth = 1
+      path.stroke()
+      NSGraphicsContext.restoreGraphicsState()
+    }
+    storage.enumerateAttribute(Markdown.calloutPlaceholder, in: chars) { value, range, _ in
+      guard value != nil else { return }
+      let glyph = glyphIndexForCharacter(at: range.location)
+      guard glyph < numberOfGlyphs else { return }
+      let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+      let baseline = origin.y + fragment.minY + location(forGlyphAt: glyph).y
+      let point = NSPoint(
+        x: origin.x + fragment.minX + container.lineFragmentPadding + Markdown.calloutPad,
+        y: baseline - font.ascender)
+      ("Empty callout" as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
     }
   }
 
@@ -327,6 +383,19 @@ enum Markdown {
   /// manager); `quotePlaceholder` marks a quote line with no text.
   static let quoteBar = NSAttributedString.Key("quoteBar")
   static let quotePlaceholder = NSAttributedString.Key("quotePlaceholder")
+  /// Marks every character of a callout line (box drawn by the layout
+  /// manager); `calloutPlaceholder` marks one with no text.
+  static let calloutBox = NSAttributedString.Key("calloutBox")
+  static let calloutPlaceholder = NSAttributedString.Key("calloutPlaceholder")
+  /// Space between a callout's text and its box, on every side, and the
+  /// air kept above and below the box.
+  static var calloutPad: CGFloat { 14 * zoom }
+  static var calloutGap: CGFloat { 10 * zoom }
+  static let calloutRadius: CGFloat = 10
+  static let calloutBorder = NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+      ? NSColor.white.withAlphaComponent(0.16) : NSColor.black.withAlphaComponent(0.14)
+  }
   /// Line height as a multiple of the font's own, for prose and for code,
   /// and the gap between paragraphs: together a 28pt pitch at 15pt text,
   /// matching Raycast Notes.
@@ -364,7 +433,13 @@ enum Markdown {
   // Possessive `[ \t]++` so "-  [ ] x" cannot backtrack to one space and
   // pass as a bullet as well as a task.
   static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
-  static let quote = try! NSRegularExpression(pattern: #"^(>)[ \t]?(.*)$"#, options: .anchorsMatchLines)
+  // A quote is "> " (or a bare ">"), a callout ">> ": the same shapes the
+  // editing rules (ListEditing) recognise, so a marker the rules would
+  // not remove is never drawn as one. A third ">" makes neither.
+  static let quote = try! NSRegularExpression(pattern: #"^(>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
+  /// A callout: ">> " lines, drawn in an outlined box (a nested quote to
+  /// other markdown viewers).
+  static let callout = try! NSRegularExpression(pattern: #"^(>>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?(?:^ {0,3}(?:\1`*|\2~*)[ \t]*$|\z)"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
@@ -617,44 +692,57 @@ enum Markdown {
         gap: NSRange(location: NSMaxRange(marker), length: NSMaxRange(match.range) - NSMaxRange(marker)),
         textStart: NSMaxRange(match.range))
     }
-    // A quote's ">" is hidden; the layout manager draws a bar down the
-    // left of the quote, spanning consecutive quote lines, and a hint on
-    // an empty one. The text is indented past the bar.
-    let quoteMatches = quote.matches(in: text, range: all).filter { !inCode($0.range) }
-    let quoteLineStarts = Set(quoteMatches.map { ns.lineRange(for: $0.range).location })
-    for match in quoteMatches {
-      let body = match.range(at: 2)
-      // The marker keeps the body font (each character kerned away by its
-      // own width) so an empty quote line is as tall as one with text and
-      // the bar lines up the same way on both. A tab cannot be kerned
-      // away (it jumps to a tab stop), so such a marker stays, dimmed.
-      let markerRange = NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location)
-      if ns.substring(with: markerRange).contains("\t") {
-        storage.addAttribute(.foregroundColor, value: dim, range: markerRange)
-      } else {
-        for offset in 0..<markerRange.length {
-          let character = NSRange(location: markerRange.location + offset, length: 1)
-          let width = (ns.substring(with: character) as NSString).size(withAttributes: [.font: baseFont]).width
-          storage.addAttributes(
-            [.foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
+    // A quote's ">" (and a callout's ">>") is hidden; the layout manager
+    // draws a bar down the left of a quote and a box around a callout,
+    // spanning consecutive lines, and a hint on an empty one. The text
+    // is indented past the bar or into the box.
+    func styleBlock(
+      _ matches: [NSTextCheckingResult], mark: NSAttributedString.Key, placeholder: NSAttributedString.Key,
+      indent: CGFloat, tail: CGFloat, gap: CGFloat
+    ) {
+      let lineStarts = Set(matches.map { ns.lineRange(for: $0.range).location })
+      for match in matches {
+        let body = match.range(at: 2)
+        // The marker keeps the body font (each character kerned away by
+        // its own width) so an empty line is as tall as one with text and
+        // the bar or box lines up the same way on both. A tab cannot be
+        // kerned away (it jumps to a tab stop), so such a marker stays, dimmed.
+        let markerRange = NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location)
+        if ns.substring(with: markerRange).contains("\t") {
+          storage.addAttribute(.foregroundColor, value: dim, range: markerRange)
+        } else {
+          for offset in 0..<markerRange.length {
+            let character = NSRange(location: markerRange.location + offset, length: 1)
+            let width = (ns.substring(with: character) as NSString).size(withAttributes: [.font: baseFont]).width
+            storage.addAttributes(
+              [.foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
+          }
+        }
+        // Lines within the block sit close; the block as a whole keeps
+        // `gap` above and below.
+        let line = ns.lineRange(for: match.range)
+        let previousInBlock = line.location > 0
+          && lineStarts.contains(ns.lineRange(for: NSRange(location: line.location - 1, length: 0)).location)
+        let nextInBlock = NSMaxRange(line) < ns.length && lineStarts.contains(NSMaxRange(line))
+        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        style.firstLineHeadIndent = indent
+        style.headIndent = indent
+        style.tailIndent = -tail
+        style.paragraphSpacingBefore = previousInBlock ? 0 : gap
+        style.paragraphSpacing = nextInBlock ? 2 * zoom : gap
+        storage.addAttributes([.paragraphStyle: style, mark: true], range: line)
+        if ns.substring(with: body).trimmingCharacters(in: .whitespaces).isEmpty {
+          storage.addAttribute(placeholder, value: true, range: line)
         }
       }
-      // Lines within a quote sit close; the quote as a whole keeps the
-      // paragraph gap above and below, plus a little air.
-      let line = ns.lineRange(for: match.range)
-      let previousIsQuote = line.location > 0
-        && quoteLineStarts.contains(ns.lineRange(for: NSRange(location: line.location - 1, length: 0)).location)
-      let nextIsQuote = NSMaxRange(line) < ns.length && quoteLineStarts.contains(NSMaxRange(line))
-      let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
-      style.firstLineHeadIndent = quoteIndent
-      style.headIndent = quoteIndent
-      style.paragraphSpacingBefore = previousIsQuote ? 0 : quoteGap
-      style.paragraphSpacing = nextIsQuote ? 2 * zoom : quoteGap
-      storage.addAttributes([.paragraphStyle: style, quoteBar: true], range: line)
-      if ns.substring(with: body).trimmingCharacters(in: .whitespaces).isEmpty {
-        storage.addAttribute(quotePlaceholder, value: true, range: line)
-      }
     }
+    styleBlock(
+      quote.matches(in: text, range: all).filter { !inCode($0.range) },
+      mark: quoteBar, placeholder: quotePlaceholder, indent: quoteIndent, tail: 0, gap: quoteGap)
+    styleBlock(
+      callout.matches(in: text, range: all).filter { !inCode($0.range) },
+      mark: calloutBox, placeholder: calloutPlaceholder, indent: calloutPad, tail: calloutPad,
+      gap: calloutPad + calloutGap)
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)
     }
