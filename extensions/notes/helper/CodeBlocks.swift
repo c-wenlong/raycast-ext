@@ -118,7 +118,11 @@ final class CodeBlockButton: NSButton {
 /// The language and copy buttons for one block. Clicks between the two
 /// buttons fall through to the text view.
 final class CodeBlockControls: NSView {
-  let languageButton = CodeBlockButton(frame: .zero)
+  let languageButton: CodeBlockButton = {
+    let button = CodeBlockButton(frame: .zero)
+    button.lineBreakMode = .byTruncatingMiddle
+    return button
+  }()
   let copyButton = CodeBlockButton(frame: .zero)
   /// Where the block's opening fence line starts; identifies the block.
   var openingLocation = 0
@@ -158,7 +162,13 @@ final class CodeBlockControls: NSView {
     return hit === self ? nil : hit
   }
 
-  var preferredWidth: CGFloat { languageWidth + Self.spacing + Self.copyWidth }
+  /// Upper bound for the language button, set by the overlay from the
+  /// card width; the title truncates in the middle beyond it.
+  var maxLanguageWidth: CGFloat = 200 {
+    didSet { if maxLanguageWidth != oldValue { needsLayout = true } }
+  }
+
+  var preferredWidth: CGFloat { min(languageWidth, maxLanguageWidth) + Self.spacing + Self.copyWidth }
 
   func setLanguage(_ word: String) {
     guard word != language else { return }
@@ -171,7 +181,7 @@ final class CodeBlockControls: NSView {
 
   override func layout() {
     super.layout()
-    languageButton.frame = NSRect(x: 0, y: 0, width: languageWidth, height: bounds.height)
+    languageButton.frame = NSRect(x: 0, y: 0, width: min(languageWidth, maxLanguageWidth), height: bounds.height)
     copyButton.frame = NSRect(
       x: bounds.width - Self.copyWidth, y: 0, width: Self.copyWidth, height: bounds.height)
   }
@@ -268,7 +278,12 @@ final class CodeBlockOverlay: NSObject {
       let height = CodeBlockControls.height
       // Centred in a tall opening line; never closer than topMargin to the top.
       let top = line.minY + max(Self.topMargin, (line.height - height) / 2)
-      let width = view.preferredWidth
+      // Never wider than the card: a long fence word truncates instead of
+      // pushing the controls past the visible edge.
+      let cardLeft = origin.x - Self.cardOutset + Self.edgeMargin
+      let maxWidth = max(CodeBlockControls.copyWidth + CodeBlockControls.spacing + 40, right - cardLeft)
+      view.maxLanguageWidth = maxWidth - CodeBlockControls.copyWidth - CodeBlockControls.spacing
+      let width = min(view.preferredWidth, maxWidth)
       let frame = NSRect(x: (right - width).rounded(), y: top.rounded(), width: width, height: height)
       if view.frame != frame {
         view.frame = frame

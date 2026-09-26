@@ -83,9 +83,8 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     let text = storage.string as NSString
     let openingLine = text.lineRange(for: NSRange(location: characters.location, length: 0))
     let lastLine = text.lineRange(for: NSRange(location: NSMaxRange(characters) - 1, length: 0))
-    let lastText = text.substring(with: lastLine).trimmingCharacters(in: .whitespacesAndNewlines)
     let closed = lastLine.location > openingLine.location
-      && lastText.range(of: #"^(`{3,}|~{3,})$"#, options: .regularExpression) != nil
+      && Markdown.isClosingFence(text.substring(with: lastLine))
 
     var bottom: CGFloat
     if closed {
@@ -205,6 +204,12 @@ enum Markdown {
 
   private static let fenceOpen = try! NSRegularExpression(pattern: #"^ {0,3}(?:`{3,}|~{3,})[ \t]*([^\s`]*)"#)
 
+  /// A closing fence may be indented by at most three spaces; four or
+  /// more make it code, as the fence pattern itself already assumes.
+  static func isClosingFence(_ line: String) -> Bool {
+    line.range(of: #"^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n?$"#, options: .regularExpression) != nil
+  }
+
   static func codeBlocks(in text: String) -> [CodeBlock] {
     let ns = text as NSString
     return fence.matches(in: text, range: fullRange(text)).map { match in
@@ -217,8 +222,7 @@ enum Markdown {
       let closingLine: NSRange?
       if end > NSMaxRange(openingLine) {
         let lastLine = ns.lineRange(for: NSRange(location: end - 1, length: 0))
-        let lastText = ns.substring(with: lastLine).trimmingCharacters(in: .whitespacesAndNewlines)
-        closingLine = lastText.range(of: #"^(`{3,}|~{3,})$"#, options: .regularExpression) != nil ? lastLine : nil
+        closingLine = isClosingFence(ns.substring(with: lastLine)) ? lastLine : nil
       } else {
         closingLine = nil
       }
