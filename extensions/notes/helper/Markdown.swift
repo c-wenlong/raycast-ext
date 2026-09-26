@@ -139,8 +139,14 @@ enum Markdown {
       // colour plus a kern that cancels each glyph's advance, so the box
       // sits where the line starts, as in Raycast Notes.
       let bulletRange = NSRange(location: match.range(at: 2).location, length: box.location - match.range(at: 2).location)
-      storage.addAttributes(
-        [.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: bulletRange)
+      if (text as NSString).substring(with: bulletRange).contains("\t") {
+        // A tab jumps to the next tab stop, which a kern cannot cancel;
+        // leave that rare form visible but dim.
+        storage.addAttribute(.foregroundColor, value: dim, range: bulletRange)
+      } else {
+        storage.addAttributes(
+          [.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance], range: bulletRange)
+      }
       let body = match.range(at: 4)
       if done, body.location != NSNotFound, body.length > 0 {
         storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
