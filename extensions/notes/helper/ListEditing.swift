@@ -1,0 +1,586 @@
+// List editing rules for the notes window, kept free of AppKit so they
+// can be tested from the command line (test/list-editing/main.swift).
+//
+// Every function takes the whole text plus a cursor offset (UTF-16) and
+// returns the replacement for one range plus the new selection, so the
+// text view can apply it as one undoable change.
+
+import Foundation
+
+enum ListEditing {
+  struct Edit: Equatable {
+    let range: NSRange
+    let replacement: String
+    let cursor: Int
+    /// Characters to select after the cursor (0 = just a caret).
+    var selectionLength = 0
+  }
+
+  enum Marker: Equatable {
+    case bullet(String)
+    case task(bullet: String, done: Bool)
+    case ordered(Int)
+
+    /// Text of the marker without indent, with its trailing space.
+    var text: String {
+      switch self {
+      case .bullet(let char): return "\(char) "
+      case .task(let char, let done): return "\(char) [\(done ? "x" : " ")] "
+      case .ordered(let number): return "\(number). "
+      }
+    }
+
+    /// How far a child item is indented under this one.
+    var childIndent: Int {
+      switch self {
+      case .bullet, .task: return 2
+      case .ordered(let number): return "\(number). ".count
+      }
+    }
+
+    /// The marker a new sibling gets when Enter is pressed on this item.
+    var next: Marker {
+      switch self {
+      case .bullet(let char): return .bullet(char)
+      case .task(let char, _): return .task(bullet: char, done: false)
+      case .ordered(let number): return .ordered(number + 1)
+      }
+    }
+  }
+
+  struct Item: Equatable {
+    let indent: String
+    let marker: Marker
+    let content: String
+
+    var line: String { indent + marker.text + content }
+  }
+
+  private static let itemPattern = try! NSRegularExpression(
+    pattern: #"^([ \t]*)(?:([-*+])(?:[ \t]+\[([ xX])\])?|(\d+)\.)(?:[ \t]+(.*))?$"#)
+
+  static func parse(line: String) -> Item? {
+    let ns = line as NSString
+    guard let match = itemPattern.firstMatch(in: line, range: NSRange(location: 0, length: ns.length))
+    else { return nil }
+    let indent = ns.substring(with: match.range(at: 1))
+    let content = match.range(at: 5).location == NSNotFound ? "" : ns.substring(with: match.range(at: 5))
+    let marker: Marker
+    if match.range(at: 4).location != NSNotFound {
+      marker = .ordered(Int(ns.substring(with: match.range(at: 4))) ?? 1)
+    } else {
+      let bullet = ns.substring(with: match.range(at: 2))
+      if match.range(at: 3).location != NSNotFound {
+        marker = .task(bullet: bullet, done: ns.substring(with: match.range(at: 3)).lowercased() == "x")
+      } else {
+        marker = .bullet(bullet)
+      }
+    }
+    return Item(indent: indent, marker: marker, content: content)
+  }
+
+  // MARK: Line and block helpers
+
+  private struct Line {
+    let range: NSRange  // without the newline
+    let text: String
+  }
+
+  private static func lines(of text: String) -> [Line] {
+    let ns = text as NSString
+    var result: [Line] = []
+    var location = 0
+    while true {
+      var lineEnd = 0
+      var contentsEnd = 0
+      ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
+      let range = NSRange(location: location, length: contentsEnd - location)
+      result.append(Line(range: range, text: ns.substring(with: range)))
+      if lineEnd == contentsEnd { break }  // last line, no line break after it
+      location = lineEnd
+      if location == ns.length {
+        // text ends with a line break: one more, empty line
+        result.append(Line(range: NSRange(location: location, length: 0), text: ""))
+        break
+      }
+    }
+    return result
+  }
+
+  /// The line holding `cursor`; a cursor at the end of a line belongs to it.
+  private static func lineIndex(of cursor: Int, in lines: [Line]) -> Int? {
+    lines.firstIndex { cursor >= $0.range.location && cursor <= NSMaxRange($0.range) }
+  }
+
+  /// The break the text already uses ("\r\n" in a CRLF file), for new lines.
+  static func lineBreak(in text: String) -> String {
+    let ns = text as NSString
+    let found = ns.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n"))
+    guard found.location != NSNotFound, ns.character(at: found.location) == 0x0D else { return "\n" }
+    let crlf = found.location + 1 < ns.length && ns.character(at: found.location + 1) == 0x0A
+    return crlf ? "\r\n" : "\r"
+  }
+
+  private static func leadingWhitespace(_ line: String) -> Int {
+    line.prefix { $0 == " " || $0 == "\t" }.count
+  }
+
+  /// The line break at the end of `text`, or "" when it has none.
+  private static func trailingBreak(_ text: String) -> String {
+    ["\r\n", "\n", "\r"].first { (text as NSString).hasSuffix($0) } ?? ""
+  }
+
+  /// Indexes of the contiguous run of non-blank lines around `index`.
+  private static func block(around index: Int, in lines: [Line]) -> ClosedRange<Int> {
+    var start = index
+    while start > 0, !lines[start - 1].text.trimmingCharacters(in: .whitespaces).isEmpty { start -= 1 }
+    var end = index
+    while end + 1 < lines.count, !lines[end + 1].text.trimmingCharacters(in: .whitespaces).isEmpty { end += 1 }
+    return start...end
+  }
+
+  /// Renumbers ordered items so siblings count up from 1 and a child list
+  /// restarts. A non-list line or a marker type change ends a run.
+  static func renumber(_ lines: [String]) -> [String] {
+    var counters: [Int: Int] = [:]
+    return lines.map { line in
+      guard let item = parse(line: line) else {
+        counters.removeAll()
+        return line
+      }
+      let depth = item.indent.count
+      counters = counters.filter { $0.key <= depth }
+      switch item.marker {
+      case .ordered:
+        let number = (counters[depth] ?? 0) + 1
+        counters[depth] = number
+        return Item(indent: item.indent, marker: .ordered(number), content: item.content).line
+      default:
+        counters[depth] = nil
+        return line
+      }
+    }
+  }
+
+  /// Rewrites the block around `lineIndex` with `newLines`, renumbered, and
+  /// maps `cursorLine`/`cursorColumn` (inside newLines) to a text offset.
+  /// Renumbers only the runs of consecutive list lines that touch the
+  /// edited line (or its neighbours, for a line that just stopped being an
+  /// item), so numbers elsewhere in the block are left alone.
+  static func renumberAround(_ lines: [String], line: Int) -> [String] {
+    var result = lines
+    var index = 0
+    while index < lines.count {
+      guard parse(line: lines[index]) != nil else {
+        index += 1
+        continue
+      }
+      var end = index
+      while end + 1 < lines.count, parse(line: lines[end + 1]) != nil { end += 1 }
+      if index <= line + 1, end >= line - 1 {
+        result.replaceSubrange(index...end, with: renumber(Array(lines[index...end])))
+      }
+      index = end + 1
+    }
+    return result
+  }
+
+  private static func apply(
+    block: ClosedRange<Int>, in lines: [Line], newLines: [String], cursorLine: Int, cursorColumn: Int, eol: String
+  ) -> Edit {
+    let renumbered = renumberAround(newLines, line: cursorLine)
+    let start = lines[block.lowerBound].range.location
+    let end = NSMaxRange(lines[block.upperBound].range)
+    var cursor = start
+    for (index, line) in renumbered.enumerated() {
+      if index == cursorLine {
+        cursor += min(cursorColumn, (line as NSString).length)
+        break
+      }
+      cursor += (line as NSString).length + (eol as NSString).length
+    }
+    return Edit(range: NSRange(location: start, length: end - start), replacement: renumbered.joined(separator: eol), cursor: cursor)
+  }
+
+  // MARK: Public operations
+
+  /// Enter on a list item: continues the list, or ends it when the item
+  /// is empty. Nil when the cursor is not on a list item.
+  static func newline(in text: String, cursor: Int) -> Edit? {
+    guard !insideFence(text, cursor: cursor) else { return nil }
+    let all = lines(of: text)
+    guard let index = lineIndex(of: cursor, in: all), let item = parse(line: all[index].text) else { return nil }
+
+    let eol = lineBreak(in: text)
+    let blockRange = block(around: index, in: all)
+    var newLines = all[blockRange].map(\.text)
+    let local = index - blockRange.lowerBound
+
+    if item.content.trimmingCharacters(in: .whitespaces).isEmpty {
+      // Empty item: leave the list (outdent one level first if nested).
+      if item.indent.isEmpty {
+        newLines[local] = ""
+        return apply(block: blockRange, in: all, newLines: newLines, cursorLine: local, cursorColumn: 0, eol: eol)
+      }
+      let parentIndent = String(item.indent.dropLast(min(item.indent.count, parentIndentWidth(before: index, in: all, childIndent: item.indent.count))))
+      let outdented = Item(indent: parentIndent, marker: item.marker, content: "")
+      newLines[local] = outdented.line
+      return apply(
+        block: blockRange, in: all, newLines: newLines, cursorLine: local, cursorColumn: (outdented.line as NSString).length, eol: eol)
+    }
+
+    let column = cursor - all[index].range.location
+    let ns = all[index].text as NSString
+    let head = ns.substring(to: min(column, ns.length))
+    let tail = ns.substring(from: min(column, ns.length))
+    let prefixLength = (item.indent + item.marker.text).count
+    let (before, after) = column <= prefixLength ? (all[index].text, "") : (head, tail)
+    let sibling = Item(indent: item.indent, marker: item.marker.next, content: after.trimmingCharacters(in: .whitespaces))
+    newLines[local] = before.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
+    newLines.insert(sibling.line, at: local + 1)
+    let cursorColumn = (sibling.indent + sibling.marker.text).count
+    return apply(block: blockRange, in: all, newLines: newLines, cursorLine: local + 1, cursorColumn: cursorColumn, eol: eol)
+  }
+
+  /// Tab (+1) or Shift-Tab (-1) on a list item, carrying its nested
+  /// lines along. Tab nests under the previous sibling (joining its child
+  /// list when it has one). Nil when not on an item or it cannot move.
+  static func indent(in text: String, cursor: Int, by delta: Int) -> Edit? {
+    guard !insideFence(text, cursor: cursor) else { return nil }
+    let all = lines(of: text)
+    guard let index = lineIndex(of: cursor, in: all), let item = parse(line: all[index].text) else { return nil }
+
+    let blockRange = block(around: index, in: all)
+    var newLines = all[blockRange].map(\.text)
+    let local = index - blockRange.lowerBound
+    let column = cursor - all[index].range.location
+    let depth = item.indent.count
+
+    let newDepth: Int
+    if delta > 0 {
+      var sibling: Item? = nil
+      var childDepth: Int? = nil  // shallowest item between the sibling and here
+      var i = index - 1
+      while i >= blockRange.lowerBound {
+        if let above = parse(line: all[i].text) {
+          let aboveDepth = above.indent.count
+          if aboveDepth == depth { sibling = above; break }
+          if aboveDepth < depth { break }  // already the first child of that item
+          childDepth = min(childDepth ?? aboveDepth, aboveDepth)
+        }
+        i -= 1
+      }
+      guard let sibling else { return nil }
+      newDepth = childDepth ?? depth + sibling.marker.childIndent
+    } else {
+      guard depth > 0 else { return nil }
+      newDepth = depth - min(depth, parentIndentWidth(before: index, in: all, childIndent: depth))
+    }
+
+    let shift = newDepth - depth
+    func moved(_ line: String) -> String {
+      shift > 0 ? String(repeating: " ", count: shift) + line : String(line.dropFirst(min(-shift, leadingWhitespace(line))))
+    }
+    newLines[local] = moved(newLines[local])
+    var next = local + 1
+    while next < newLines.count {
+      let line = newLines[next]
+      guard (parse(line: line)?.indent.count ?? leadingWhitespace(line)) > depth else { break }
+      newLines[next] = moved(line)
+      next += 1
+    }
+    return apply(
+      block: blockRange, in: all, newLines: newLines, cursorLine: local, cursorColumn: max(column + shift, newDepth),
+      eol: lineBreak(in: text))
+  }
+
+  /// Width to remove when outdenting: the parent's child indent when a
+  /// parent item is found above, else 2.
+  private static func parentIndentWidth(before index: Int, in lines: [Line], childIndent: Int) -> Int {
+    var i = index - 1
+    while i >= 0 {
+      let text = lines[i].text
+      if text.trimmingCharacters(in: .whitespaces).isEmpty { break }
+      if let item = parse(line: text), item.indent.count < childIndent {
+        return childIndent - item.indent.count
+      }
+      i -= 1
+    }
+    return min(childIndent, 2)
+  }
+
+  // MARK: Code fences
+
+  private static let fenceLine = try! NSRegularExpression(pattern: #"^ {0,3}(`{3,}|~{3,})(\S*)[ \t]*$"#)
+
+  /// True when `cursor` sits inside an open ``` or ~~~ block, where list
+  /// rules must stay out of the way.
+  static func insideFence(_ text: String, cursor: Int) -> Bool {
+    let ns = text as NSString
+    var open: String? = nil
+    var location = 0
+    while location < min(cursor, ns.length) {
+      var lineEnd = 0
+      var contentsEnd = 0
+      ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
+      let line = ns.substring(with: NSRange(location: location, length: contentsEnd - location))
+      if let match = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+        let marker = (line as NSString).substring(with: match.range(at: 1))
+        if let current = open {
+          if marker.first == current.first, marker.count >= current.count, match.range(at: 2).length == 0 { open = nil }
+        } else {
+          open = marker
+        }
+      }
+      if lineEnd == location { break }
+      location = lineEnd
+    }
+    return open != nil
+  }
+
+  /// Enter or space right after ``` or ~~~ (optionally with a language)
+  /// on its own line opens a code block: the closing fence is added and
+  /// the cursor lands on the empty line between.
+  static func codeFence(in text: String, cursor: Int) -> Edit? {
+    let ns = text as NSString
+    var lineStart = 0
+    var contentsEnd = 0
+    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
+    guard cursor == contentsEnd, !insideFence(text, cursor: lineStart) else { return nil }
+    let line = ns.substring(with: NSRange(location: lineStart, length: cursor - lineStart))
+    guard let match = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length))
+    else { return nil }
+    // When a later fence already closes this one, it opens an existing block.
+    guard insideFence(text, cursor: ns.length) else { return nil }
+    let marker = (line as NSString).substring(with: match.range(at: 1))
+    let trimmed = line.replacingOccurrences(of: #"[ \t]+$"#, with: "", options: .regularExpression)
+    let eol = lineBreak(in: text)
+    let replacement = trimmed + eol + eol + marker
+    return Edit(
+      range: NSRange(location: lineStart, length: cursor - lineStart), replacement: replacement,
+      cursor: lineStart + (trimmed as NSString).length + (eol as NSString).length)
+  }
+
+  /// The rules a typed space sets off ("[] " becomes a task, "``` " opens
+  /// a code block), checked after the space is in the text so the first
+  /// undo steps back to exactly what was typed. The edit covers the space.
+  static func afterSpace(in text: String, cursor: Int) -> Edit? {
+    let ns = text as NSString
+    guard cursor > 0, cursor <= ns.length, ns.character(at: cursor - 1) == 0x20 else { return nil }
+    let before = ns.replacingCharacters(in: NSRange(location: cursor - 1, length: 1), with: "")
+    guard let edit = taskShortcut(in: before, cursor: cursor - 1) ?? codeFence(in: before, cursor: cursor - 1)
+    else { return nil }
+    // Both rules end their range at the cursor, which is where the space sits.
+    let range = NSRange(location: edit.range.location, length: edit.range.length + 1)
+    guard ns.substring(with: range) != edit.replacement else { return nil }
+    return Edit(range: range, replacement: edit.replacement, cursor: edit.cursor, selectionLength: edit.selectionLength)
+  }
+
+  // MARK: Task shortcut and backspace
+
+  /// Typing a space right after "[]", "[ ]" or "[x]" at the start of a
+  /// line turns it into a task item. Returns the edit for the line, or nil.
+  private static let boxPattern = try! NSRegularExpression(pattern: #"^([ \t]*)(?:([-*+])[ \t]+)?\[( ?|[xX])\]$"#)
+
+  static func taskShortcut(in text: String, cursor: Int) -> Edit? {
+    let ns = text as NSString
+    var lineStart = 0
+    var contentsEnd = 0
+    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
+    guard cursor == contentsEnd, !insideFence(text, cursor: lineStart) else { return nil }
+    let line = ns.substring(with: NSRange(location: lineStart, length: cursor - lineStart))
+    guard let match = boxPattern.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length))
+    else { return nil }
+    let indent = (line as NSString).substring(with: match.range(at: 1))
+    let bullet = match.range(at: 2).location == NSNotFound ? "-" : (line as NSString).substring(with: match.range(at: 2))
+    let done = (line as NSString).substring(with: match.range(at: 3)).lowercased() == "x"
+    let replacement = Item(indent: indent, marker: .task(bullet: bullet, done: done), content: "").line
+    return Edit(range: NSRange(location: lineStart, length: cursor - lineStart), replacement: replacement, cursor: lineStart + (replacement as NSString).length)
+  }
+
+  /// Backspace with the caret right after a list marker removes the
+  /// marker (nested items step out one level first).
+  static func backspace(in text: String, cursor: Int) -> Edit? {
+    // Every marker ends in a space or tab; skip the line scan otherwise.
+    let ns = text as NSString
+    guard cursor > 0, cursor <= ns.length, [0x20, 0x09].contains(ns.character(at: cursor - 1)) else { return nil }
+    let all = lines(of: text)
+    guard let index = lineIndex(of: cursor, in: all),
+      let item = parse(line: all[index].text),
+      cursor - all[index].range.location == (item.indent + item.marker.text).count,
+      !insideFence(text, cursor: all[index].range.location)
+    else { return nil }
+
+    let blockRange = block(around: index, in: all)
+    var newLines = all[blockRange].map(\.text)
+    let local = index - blockRange.lowerBound
+    let eol = lineBreak(in: text)
+    if item.indent.isEmpty {
+      newLines[local] = item.content
+      return apply(block: blockRange, in: all, newLines: newLines, cursorLine: local, cursorColumn: 0, eol: eol)
+    }
+    let width = parentIndentWidth(before: index, in: all, childIndent: item.indent.count)
+    let outdented = Item(indent: String(item.indent.dropLast(min(item.indent.count, width))), marker: item.marker, content: item.content)
+    newLines[local] = outdented.line
+    return apply(
+      block: blockRange, in: all, newLines: newLines, cursorLine: local,
+      cursorColumn: (outdented.indent + outdented.marker.text).count, eol: eol)
+  }
+
+  // MARK: Formatting shortcuts
+
+  /// Wraps the selection in `marker` (⌘B, ⌘I, ⇧⌘S, ⌘E), or unwraps it
+  /// when already wrapped. An empty selection gets an empty pair with the
+  /// caret inside.
+  static func toggleWrap(in text: String, selection: NSRange, marker: String) -> Edit {
+    let ns = text as NSString
+    let selected = ns.substring(with: selection)
+    let width = (marker as NSString).length
+    if selected.hasPrefix(marker), selected.hasSuffix(marker), (selected as NSString).length >= width * 2 {
+      let inner = (selected as NSString).substring(with: NSRange(location: width, length: (selected as NSString).length - width * 2))
+      return Edit(range: selection, replacement: inner, cursor: selection.location, selectionLength: (inner as NSString).length)
+    }
+    let before = selection.location >= width ? ns.substring(with: NSRange(location: selection.location - width, length: width)) : ""
+    let afterStart = selection.location + selection.length
+    let after = afterStart + width <= ns.length ? ns.substring(with: NSRange(location: afterStart, length: width)) : ""
+    if before == marker, after == marker {
+      return Edit(range: NSRange(location: selection.location - width, length: selection.length + width * 2), replacement: selected, cursor: selection.location - width, selectionLength: selection.length)
+    }
+    return Edit(range: selection, replacement: marker + selected + marker, cursor: selection.location + width, selectionLength: selection.length)
+  }
+
+  /// `[selection](url)` for ⌘L and for pasting a URL over a selection.
+  /// With no url the caret lands between the parentheses, or between the
+  /// brackets when nothing was selected.
+  static func link(in text: String, selection: NSRange, url: String?) -> Edit {
+    let selected = (text as NSString).substring(with: selection)
+    // Parentheses and spaces would end the target early, so encode them.
+    let target = (url ?? "")
+      .replacingOccurrences(of: "(", with: "%28")
+      .replacingOccurrences(of: ")", with: "%29")
+      .replacingOccurrences(of: " ", with: "%20")
+    let replacement = "[\(selected)](\(target))"
+    let cursor: Int
+    if url != nil {
+      cursor = selection.location + (replacement as NSString).length
+    } else if selection.length == 0 {
+      cursor = selection.location + 1
+    } else {
+      cursor = selection.location + (selected as NSString).length + 3
+    }
+    return Edit(range: selection, replacement: replacement, cursor: cursor)
+  }
+
+  enum LinePrefix: Equatable {
+    case heading(Int), quote, bullet, ordered, task
+
+    var text: String {
+      switch self {
+      case .heading(let level): return String(repeating: "#", count: level) + " "
+      case .quote: return "> "
+      case .bullet: return "- "
+      case .ordered: return "1. "
+      case .task: return "- [ ] "
+      }
+    }
+  }
+
+  private static let anyPrefix = try! NSRegularExpression(
+    pattern: #"^([ \t]*)(#{1,6} |> |[-*+] \[[ xX]\] |[-*+] |\d+\. )"#)
+
+  /// Sets or clears a block prefix on the current line (⌥⌘1/2/3, ⇧⌘B,
+  /// ⇧⌘7/8/9). Choosing the prefix the line already has removes it.
+  static func setLinePrefix(in text: String, cursor: Int, prefix: LinePrefix) -> Edit {
+    let ns = text as NSString
+    var lineStart = 0
+    var contentsEnd = 0
+    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
+    let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
+    let lineNS = line as NSString
+    var indent = ""
+    var rest = line
+    var existing = ""
+    if let match = anyPrefix.firstMatch(in: line, range: NSRange(location: 0, length: lineNS.length)) {
+      indent = lineNS.substring(with: match.range(at: 1))
+      existing = lineNS.substring(with: match.range(at: 2))
+      rest = lineNS.substring(from: match.range.location + match.range.length)
+    }
+    let same: Bool
+    switch prefix {
+    case .ordered: same = existing.range(of: #"^\d+\. $"#, options: .regularExpression) != nil
+    case .bullet: same = existing.range(of: #"^[-*+] $"#, options: .regularExpression) != nil
+    case .task: same = existing.range(of: #"^[-*+] \[[ xX]\] $"#, options: .regularExpression) != nil
+    default: same = existing == prefix.text
+    }
+    let replacement = same ? indent + rest : indent + prefix.text + rest
+    let column = cursor - lineStart
+    let oldPrefix = (indent + existing as NSString).length
+    let newPrefix = same ? (indent as NSString).length : (indent + prefix.text as NSString).length
+    let newColumn = column <= oldPrefix ? newPrefix : column - oldPrefix + newPrefix
+    return Edit(range: NSRange(location: lineStart, length: contentsEnd - lineStart), replacement: replacement, cursor: lineStart + newColumn)
+  }
+
+  /// Wraps the selected lines (or the current line) in a code fence, or
+  /// removes the fences when the selection sits inside a fenced block.
+  static func toggleCodeBlock(in text: String, selection: NSRange) -> Edit {
+    let ns = text as NSString
+    if let fence = enclosingFence(in: ns, at: selection.location),
+      NSMaxRange(selection) <= (fence.close.map(NSMaxRange) ?? ns.length) {
+      let innerStart = NSMaxRange(fence.open)
+      var inner = ns.substring(with: NSRange(location: innerStart, length: (fence.close?.location ?? ns.length) - innerStart))
+      var closingBreak = ""
+      if let close = fence.close {
+        // The inner text's last break goes; the closing fence line's break stays.
+        inner = String((inner as NSString).substring(to: (inner as NSString).length - (trailingBreak(inner) as NSString).length))
+        closingBreak = trailingBreak(ns.substring(with: close))
+      }
+      let end = fence.close.map(NSMaxRange) ?? ns.length
+      let length = (inner as NSString).length
+      let range = NSRange(location: fence.open.location, length: end - fence.open.location)
+      guard selection.length == 0 else {
+        return Edit(range: range, replacement: inner + closingBreak, cursor: range.location, selectionLength: length)
+      }
+      let caret = min(max(selection.location - fence.open.length, range.location), range.location + length)
+      return Edit(range: range, replacement: inner + closingBreak, cursor: caret)
+    }
+    let eol = lineBreak(in: text)
+    let lineRange = ns.lineRange(for: selection)
+    let lines = ns.substring(with: lineRange)
+    let trailing = trailingBreak(lines)
+    let body = (lines as NSString).substring(to: (lines as NSString).length - (trailing as NSString).length)
+    let replacement = "```" + eol + body + eol + "```" + trailing
+    return Edit(
+      range: lineRange, replacement: replacement, cursor: lineRange.location + 3 + (eol as NSString).length,
+      selectionLength: (body as NSString).length)
+  }
+
+  /// Line ranges (breaks included) of the fences around `location`, when
+  /// it sits in a fenced block or on one of its fence lines. `close` is
+  /// nil for a block left open to the end of the text.
+  private static func enclosingFence(in ns: NSString, at location: Int) -> (open: NSRange, close: NSRange?)? {
+    var open: (range: NSRange, marker: String)? = nil
+    var start = 0
+    while start < ns.length {
+      var lineEnd = 0
+      var contentsEnd = 0
+      ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: start, length: 0))
+      let line = ns.substring(with: NSRange(location: start, length: contentsEnd - start))
+      if let match = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+        let marker = (line as NSString).substring(with: match.range(at: 1))
+        let lineRange = NSRange(location: start, length: lineEnd - start)
+        if let current = open {
+          if marker.first == current.marker.first, marker.count >= current.marker.count, match.range(at: 2).length == 0 {
+            if location >= current.range.location, location <= contentsEnd { return (current.range, lineRange) }
+            open = nil
+          }
+        } else {
+          if location < start { return nil }
+          open = (lineRange, marker)
+        }
+      }
+      start = lineEnd
+    }
+    if let current = open, location >= current.range.location { return (current.range, nil) }
+    return nil
+  }
+}

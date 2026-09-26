@@ -36,7 +36,23 @@ Inside the window:
 | `⇧⌘C` | copy the note's markdown |
 | `⌃X` | move the note to the Trash |
 | `⌘P` | jump to Browse Notes in Raycast |
+| `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (shown in a "Zoomed to 120%" bubble, remembered) |
+| `⌘M` | minimise the window |
 | `⌘W` or `Esc` | hide |
+| `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again to remove |
+| `⌘L` | link the selection, caret between the `()` |
+| `⌥⌘1` / `⌥⌘2` / `⌥⌘3` | heading 1 / 2 / 3; again to remove |
+| `⇧⌘B` | quote the line |
+| `⇧⌘7` / `⇧⌘8` / `⇧⌘9` | numbered / bullet / task item |
+| `⌥⌘C` | wrap the lines in a code block, or unwrap the block the caret is in |
+| `[]` then `Space` | start a task, `- [ ] ` |
+| `1. ` | start a numbered list; `↩` and `⇥` renumber it as you go |
+| `↩` in a list | continue the list; on an empty item, end it (a nested one steps out first) |
+| `⇥` / `⇧⇥` in a list | nest / unnest the item with everything under it |
+| `⌫` right after a marker | remove the marker (a nested item steps out first) |
+| ```` ``` ```` then `↩` or `Space` | open a code block and add its closing fence |
+| paste a URL over a selection | turn the selection into `[text](url)` |
+| `⌘Z` / `⇧⌘Z` | undo / redo; each typing rule and formatting key is one step |
 
 The text stays raw markdown; headings, bold, italic, code, quotes, links and
 task boxes are styled in place. Edits save 0.4s after you stop typing, and
