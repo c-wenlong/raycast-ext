@@ -631,7 +631,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    saveNow()
+    guard saveNow() else {
+      panel.title = "Could not save; quit cancelled"
+      return .terminateCancel
+    }
     return .terminateNow
   }
 
@@ -946,18 +949,23 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     updateTitle()
   }
 
-  private func saveNow() {
+  /// Writes unsaved text. Returns false when the write failed, in which
+  /// case the text stays dirty and the next save retries.
+  @discardableResult
+  private func saveNow() -> Bool {
     saveTimer?.invalidate()
-    guard let path = currentPath, textView.isEditable else { return }
+    guard let path = currentPath, textView.isEditable else { return true }
     let text = textView.string
-    guard text != loadedText else { return }
+    guard text != loadedText else { return true }
     do {
       try text.write(toFile: path, atomically: false, encoding: .utf8)
       loadedText = text
       renameToMatchTitleIfNeeded()
       updateTitle()
+      return true
     } catch {
       NSSound.beep()
+      return false
     }
   }
 
