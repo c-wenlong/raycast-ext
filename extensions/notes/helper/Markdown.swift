@@ -5,16 +5,74 @@ import Foundation
 //
 // The text stays raw markdown so files never change shape; only display
 // attributes are layered on. Markers are dimmed, headings enlarged, links
-// clickable, task boxes clickable (notes-task:// links) and done tasks
-// struck through.
+// clickable, task boxes drawn as checkboxes and clickable (notes-task://
+// links), and done tasks greyed out.
 
-/// Draws task boxes over the (invisible) "[ ]" characters. Filled out in
-/// Markdown.swift; the text view installs it in PanelController.
-final class TaskBoxLayoutManager: NSLayoutManager {}
+/// Draws a checkbox over each task's "[ ]" / "[x]" characters, which
+/// Markdown.apply leaves in place but paints clear and tags with
+/// `Markdown.taskBox`. The text view installs it in PanelController.
+final class TaskBoxLayoutManager: NSLayoutManager {
+  override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+    super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    guard let storage = textStorage, glyphsToShow.location != NSNotFound, glyphsToShow.length > 0 else { return }
+    let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+    guard chars.location != NSNotFound, chars.length > 0,
+      NSMaxRange(chars) <= storage.length
+    else { return }
+    storage.enumerateAttribute(Markdown.taskBox, in: chars) { value, range, _ in
+      guard let done = value as? Bool else { return }
+      // A redraw can start or stop mid-box; widen to the whole box so the
+      // square is never drawn from a partial glyph span.
+      let window = NSIntersectionRange(
+        NSRange(location: max(0, range.location - 2), length: range.length + 4),
+        NSRange(location: 0, length: storage.length))
+      var box = range
+      _ = storage.attribute(Markdown.taskBox, at: range.location, longestEffectiveRange: &box, in: window)
+      drawTaskBox(characters: box, done: done, origin: origin)
+    }
+  }
+
+  private func drawTaskBox(characters: NSRange, done: Bool, origin: NSPoint) {
+    let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+    guard glyphs.location != NSNotFound, glyphs.length > 0,
+      let container = textContainer(forGlyphAt: glyphs.location, effectiveRange: nil)
+    else { return }
+    let span = boundingRect(forGlyphRange: glyphs, in: container)
+    let line = lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+    let baseline = origin.y + line.minY + location(forGlyphAt: glyphs.location).y
+
+    // Sized from the body font (not the line) so paragraph spacing never
+    // stretches it, and so ⌘+ / ⌘- zoom scales it with the text.
+    let font = Markdown.baseFont
+    let side = (defaultLineHeight(for: font) * 0.75).rounded()
+    let center = NSPoint(x: origin.x + span.midX, y: baseline - font.capHeight / 2)
+    let square = NSRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
+
+    NSGraphicsContext.saveGraphicsState()
+    Markdown.accent.set()
+    let lineWidth: CGFloat = 1.5
+    let outline = square.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
+    let radius = side * 0.3
+    let stroke = NSBezierPath(roundedRect: outline, xRadius: radius, yRadius: radius)
+    stroke.lineWidth = lineWidth
+    stroke.stroke()
+    if done {
+      let fill = square.insetBy(dx: side * 0.24, dy: side * 0.24)
+      let inner = radius * 0.5
+      NSBezierPath(roundedRect: fill, xRadius: inner, yRadius: inner).fill()
+    }
+    NSGraphicsContext.restoreGraphicsState()
+  }
+}
 
 enum Markdown {
   /// Multiplier applied to every font size (⌘+ / ⌘- zoom).
   static var zoom: CGFloat = 1.0
+
+  /// The one highlight colour: list markers, numbers, task boxes, links.
+  static let accent = NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 1)
+  /// Marks a task's "[ ]" / "[x]" characters; the value is `true` when done.
+  static let taskBox = NSAttributedString.Key("taskBox")
 
   static var baseFont: NSFont { NSFont.systemFont(ofSize: 15 * zoom) }
   static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 13.5 * zoom, weight: .regular) }
@@ -44,7 +102,6 @@ enum Markdown {
     let text = storage.string
     let all = fullRange(text)
     let dim = NSColor.tertiaryLabelColor
-    let accent = NSColor.controlAccentColor
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 3
     paragraph.paragraphSpacing = 4
@@ -70,15 +127,15 @@ enum Markdown {
     for match in task.matches(in: text, range: all) where !inCode(match.range) {
       let box = match.range(at: 3)
       let done = (text as NSString).substring(with: box).lowercased() == "[x]"
+      // The characters stay (so the file is untouched and clicks still hit
+      // the link) but paint clear; TaskBoxLayoutManager draws the box.
       storage.addAttributes(
-        [.foregroundColor: accent, .font: monoFont,
+        [.foregroundColor: NSColor.clear, .font: monoFont, taskBox: done,
          .link: URL(string: "\(taskScheme)://toggle/\(box.location)")!], range: box)
       storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 2))
       let body = match.range(at: 4)
-      if done, body.location != NSNotFound {
-        storage.addAttributes(
-          [.strikethroughStyle: NSUnderlineStyle.single.rawValue,
-           .foregroundColor: NSColor.secondaryLabelColor], range: body)
+      if done, body.location != NSNotFound, body.length > 0 {
+        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
       }
     }
     for match in bullet.matches(in: text, range: all) where !inCode(match.range) {
@@ -121,7 +178,7 @@ enum Markdown {
       for index in [1, 3, 5] {
         storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: index))
       }
-      storage.addAttributes([.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range(at: 2))
+      storage.addAttributes([.foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range(at: 2))
       storage.addAttribute(.foregroundColor, value: dim, range: match.range(at: 4))
       if let url = URL(string: target) {
         storage.addAttribute(.link, value: url, range: match.range(at: 2))
@@ -131,7 +188,7 @@ enum Markdown {
       let target = (text as NSString).substring(with: match.range)
       guard let url = URL(string: target) else { continue }
       storage.addAttributes(
-        [.link: url, .foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range)
+        [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range)
     }
     storage.endEditing()
   }
