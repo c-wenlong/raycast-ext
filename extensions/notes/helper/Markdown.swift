@@ -11,6 +11,8 @@ import Foundation
 /// Draws a checkbox over each task's "[ ]" / "[x]" characters, which
 /// Markdown.apply leaves in place but paints clear and tags with
 /// `Markdown.taskBox`. The text view installs it in PanelController.
+/// It also measures and paints the rounded card behind each fenced code
+/// block (tagged `Markdown.codeBlock`), for NoteTextView to call.
 final class TaskBoxLayoutManager: NSLayoutManager {
   override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
     super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -30,6 +32,75 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       _ = storage.attribute(Markdown.taskBox, at: range.location, longestEffectiveRange: &box, in: window)
       drawTaskBox(characters: box, done: done, origin: origin)
     }
+  }
+
+  /// Draws the code cards behind `rect` (text view coordinates), reaching
+  /// `Markdown.codeCardOutset` into the inset margin. NoteTextView calls it
+  /// from `drawBackground(in:)`, which (unlike this class's own background
+  /// drawing) is not clipped to the text container, and which runs before
+  /// the selection and the text are drawn.
+  func drawCodeCards(in rect: NSRect, origin: NSPoint) {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
+    // Search the full container width: `rect` may be only the margin.
+    let band = NSRect(x: 0, y: rect.minY - origin.y, width: container.size.width, height: rect.height)
+    let glyphs = glyphRange(forBoundingRect: band, in: container)
+    guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
+    let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+    guard chars.location != NSNotFound, chars.length > 0, NSMaxRange(chars) <= storage.length else { return }
+    var drawn = Set<Int>()
+    storage.enumerateAttribute(Markdown.codeBlock, in: chars) { value, range, _ in
+      guard let id = value as? Int, drawn.insert(id).inserted else { return }
+      // The redraw may cover only part of the block; widen to all of it so
+      // the card is always the same shape.
+      var block = range
+      _ = storage.attribute(
+        Markdown.codeBlock, at: range.location, longestEffectiveRange: &block,
+        in: NSRange(location: 0, length: storage.length))
+      guard let card = codeCardRect(forCharacterRange: block) else { return }
+      NSGraphicsContext.saveGraphicsState()
+      Markdown.codeCardColor.setFill()
+      let radius = Markdown.codeCardRadius
+      NSBezierPath(roundedRect: card.offsetBy(dx: origin.x, dy: origin.y), xRadius: radius, yRadius: radius).fill()
+      NSGraphicsContext.restoreGraphicsState()
+    }
+  }
+
+  /// The card behind the code block spanning `characters` (opening fence
+  /// line through closing fence line), in text container coordinates; add
+  /// the text view's `textContainerOrigin` for view coordinates. Top is the
+  /// top of the opening line fragment, sides are the container edges pushed
+  /// out by `Markdown.codeCardOutset`, bottom is the closing line's fixed
+  /// height (or the last line of an unclosed block).
+  func codeCardRect(forCharacterRange characters: NSRange) -> NSRect? {
+    guard let storage = textStorage, characters.length > 0, NSMaxRange(characters) <= storage.length else { return nil }
+    let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+    guard glyphs.location != NSNotFound, glyphs.length > 0,
+      let container = textContainer(forGlyphAt: glyphs.location, effectiveRange: nil)
+    else { return nil }
+    let first = lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+    let last = lineFragmentRect(forGlyphAt: NSMaxRange(glyphs) - 1, effectiveRange: nil)
+
+    let text = storage.string as NSString
+    let openingLine = text.lineRange(for: NSRange(location: characters.location, length: 0))
+    let lastLine = text.lineRange(for: NSRange(location: NSMaxRange(characters) - 1, length: 0))
+    let closed = lastLine.location > openingLine.location
+      && Markdown.isClosingFence(text.substring(with: lastLine))
+
+    var bottom: CGFloat
+    if closed {
+      bottom = last.minY + Markdown.codeFooterHeight
+    } else {
+      bottom = last.maxY
+      // Typing into an unclosed block at the end of the note: keep the empty
+      // line the caret sits on inside the card.
+      if NSMaxRange(characters) == storage.length, extraLineFragmentTextContainer === container {
+        bottom = max(bottom, extraLineFragmentRect.maxY)
+      }
+    }
+    let outset = Markdown.codeCardOutset
+    return NSRect(
+      x: -outset, y: first.minY,
+      width: container.size.width + outset * 2, height: max(0, bottom - first.minY))
   }
 
   private func drawTaskBox(characters: NSRange, done: Bool, origin: NSPoint) {
@@ -87,6 +158,24 @@ enum Markdown {
   }
   static let taskScheme = "notes-task"
 
+  /// Marks every character of a fenced code block, opening fence line
+  /// through closing fence line; the value is the block's start offset
+  /// (an Int), so neighbouring blocks stay distinct.
+  static let codeBlock = NSAttributedString.Key("codeBlock")
+  /// Height of the (hidden) opening fence line: the card's header strip,
+  /// which the overlay controls sit in.
+  static var codeHeaderHeight: CGFloat { (34 * max(zoom, 1)).rounded() }
+  /// Height of the (hidden) closing fence line: the card's bottom padding.
+  static var codeFooterHeight: CGFloat { (10 * zoom).rounded() }
+  /// How far the card reaches past the text container on each side.
+  static let codeCardOutset: CGFloat = 12
+  static let codeCardRadius: CGFloat = 10
+  /// A shade lighter than the editor in dark mode, darker in light mode.
+  static let codeCardColor = NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+      ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.045)
+  }
+
   static let heading = try! NSRegularExpression(pattern: #"^(#{1,3})[ \t]+(.*)$"#, options: .anchorsMatchLines)
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
   static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]+(?!\[[ xX]\])"#, options: .anchorsMatchLines)
@@ -100,6 +189,50 @@ enum Markdown {
   static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
   static let bareURL = try! NSRegularExpression(pattern: #"(?<![\(\w])https?://[^\s<>\)\]]+"#)
 
+  /// One fenced code block: the opening fence line, the language word on
+  /// it (may be empty), the body between the fences (may be empty), and
+  /// the closing fence line if present. Shared by the highlighter and the
+  /// block overlay controls.
+  struct CodeBlock {
+    let range: NSRange
+    let openingLine: NSRange
+    let language: String
+    let languageRange: NSRange
+    let body: NSRange
+    let closingLine: NSRange?
+  }
+
+  private static let fenceOpen = try! NSRegularExpression(pattern: #"^ {0,3}(?:`{3,}|~{3,})[ \t]*([^\s`]*)"#)
+
+  /// A closing fence may be indented by at most three spaces; four or
+  /// more make it code, as the fence pattern itself already assumes.
+  static func isClosingFence(_ line: String) -> Bool {
+    line.range(of: #"^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n?$"#, options: .regularExpression) != nil
+  }
+
+  static func codeBlocks(in text: String) -> [CodeBlock] {
+    let ns = text as NSString
+    return fence.matches(in: text, range: fullRange(text)).map { match in
+      let openingLine = ns.lineRange(for: NSRange(location: match.range.location, length: 0))
+      let openingText = ns.substring(with: openingLine)
+      let info = fenceOpen.firstMatch(in: openingText, range: NSRange(location: 0, length: (openingText as NSString).length))
+      let languageRange = NSRange(location: openingLine.location + (info?.range(at: 1).location ?? 0), length: info?.range(at: 1).length ?? 0)
+      let language = ns.substring(with: languageRange)
+      let end = NSMaxRange(match.range)
+      let closingLine: NSRange?
+      if end > NSMaxRange(openingLine) {
+        let lastLine = ns.lineRange(for: NSRange(location: end - 1, length: 0))
+        closingLine = isClosingFence(ns.substring(with: lastLine)) ? lastLine : nil
+      } else {
+        closingLine = nil
+      }
+      let bodyStart = NSMaxRange(openingLine)
+      let bodyEnd = closingLine?.location ?? end
+      let body = NSRange(location: bodyStart, length: max(0, bodyEnd - bodyStart))
+      return CodeBlock(range: match.range, openingLine: openingLine, language: language, languageRange: languageRange, body: body, closingLine: closingLine)
+    }
+  }
+
   static func apply(to storage: NSTextStorage) {
     let text = storage.string
     let all = fullRange(text)
@@ -108,14 +241,55 @@ enum Markdown {
     paragraph.lineSpacing = 3
     paragraph.paragraphSpacing = 4
 
+    var hadCards = false
+    if storage.length > 0 {
+      storage.enumerateAttribute(codeBlock, in: all, options: .longestEffectiveRangeNotRequired) { value, _, stop in
+        if value != nil { hadCards = true; stop.pointee = true }
+      }
+    }
+
     storage.beginEditing()
     storage.setAttributes(
       [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: all)
 
-    var codeRanges: [NSRange] = []
-    for match in fence.matches(in: text, range: all) {
-      storage.addAttributes([.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor], range: match.range)
-      codeRanges.append(match.range)
+    let blocks = codeBlocks(in: text)
+    let codeRanges = blocks.map(\.range)
+    if !blocks.isEmpty {
+      let mono = monoFont
+      let collapse = -monoAdvance
+      let codeBody = NSMutableParagraphStyle()
+      codeBody.lineSpacing = 3
+      codeBody.defaultTabInterval = monoAdvance * 4
+      codeBody.tabStops = []
+      let header = NSMutableParagraphStyle()
+      header.minimumLineHeight = codeHeaderHeight
+      header.maximumLineHeight = codeHeaderHeight
+      let footer = NSMutableParagraphStyle()
+      footer.minimumLineHeight = codeFooterHeight
+      footer.maximumLineHeight = codeFooterHeight
+      footer.paragraphSpacing = 10 * zoom
+      // The fence lines stay in the file but collapse on screen: clear
+      // colour plus a kern cancelling each monospace glyph's advance (the
+      // task bullet trick). The overlay shows the language instead.
+      func hide(_ line: NSRange, style: NSParagraphStyle) {
+        storage.addAttributes([.font: mono, .paragraphStyle: style], range: line)
+        let content = (text as NSString).substring(with: line)
+        let visible = (content as NSString).length - (content.hasSuffix("\n") ? 1 : 0)
+        guard visible > 0 else { return }
+        storage.addAttributes(
+          [.foregroundColor: NSColor.clear, .kern: collapse], range: NSRange(location: line.location, length: visible))
+      }
+      for block in blocks {
+        let end = block.closingLine.map(NSMaxRange) ?? max(NSMaxRange(block.range), NSMaxRange(block.body))
+        let whole = NSRange(location: block.openingLine.location, length: end - block.openingLine.location)
+        storage.addAttributes([.font: mono, codeBlock: block.openingLine.location], range: whole)
+        hide(block.openingLine, style: header)
+        if let closing = block.closingLine { hide(closing, style: footer) }
+        if block.body.length > 0 {
+          storage.addAttribute(.paragraphStyle, value: codeBody, range: block.body)
+          Highlighter.highlight(storage, body: block.body, language: block.language)
+        }
+      }
     }
     func inCode(_ range: NSRange) -> Bool {
       codeRanges.contains { NSIntersectionRange($0, range).length > 0 }
@@ -205,5 +379,16 @@ enum Markdown {
         [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range)
     }
     storage.endEditing()
+
+    // Cards reach into the text view's inset margin, which the text view
+    // does not repaint when lines move; repaint what is on screen.
+    if hadCards || !blocks.isEmpty {
+      for layoutManager in storage.layoutManagers {
+        for container in layoutManager.textContainers {
+          guard let view = container.textView else { continue }
+          view.setNeedsDisplay(view.visibleRect)
+        }
+      }
+    }
   }
 }

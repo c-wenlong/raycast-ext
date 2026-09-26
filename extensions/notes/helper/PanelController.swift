@@ -14,6 +14,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var pendingCommand: String
   private var palette: ActionPalette!
   private var zoomHUD: ZoomHUD!
+  private var codeBlocks: CodeBlockOverlay!
   private static let baseTextInset = NSSize(width: 18, height: 16)
   private static let zoomDefaultsKey = "notesPanelZoom"
 
@@ -119,6 +120,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     restyle()
     textView.font = Markdown.baseFont
     applyTextContainerInset()
+    codeBlocks.update()
     zoomHUD.show(text: "Zoomed to \(ZoomLevels.percentageString(for: value))")
   }
 
@@ -174,6 +176,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
     scroll.documentView = textView
     panel.contentView?.addSubview(scroll)
+    codeBlocks = CodeBlockOverlay(textView: textView)
 
     zoomHUD = ZoomHUD()
     zoomHUD.install(in: panel.contentView!)
@@ -270,6 +273,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   private func hide() {
     palette.hide()
+    codeBlocks.closePicker()
     saveNow()
     panel.orderOut(nil)
   }
@@ -401,6 +405,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       loadedText = ""
       textView.string = ""
       textView.isEditable = false
+      codeBlocks.update()
       watch(path)
       panel.title = "Cannot read \((path as NSString).lastPathComponent) as UTF-8"
       return
@@ -412,6 +417,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
     textView.undoManager?.removeAllActions()
     textView.scrollToEndOfDocument(nil)
+    codeBlocks.update()
     watch(path)
     updateTitle()
   }
@@ -538,6 +544,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     Markdown.apply(to: storage)
     textView.setSelectedRange(selection)
     textView.typingAttributes = [.font: Markdown.baseFont, .foregroundColor: NSColor.labelColor]
+    codeBlocks?.update()
   }
 
   func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
