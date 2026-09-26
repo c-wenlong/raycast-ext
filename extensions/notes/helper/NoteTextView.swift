@@ -6,6 +6,13 @@ import Foundation
 final class NoteTextView: NSTextView {
   var onCommand: ((String) -> Bool)?
 
+  // Code block cards reach into the inset margin, outside the clip the
+  // layout manager draws in, so the view paints them with its background.
+  override func drawBackground(in rect: NSRect) {
+    super.drawBackground(in: rect)
+    (layoutManager as? TaskBoxLayoutManager)?.drawCodeCards(in: rect, origin: textContainerOrigin)
+  }
+
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
     let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
