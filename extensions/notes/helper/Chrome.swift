@@ -322,7 +322,9 @@ final class StatusBar {
 
   private let onFormat: () -> Void
 
-  @objc private func formatClicked() { onFormat() }
+  @objc private func formatClicked() {
+    if isFormatBarVisible { hideFormatBar() } else { onFormat() }
+  }
 
   func install(in parent: NSView) {
     parent.addSubview(label)
@@ -342,7 +344,7 @@ final class StatusBar {
   /// Shows the floating bar in place of the count and the "T" button.
   func showFormatBar(apply: @escaping (NoteTextView.Format) -> Void) {
     guard formatBar == nil, let parent = formatButton.superview else { return }
-    let bar = FormatBar(apply: apply) { [weak self] in self?.hideFormatBar() }
+    let bar = FormatBar(apply: apply)
     parent.addSubview(bar)
     NSLayoutConstraint.activate([
       bar.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
@@ -351,15 +353,25 @@ final class StatusBar {
     ])
     formatBar = bar
     label.isHidden = true
-    formatButton.isHidden = true
+    // The same round button closes the bar: only its glyph changes.
+    formatButton.imagePosition = .imageOnly
+    formatButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close formatting")?
+      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+    formatButton.setAccessibilityLabel("Close formatting")
   }
 
   func hideFormatBar() {
     formatBar?.removeFromSuperview()
     formatBar = nil
     label.isHidden = false
-    formatButton.isHidden = false
+    formatButton.imagePosition = .noImage
+    formatButton.image = nil
+    formatButton.attributedTitle = Self.tGlyph
+    formatButton.setAccessibilityLabel("Formatting")
   }
+
+  private static let tGlyph = NSAttributedString(
+    string: "T", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
 
   var isFormatBarVisible: Bool { formatBar != nil }
 
@@ -378,9 +390,7 @@ final class StatusBar {
 final class FormatBar: NSView, NSMenuDelegate {
   static let height: CGFloat = 32
   private let pill = PillView()
-  private let closeButton: ChromeButton
   private let apply: (NoteTextView.Format) -> Void
-  private let onClose: () -> Void
   private var menus: [ObjectIdentifier: NSMenu] = [:]
 
   private struct Slot {
@@ -400,10 +410,8 @@ final class FormatBar: NSView, NSMenuDelegate {
     Slot(symbol: "list.bullet", label: "List", format: nil, menu: FormatOptions.all.filter { ["bullet", "ordered", "task"].contains($0.id) }),
   ]
 
-  init(apply: @escaping (NoteTextView.Format) -> Void, onClose: @escaping () -> Void) {
+  init(apply: @escaping (NoteTextView.Format) -> Void) {
     self.apply = apply
-    self.onClose = onClose
-    closeButton = ChromeButton(symbol: "xmark", pointSize: 9, weight: .bold, label: "Close formatting")
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
 
@@ -438,14 +446,6 @@ final class FormatBar: NSView, NSMenuDelegate {
       stack.addArrangedSubview(button)
     }
 
-    closeButton.cornerRadius = 12
-    closeButton.fill = ChromeColors.pill
-    closeButton.stroke = ChromeColors.border
-    closeButton.translatesAutoresizingMaskIntoConstraints = false
-    closeButton.target = self
-    closeButton.action = #selector(closeClicked)
-    addSubview(closeButton)
-
     NSLayoutConstraint.activate([
       stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
       stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
@@ -453,14 +453,11 @@ final class FormatBar: NSView, NSMenuDelegate {
       stack.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
       { let c = pill.centerXAnchor.constraint(equalTo: centerXAnchor); c.priority = .defaultHigh; return c }(),
       pill.centerYAnchor.constraint(equalTo: centerYAnchor),
-      // Never run into the close button or off the left edge in a narrow window.
-      pill.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
+      // Never run into the status bar's round button (which closes the
+      // bar) or off the left edge in a narrow window.
+      pill.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -(12 + 24 + 8)),
       pill.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
       pill.heightAnchor.constraint(equalToConstant: Self.height - 2),
-      closeButton.widthAnchor.constraint(equalToConstant: 24),
-      closeButton.heightAnchor.constraint(equalToConstant: 24),
-      closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-      closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
       heightAnchor.constraint(equalToConstant: Self.height),
     ])
   }
@@ -485,7 +482,6 @@ final class FormatBar: NSView, NSMenuDelegate {
     apply(option.format)
   }
 
-  @objc private func closeClicked() { onClose() }
 }
 
 // MARK: - Formatting picker
