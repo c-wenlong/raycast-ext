@@ -15,6 +15,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var palette: ActionPalette!
   private var zoomHUD: ZoomHUD!
   private var codeBlocks: CodeBlockOverlay!
+  private var formatPicker: ActionPalette!
+  private var titlebarChrome: TitlebarChrome!
+  private var statusBar: StatusBar!
   private static let baseTextInset = NSSize(width: 18, height: 16)
   private static let zoomDefaultsKey = "notesPanelZoom"
 
@@ -127,12 +130,17 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private func applyTextContainerInset() {
     textView.textContainerInset = NSSize(
       width: Self.baseTextInset.width * Markdown.zoom, height: Self.baseTextInset.height * Markdown.zoom)
+    // The inset is symmetric; the bottom bar's extra room comes from the
+    // scroll view instead, so the last line always scrolls clear of it.
+    if let scroll = textView.enclosingScrollView {
+      scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: StatusBar.reservedHeight, right: 0)
+    }
   }
 
   private func buildPanel() {
     panel = NSPanel(
       contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
-      styleMask: [.titled, .closable, .resizable, .miniaturizable, .utilityWindow, .nonactivatingPanel],
+      styleMask: [.titled, .closable, .resizable, .miniaturizable, .nonactivatingPanel],
       backing: .buffered, defer: false)
     panel.level = .floating
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -149,6 +157,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     scroll.autoresizingMask = [.width, .height]
     scroll.hasVerticalScroller = true
     scroll.drawsBackground = false
+    scroll.automaticallyAdjustsContentInsets = false
 
     textView = NoteTextView(frame: scroll.bounds)
     textView.textContainer?.replaceLayoutManager(TaskBoxLayoutManager())
@@ -164,6 +173,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.isAutomaticDashSubstitutionEnabled = false
     textView.isAutomaticTextReplacementEnabled = false
     textView.isAutomaticSpellingCorrectionEnabled = false
+    textView.insertionPointColor = Markdown.accent
     textView.allowsUndo = true
     textView.usesFindBar = true
     textView.delegate = self
@@ -175,14 +185,19 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     textView.isVerticallyResizable = true
     textView.textContainer?.widthTracksTextView = true
-    applyTextContainerInset()
 
     scroll.documentView = textView
+    applyTextContainerInset()
     panel.contentView?.addSubview(scroll)
     codeBlocks = CodeBlockOverlay(textView: textView)
 
     zoomHUD = ZoomHUD()
     zoomHUD.install(in: panel.contentView!)
+
+    titlebarChrome = TitlebarChrome { [weak self] command in self?.handle(command) }
+    titlebarChrome.install(in: panel)
+    statusBar = StatusBar { [weak self] in self?.handle("format") }
+    statusBar.install(in: panel.contentView!)
 
     palette = ActionPalette(actions: [
       PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
@@ -200,7 +215,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       PaletteAction(title: "Zoom Out", keys: "⌘-", symbol: "minus.magnifyingglass", command: "zoom-out"),
       PaletteAction(title: "Actual Size", keys: "⌘0", symbol: "1.magnifyingglass", command: "zoom-reset"),
       PaletteAction(title: "Minimize Window", keys: "⌘M", symbol: "minus.square", command: "minimize"),
+      PaletteAction(title: "Formatting…", keys: "", symbol: "textformat", command: "format"),
     ]) { [weak self] command in
+      self?.handle(command)
+    }
+    formatPicker = ActionPalette(actions: FormatOptions.paletteActions) { [weak self] command in
       self?.handle(command)
     }
   }
@@ -231,7 +250,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     case "toggle-task":
       toggleTaskOnCurrentLine()
     case "palette":
+      formatPicker.hide()
       palette.isVisible ? palette.hide() : palette.show(over: panel)
+    case "format":
+      palette.hide()
+      formatPicker.isVisible ? formatPicker.hide() : formatPicker.show(over: panel)
     case "duplicate":
       duplicateNote()
     case "find":
@@ -256,7 +279,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     case "minimize":
       panel.performMiniaturize(nil)
     default:
-      if command.hasPrefix("open ") {
+      if let format = FormatOptions.format(forCommand: command) {
+        applyFormat(format)
+      } else if command.hasPrefix("open ") {
         let path = String(command.dropFirst(5)).trimmingCharacters(in: .whitespaces)
         open(path)
         show()
@@ -276,6 +301,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   private func hide() {
     palette.hide()
+    formatPicker.hide()
     codeBlocks.closePicker()
     saveNow()
     panel.orderOut(nil)
@@ -555,6 +581,19 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.setSelectedRange(selection)
     textView.typingAttributes = [.font: Markdown.baseFont, .foregroundColor: NSColor.labelColor]
     codeBlocks?.update()
+    updateStatus()
+  }
+
+  /// Formatting picked from the "T" button or ⌘K: focus the note again,
+  /// then make the same edit its key would.
+  private func applyFormat(_ format: NoteTextView.Format) {
+    guard textView.isEditable else {
+      NSSound.beep()
+      return
+    }
+    panel.makeKeyAndOrderFront(nil)
+    panel.makeFirstResponder(textView)
+    textView.applyFormat(format)
   }
 
   func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
@@ -590,15 +629,22 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     }
   }
 
+  /// The title bar shows just the note's title (with • while unsaved);
+  /// its position in the list goes to the bottom bar.
   private func updateTitle() {
+    updateStatus()
     guard let path = currentPath else {
       panel.title = "Notes"
       return
     }
     guard textView.isEditable else { return }
     let noteTitle = title(of: textView.string, filename: (path as NSString).lastPathComponent)
-    let position = currentIndex.map { "\($0 + 1)/\(notes.count)" } ?? ""
     let unsaved = textView.string != loadedText ? " •" : ""
-    panel.title = position.isEmpty ? noteTitle + unsaved : "\(noteTitle)\(unsaved)  ·  \(position)"
+    panel.title = noteTitle + unsaved
+  }
+
+  private func updateStatus() {
+    let position = currentIndex.map { "\($0 + 1)/\(notes.count)" }
+    statusBar?.update(characters: textView.string.count, position: position)
   }
 }

@@ -234,7 +234,7 @@ final class NoteTextView: NSTextView {
 
   // MARK: Formatting keys
 
-  private enum Format {
+  enum Format {
     case wrap(String)
     case link
     case prefix(ListEditing.LinePrefix)
@@ -273,6 +273,12 @@ final class NoteTextView: NSTextView {
       }
     }
     return nil
+  }
+
+  /// Runs a formatting edit as if its key had been pressed (the ⌘K and
+  /// "T" button formatting pickers use this).
+  func applyFormat(_ format: Format) {
+    apply(edit(for: format))
   }
 
   private func edit(for format: Format) -> ListEditing.Edit {
