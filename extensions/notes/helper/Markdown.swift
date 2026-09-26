@@ -100,6 +100,45 @@ enum Markdown {
   static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
   static let bareURL = try! NSRegularExpression(pattern: #"(?<![\(\w])https?://[^\s<>\)\]]+"#)
 
+  /// One fenced code block: the opening fence line, the language word on
+  /// it (may be empty), the body between the fences (may be empty), and
+  /// the closing fence line if present. Shared by the highlighter and the
+  /// block overlay controls.
+  struct CodeBlock {
+    let range: NSRange
+    let openingLine: NSRange
+    let language: String
+    let languageRange: NSRange
+    let body: NSRange
+    let closingLine: NSRange?
+  }
+
+  private static let fenceOpen = try! NSRegularExpression(pattern: #"^ {0,3}(?:`{3,}|~{3,})[ \t]*([^\s`]*)"#)
+
+  static func codeBlocks(in text: String) -> [CodeBlock] {
+    let ns = text as NSString
+    return fence.matches(in: text, range: fullRange(text)).map { match in
+      let openingLine = ns.lineRange(for: NSRange(location: match.range.location, length: 0))
+      let openingText = ns.substring(with: openingLine)
+      let info = fenceOpen.firstMatch(in: openingText, range: NSRange(location: 0, length: (openingText as NSString).length))
+      let languageRange = NSRange(location: openingLine.location + (info?.range(at: 1).location ?? 0), length: info?.range(at: 1).length ?? 0)
+      let language = ns.substring(with: languageRange)
+      let end = NSMaxRange(match.range)
+      let closingLine: NSRange?
+      if end > NSMaxRange(openingLine) {
+        let lastLine = ns.lineRange(for: NSRange(location: end - 1, length: 0))
+        let lastText = ns.substring(with: lastLine).trimmingCharacters(in: .whitespacesAndNewlines)
+        closingLine = lastText.range(of: #"^(`{3,}|~{3,})$"#, options: .regularExpression) != nil ? lastLine : nil
+      } else {
+        closingLine = nil
+      }
+      let bodyStart = NSMaxRange(openingLine)
+      let bodyEnd = closingLine?.location ?? end
+      let body = NSRange(location: bodyStart, length: max(0, bodyEnd - bodyStart))
+      return CodeBlock(range: match.range, openingLine: openingLine, language: language, languageRange: languageRange, body: body, closingLine: closingLine)
+    }
+  }
+
   static func apply(to storage: NSTextStorage) {
     let text = storage.string
     let all = fullRange(text)
