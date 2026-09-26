@@ -14,6 +14,57 @@ import Foundation
 /// It also measures and paints the rounded card behind each fenced code
 /// block (tagged `Markdown.codeBlock`), for NoteTextView to call.
 final class TaskBoxLayoutManager: NSLayoutManager {
+  /// Selection and inline backgrounds hug the text, as in Raycast Notes:
+  /// each line's rect spans only its glyphs, at the height of its font
+  /// (not the whole line with its spacing), and a selected line break is
+  /// a thin bar rather than a fill to the right edge.
+  override func fillBackgroundRectArray(
+    _ rectArray: UnsafePointer<NSRect>, count rectCount: Int, forCharacterRange charRange: NSRange, color: NSColor
+  ) {
+    guard let storage = textStorage, let container = textContainers.first, charRange.length > 0,
+      let origin = firstTextView?.textContainerOrigin
+    else {
+      super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: color)
+      return
+    }
+    let ns = storage.string as NSString
+    let glyphs = glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+    var rects: [NSRect] = []
+    var index = glyphs.location
+    while index < NSMaxRange(glyphs) {
+      var fragmentGlyphs = NSRange()
+      let fragment = lineFragmentRect(forGlyphAt: index, effectiveRange: &fragmentGlyphs)
+      let onLine = NSIntersectionRange(fragmentGlyphs, glyphs)
+      guard onLine.length > 0 else { break }
+      let chars = characterRange(forGlyphRange: onLine, actualGlyphRange: nil)
+      let font = storage.attribute(.font, at: chars.location, effectiveRange: nil) as? NSFont ?? Markdown.baseFont
+      let baseline = fragment.minY + location(forGlyphAt: onLine.location).y
+      let top = baseline - font.ascender
+      let height = font.ascender - font.descender
+      var visible = onLine
+      if NSMaxRange(chars) <= ns.length, ns.character(at: NSMaxRange(chars) - 1) == 0x0A { visible.length -= 1 }
+      // A list line's marker is not highlighted: the fill starts where the
+      // text does (the hanging indent), as in Raycast Notes.
+      let style = storage.attribute(.paragraphStyle, at: chars.location, effectiveRange: nil) as? NSParagraphStyle
+      let textLeft = fragment.minX + (style?.headIndent ?? 0)
+      var rect: NSRect
+      if visible.length > 0 {
+        let bounds = boundingRect(forGlyphRange: visible, in: container)
+        let left = max(bounds.minX, textLeft)
+        rect = NSRect(x: left, y: top, width: max(0, bounds.maxX - left), height: height)
+      } else {
+        let x = max(fragment.minX + location(forGlyphAt: onLine.location).x, textLeft)
+        rect = NSRect(x: x, y: top, width: 2, height: height)
+      }
+      rects.append(rect.offsetBy(dx: origin.x, dy: origin.y))
+      index = NSMaxRange(fragmentGlyphs)
+    }
+    guard !rects.isEmpty else { return }
+    rects.withUnsafeBufferPointer {
+      super.fillBackgroundRectArray($0.baseAddress!, count: rects.count, forCharacterRange: charRange, color: color)
+    }
+  }
+
   /// Draws the task boxes that fall inside `rect` (text view coordinates).
   /// NoteTextView calls it from `draw(_:)` after the text and selection are
   /// drawn, so a selection never reveals the hidden characters under a box.
@@ -171,6 +222,8 @@ enum Markdown {
 
   /// The one highlight colour: list markers, numbers, task boxes, links.
   static let accent = NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 1)
+  /// Selected text: a wash of the accent, as in Raycast Notes.
+  static var selection: NSColor { accent.withAlphaComponent(0.42) }
   /// Marks a task's "[ ]" / "[x]" characters; the value is `true` when done.
   static let taskBox = NSAttributedString.Key("taskBox")
   /// Marks the (clear) "-", "*" or "+" of a bullet item, which

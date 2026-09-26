@@ -9,7 +9,7 @@ let tv = NoteTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
 tv.textContainer?.replaceLayoutManager(TaskBoxLayoutManager())
 tv.isRichText = false
 tv.linkTextAttributes = [:]
-tv.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
+tv.selectedTextAttributes = [.backgroundColor: Markdown.selection]
 tv.backgroundColor = NSColor(white: 0.12, alpha: 1)
 tv.textContainerInset = NSSize(width: 18, height: 16)
 tv.allowsUndo = true

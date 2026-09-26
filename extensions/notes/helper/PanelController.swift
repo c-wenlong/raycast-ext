@@ -178,7 +178,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.linkTextAttributes = [:]
     // Only a background for selections: the default also recolours the
     // text, which would reveal the characters hidden under boxes.
-    textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
+    textView.selectedTextAttributes = [.backgroundColor: Markdown.selection]
     textView.backgroundColor = Markdown.canvas
     panel.backgroundColor = Markdown.canvas
     textView.isAutomaticLinkDetectionEnabled = false
