@@ -387,6 +387,7 @@ check("moving the caret back inside the query closes the menu", !tv.slashMenuIsO
 load("x \n## head")
 tv.setSelectedRange(NSRange(location: 2, length: 0))
 tv.insertText("/", replacementRange: NSRange(location: NSNotFound, length: 0))
+check("the menu is open before the relocation", tv.slashMenuIsOpen)
 tv.setSelectedRange(NSRange(location: 5, length: 0))  // inside the hidden "## ", relocated
 check("a caret relocated off a hidden marker closes the menu", !tv.slashMenuIsOpen && caret() != 5, "\(caret())")
 load(">   \n> m")
