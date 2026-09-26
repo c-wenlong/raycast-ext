@@ -270,6 +270,14 @@ linkController.rewriteLink(at: 5, text: "bee", url: "y.com")
 check("rewrite through the view", tv.string == "one [bee](https://y.com) two" && caret() == 27,"\(tv.string) \(caret())")
 tv.undoManager?.undo()
 check("undo takes the rewrite back in one step", tv.string == "one [a](https://x) two", tv.string)
+tv.apply(ListEditing.Edit(range: NSRange(location: 0, length: 3), replacement: "ONE", cursor: 3))
+tv.undoManager?.setActionName("Shout")
+tv.setSelectedRange(NSRange(location: 1, length: 0))
+linkController.rewriteLink(at: 5, text: "a", url: "https://x")
+check(
+  "an unchanged rewrite leaves the text, caret and undo name alone",
+  tv.string == "ONE [a](https://x) two" && caret() == 1 && tv.undoManager?.undoActionName == "Shout",
+  "\(tv.string) \(caret()) \(tv.undoManager?.undoActionName ?? "-")")
 
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")

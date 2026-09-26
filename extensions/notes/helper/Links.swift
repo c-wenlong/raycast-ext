@@ -4,10 +4,10 @@ import Foundation
 // MARK: - Editing links without showing their markdown
 //
 // Resting the mouse on an http(s) link shows a small bubble below it with
-// the address and Edit / Copy buttons; right-clicking any link offers Edit,
-// Copy, Open and Remove. Edit opens a small panel with the link's text and
-// address, and saving rewrites the whole `[text](url)` (or bare URL) as one
-// undoable change. Clicking a link still opens it, as before.
+// the address and Open / Edit / Copy buttons; right-clicking any link offers
+// Edit, Copy, Open and Remove. Edit opens a small panel with the link's text
+// and address, and saving rewrites the whole `[text](url)` (or bare URL) as
+// one undoable change. Clicking a link still opens it, as before.
 
 final class LinkController: NSObject {
   /// One link's markdown source.
@@ -120,8 +120,17 @@ final class LinkController: NSObject {
   private let editor = LinkEditor()
   /// The link the bubble shows.
   private var bubbleSpan: Span?
-  /// The link the mouse rests on, shown when `showTimer` fires.
+  /// The character the bubble hangs from, inside `bubbleSpan`'s text: on a
+  /// link that wraps, the bubble goes by the line this character is on.
+  private var bubbleAnchor = 0
+  /// The link the mouse rests on, shown when `showTimer` fires, and the
+  /// character under the mouse on it.
   private var pendingSpan: Span?
+  private var pendingAnchor = 0
+  /// The link the editor is open for, and the character it hangs from; the
+  /// editor follows it when the note scrolls or re-wraps.
+  private var editingSpan: Span?
+  private var editingAnchor = 0
   private var showTimer: Timer?
   private var hideTimer: Timer?
   private var fadingOut = false
@@ -131,6 +140,7 @@ final class LinkController: NSObject {
     self.textView = textView
     super.init()
     bubble.isHidden = true
+    bubble.onOpen = { [weak self] in self?.openBubbleLink() }
     bubble.onEdit = { [weak self] in self?.editBubbleLink() }
     bubble.onCopy = { [weak self] in self?.copyBubbleLink() }
     textView.addSubview(bubble)
@@ -166,8 +176,11 @@ final class LinkController: NSObject {
     editor.hide(restoreFocus: false)
   }
 
+  /// The hover bubble goes (the mouse is somewhere else in the text now);
+  /// the editor stays open and follows its link, so nothing typed is lost.
   @objc private func scrolled(_ notification: Notification) {
-    close()
+    hideBubble(animated: false)
+    if editor.isVisible { positionEditor() }
   }
 
   @objc private func storageEdited(_ notification: Notification) {
@@ -178,10 +191,11 @@ final class LinkController: NSObject {
   /// Width changes re-wrap the text; follow the link. Waits a turn, as the
   /// frame changes in the middle of layout.
   @objc private func frameChanged(_ notification: Notification) {
-    guard !bubble.isHidden else { return }
+    guard !bubble.isHidden || editor.isVisible else { return }
     DispatchQueue.main.async { [weak self] in
-      guard let self, !self.bubble.isHidden else { return }
-      if !self.positionBubble() { self.hideBubble(animated: false) }
+      guard let self else { return }
+      if !self.bubble.isHidden, !self.positionBubble() { self.hideBubble(animated: false) }
+      if self.editor.isVisible { self.positionEditor() }
     }
   }
 
@@ -210,20 +224,31 @@ final class LinkController: NSObject {
     return index
   }
 
-  private func hoveredSpan(at point: NSPoint) -> Span? {
-    guard let textView, let index = linkIndex(at: point, webOnly: true) else { return nil }
-    return Self.span(in: textView.string, at: index)
+  /// The http(s) link under `point` and the character of it there.
+  private func hoveredLink(at point: NSPoint) -> (span: Span, index: Int)? {
+    guard let textView, let index = linkIndex(at: point, webOnly: true),
+      let span = Self.span(in: textView.string, at: index)
+    else { return nil }
+    return (span, index)
   }
 
-  /// The link's visible text, in text view coordinates.
-  private func linkRect(_ span: Span) -> NSRect? {
+  /// The part of the link's visible text on the same line as character
+  /// `index`, in text view coordinates. A link that wraps is measured on
+  /// that one line, so whatever hangs from it stays by the pointer.
+  private func linkRect(_ span: Span, near index: Int) -> NSRect? {
     guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer,
       NSMaxRange(span.textRange) <= (textView.string as NSString).length
     else { return nil }
     let glyphs = layoutManager.glyphRange(forCharacterRange: span.textRange, actualCharacterRange: nil)
     guard glyphs.location != NSNotFound, glyphs.length > 0 else { return nil }
+    let character = NSLocationInRange(index, span.textRange) ? index : span.textRange.location
+    let glyph = min(max(layoutManager.glyphIndexForCharacter(at: character), glyphs.location), NSMaxRange(glyphs) - 1)
+    var line = NSRange(location: NSNotFound, length: 0)
+    layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &line)
+    var onLine = line.location == NSNotFound ? glyphs : NSIntersectionRange(glyphs, line)
+    if onLine.length == 0 { onLine = glyphs }
     let origin = textView.textContainerOrigin
-    return layoutManager.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: origin.x, dy: origin.y)
+    return layoutManager.boundingRect(forGlyphRange: onLine, in: container).offsetBy(dx: origin.x, dy: origin.y)
   }
 
   private func mouseIsOverLinkOrBubble() -> Bool {
@@ -231,7 +256,7 @@ final class LinkController: NSObject {
     let point = textView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
     guard textView.visibleRect.contains(point) else { return false }
     if !bubble.isHidden, bubble.frame.contains(point) { return true }
-    return bubbleSpan != nil && hoveredSpan(at: point) == bubbleSpan
+    return bubbleSpan != nil && hoveredLink(at: point)?.span == bubbleSpan
   }
 
   // MARK: Hover bubble
@@ -245,7 +270,7 @@ final class LinkController: NSObject {
       cancelHide()
       return true
     }
-    guard let span = hoveredSpan(at: point) else {
+    guard let (span, index) = hoveredLink(at: point) else {
       cancelShow()
       scheduleHide()
       return false
@@ -258,20 +283,23 @@ final class LinkController: NSObject {
     // Over another link: the current bubble (if any) stays until this one
     // has been rested on long enough.
     cancelHide()
+    pendingAnchor = index
     if span != pendingSpan || showTimer == nil {
       pendingSpan = span
       showTimer?.invalidate()
       showTimer = Timer.scheduledTimer(withTimeInterval: Self.showDelay, repeats: false) { [weak self] _ in
         guard let self else { return }
+        let anchor = self.pendingAnchor
         self.showTimer = nil
         self.pendingSpan = nil
-        self.show(for: span.textRange.location)
+        self.show(for: anchor)
       }
     }
     return false
   }
 
-  /// Shows the bubble for the link at character `index` right away.
+  /// Shows the bubble for the link at character `index` right away, below
+  /// the line that character is on.
   func show(for index: Int) {
     guard let textView, textView.window != nil, !editor.isVisible,
       let span = Self.span(in: textView.string, at: index)
@@ -279,6 +307,7 @@ final class LinkController: NSObject {
     cancelShow()
     cancelHide()
     bubbleSpan = span
+    bubbleAnchor = index
     bubble.setURL(span.url)
     // Above the code block controls, which are subviews too.
     if textView.subviews.last !== bubble {
@@ -298,14 +327,23 @@ final class LinkController: NSObject {
     }
   }
 
-  /// Just below the link, or above it when there is no room below;
-  /// always inside the visible part of the note (clear of the bottom bar).
-  @discardableResult
-  private func positionBubble() -> Bool {
-    guard let textView, let span = bubbleSpan, let rect = linkRect(span) else { return false }
-    let size = bubble.preferredSize
+  /// The part of the note the text shows in: the visible rect, less the
+  /// bottom bar that floats over it.
+  private func visibleTextRect() -> NSRect {
+    guard let textView else { return .zero }
     var visible = textView.visibleRect
     visible.size.height -= textView.enclosingScrollView?.contentInsets.bottom ?? 0
+    return visible
+  }
+
+  /// Just below the hovered line of the link, or above it when there is no
+  /// room below; always inside the visible part of the note (clear of the
+  /// bottom bar).
+  @discardableResult
+  private func positionBubble() -> Bool {
+    guard let span = bubbleSpan, let rect = linkRect(span, near: bubbleAnchor) else { return false }
+    let size = bubble.preferredSize
+    let visible = visibleTextRect()
     var origin = NSPoint(x: rect.minX - 6, y: rect.maxY + 2)
     if origin.y + size.height > visible.maxY - 4 {
       origin.y = rect.minY - 2 - size.height
@@ -375,9 +413,20 @@ final class LinkController: NSObject {
     })
   }
 
+  /// Opens it as a click on the link would (the default browser).
+  private func openBubbleLink() {
+    guard let textView, let span = bubbleSpan, let url = URL(string: span.url) else {
+      NSSound.beep()
+      return
+    }
+    let index = bubbleAnchor
+    hideBubble(animated: false)
+    textView.clicked(onLink: url, at: index)
+  }
+
   private func editBubbleLink() {
-    guard let span = bubbleSpan else { return }
-    beginEditing(at: span.textRange.location)
+    guard bubbleSpan != nil else { return }
+    beginEditing(at: bubbleAnchor)
   }
 
   private func copyBubbleLink() {
@@ -404,7 +453,8 @@ final class LinkController: NSObject {
     func add(_ title: String, _ action: Selector, enabled: Bool = true) {
       let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
       item.target = self
-      item.representedObject = span.textRange.location
+      // The clicked character, so the editor opens by the clicked line.
+      item.representedObject = index
       item.isEnabled = enabled
       menu.addItem(item)
     }
@@ -423,8 +473,8 @@ final class LinkController: NSObject {
   }
 
   @objc private func editLinkItem(_ item: NSMenuItem) {
-    guard let span = span(for: item) else { return }
-    beginEditing(at: span.textRange.location)
+    guard span(for: item) != nil, let index = item.representedObject as? Int else { return }
+    beginEditing(at: index)
   }
 
   @objc private func copyLinkItem(_ item: NSMenuItem) {
@@ -448,16 +498,19 @@ final class LinkController: NSObject {
 
   // MARK: Editing
 
-  /// Opens the editor under the link at `index`.
+  /// Opens the editor under the line of the link that character `index`
+  /// is on.
   func beginEditing(at index: Int) {
     guard let textView, let window = textView.window, textView.isEditable else {
       NSSound.beep()
       return
     }
-    guard let span = Self.span(in: textView.string, at: index), let rect = linkRect(span) else { return }
+    guard let span = Self.span(in: textView.string, at: index), let anchor = editorAnchor(span, near: index)
+    else { return }
     hideBubble(animated: false)
-    let screenRect = window.convertToScreen(textView.convert(rect, to: nil))
-    editor.show(below: screenRect, in: window, text: span.text, url: span.url) { [weak self] text, url in
+    editingSpan = span
+    editingAnchor = index
+    editor.show(below: anchor, in: window, text: span.text, url: span.url) { [weak self] text, url in
       guard let self, let textView = self.textView,
         Self.span(in: textView.string, at: span.textRange.location) == span
       else { return }
@@ -465,11 +518,30 @@ final class LinkController: NSObject {
     }
   }
 
+  /// The link's line in screen coordinates, kept inside the visible part of
+  /// the note so the editor stays by the note when the link scrolls away.
+  private func editorAnchor(_ span: Span, near index: Int) -> NSRect? {
+    guard let textView, let window = textView.window, var rect = linkRect(span, near: index) else { return nil }
+    let visible = visibleTextRect()
+    rect.origin.y = max(min(rect.minY, visible.maxY - rect.height), visible.minY)
+    return window.convertToScreen(textView.convert(rect, to: nil))
+  }
+
+  /// Moves the open editor to follow its link after a scroll or re-wrap.
+  /// It stays where it is when the link can no longer be found.
+  private func positionEditor() {
+    guard let span = editingSpan, let anchor = editorAnchor(span, near: editingAnchor) else { return }
+    editor.move(below: anchor)
+  }
+
   /// Rewrites the link at `index` as one undoable change. The caret stays
   /// where it was unless it was inside the link, which puts it after it.
+  /// A rewrite that changes nothing leaves the text, the caret and the undo
+  /// stack alone.
   func rewriteLink(at index: Int, text: String, url: String, actionName: String = "Edit Link") {
     guard let textView, textView.isEditable,
-      var edit = Self.rewrite(in: textView.string, at: index, text: text, url: url)
+      var edit = Self.rewrite(in: textView.string, at: index, text: text, url: url),
+      (textView.string as NSString).substring(with: edit.range) != edit.replacement
     else { return }
     let caret = textView.selectedRange()
     let delta = (edit.replacement as NSString).length - edit.range.length
@@ -487,16 +559,19 @@ final class LinkController: NSObject {
 
 // MARK: - Hover bubble
 
-/// The address in secondary text with Edit and Copy buttons, in an opaque
-/// capsule tinted like the title bar pill. A subview of the text view, so
-/// it scrolls with the text; clicks on it never reach the text.
+/// The address in secondary text with Open, Edit and Copy buttons, in an
+/// opaque capsule tinted like the title bar pill. A subview of the text
+/// view, so it scrolls with the text; clicks on it never reach the text.
 final class LinkBubble: NSView {
+  var onOpen: (() -> Void)?
   var onEdit: (() -> Void)?
   var onCopy: (() -> Void)?
   private let wash = PillView()
   private let label = NSTextField(labelWithString: "")
+  private let openButton = ChromeButton(symbol: "arrow.up.right.square", pointSize: 12, label: "Open")
   private let editButton = ChromeButton(symbol: "pencil", pointSize: 12, label: "Edit")
   private let copyButton = ChromeButton(symbol: "doc.on.doc", pointSize: 12, label: "Copy")
+  private var buttons: [ChromeButton] { [openButton, editButton, copyButton] }
   private var labelWidth: CGFloat = 0
   private var copyReset: DispatchWorkItem?
 
@@ -505,6 +580,7 @@ final class LinkBubble: NSView {
   private static let buttonSize: CGFloat = 26
   private static let leading: CGFloat = 12
   private static let gap: CGFloat = 6
+  private static let buttonGap: CGFloat = 2
   private static let trailing: CGFloat = 3
   private static let copyImage = symbol("doc.on.doc")
   private static let copiedImage = symbol("checkmark")
@@ -531,7 +607,8 @@ final class LinkBubble: NSView {
     label.usesSingleLineMode = true
     label.maximumNumberOfLines = 1
     addSubview(label)
-    for (button, action) in [(editButton, #selector(editClicked)), (copyButton, #selector(copyClicked))] {
+    let actions = [#selector(openClicked), #selector(editClicked), #selector(copyClicked)]
+    for (button, action) in zip(buttons, actions) {
       button.cornerRadius = Self.buttonSize / 2
       button.contentTintColor = .secondaryLabelColor
       button.target = self
@@ -554,7 +631,8 @@ final class LinkBubble: NSView {
 
   var preferredSize: NSSize {
     NSSize(
-      width: Self.leading + labelWidth + Self.gap + Self.buttonSize * 2 + 2 + Self.trailing,
+      width: Self.leading + labelWidth + Self.gap + Self.buttonSize * CGFloat(buttons.count)
+        + Self.buttonGap * CGFloat(buttons.count - 1) + Self.trailing,
       height: Self.height)
   }
 
@@ -585,8 +663,11 @@ final class LinkBubble: NSView {
     label.frame = NSRect(
       x: Self.leading, y: ((bounds.height - labelHeight) / 2).rounded(), width: labelWidth, height: labelHeight)
     let buttonY = ((bounds.height - Self.buttonSize) / 2).rounded()
-    editButton.frame = NSRect(x: label.frame.maxX + Self.gap, y: buttonY, width: Self.buttonSize, height: Self.buttonSize)
-    copyButton.frame = NSRect(x: editButton.frame.maxX + 2, y: buttonY, width: Self.buttonSize, height: Self.buttonSize)
+    var x = label.frame.maxX + Self.gap
+    for button in buttons {
+      button.frame = NSRect(x: x, y: buttonY, width: Self.buttonSize, height: Self.buttonSize)
+      x = button.frame.maxX + Self.buttonGap
+    }
   }
 
   override func draw(_ dirtyRect: NSRect) {
@@ -601,6 +682,7 @@ final class LinkBubble: NSView {
     path.stroke()
   }
 
+  @objc private func openClicked() { onOpen?() }
   @objc private func editClicked() { onEdit?() }
   @objc private func copyClicked() { onCopy?() }
 }
@@ -689,18 +771,30 @@ final class LinkEditor: NSObject, NSTextFieldDelegate {
     self.save = save
     textField.stringValue = text
     urlField.stringValue = url
-    var frame = NSRect(x: anchor.minX - 8, y: anchor.minY - 6 - Self.height, width: Self.width, height: Self.height)
-    if let screen = (parent.screen ?? NSScreen.main)?.visibleFrame {
-      if frame.minY < screen.minY { frame.origin.y = anchor.maxY + 6 }
-      frame.origin.x = min(max(frame.minX, screen.minX + 4), screen.maxX - Self.width - 4)
-    }
-    panel.setFrame(frame, display: false)
+    panel.setFrame(frame(below: anchor, on: parent.screen), display: false)
     if panel.parent !== parent {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)
     }
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(urlField)
+  }
+
+  /// Moves the open editor to a new `anchor` (screen coordinates), keeping
+  /// what has been typed.
+  func move(below anchor: NSRect) {
+    guard panel.isVisible else { return }
+    let frame = frame(below: anchor, on: panel.parent?.screen)
+    if panel.frame != frame { panel.setFrame(frame, display: true) }
+  }
+
+  private func frame(below anchor: NSRect, on screen: NSScreen?) -> NSRect {
+    var frame = NSRect(x: anchor.minX - 8, y: anchor.minY - 6 - Self.height, width: Self.width, height: Self.height)
+    if let visible = (screen ?? NSScreen.main)?.visibleFrame {
+      if frame.minY < visible.minY { frame.origin.y = anchor.maxY + 6 }
+      frame.origin.x = min(max(frame.minX, visible.minX + 4), visible.maxX - Self.width - 4)
+    }
+    return NSRect(x: frame.minX.rounded(), y: frame.minY.rounded(), width: frame.width, height: frame.height)
   }
 
   /// Closes the editor without saving; `restoreFocus` hands the keyboard
