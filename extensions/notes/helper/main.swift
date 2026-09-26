@@ -322,7 +322,25 @@ final class NoteTextView: NSTextView {
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "c" {
+      return onCommand?("copy") == true
+    }
+    if flags == .control, event.charactersIgnoringModifiers == "x" {
+      return onCommand?("delete") == true
+    }
+    if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "z" {
+      undoManager?.redo()
+      return true
+    }
     if flags == .command, let key = event.charactersIgnoringModifiers {
+      switch key {
+      case "z": undoManager?.undo(); return true
+      case "x": cut(nil); return true
+      case "c": copy(nil); return true
+      case "v": paste(nil); return true
+      case "a": selectAll(nil); return true
+      default: break
+      }
       let command: String?
       switch key {
       case "[": command = "prev"
@@ -330,6 +348,9 @@ final class NoteTextView: NSTextView {
       case "n": command = "new"
       case "p": command = "browse"
       case "w": command = "hide"
+      case "k": command = "palette"
+      case "f": command = "find"
+      case "d": command = "duplicate"
       case "\r": command = "toggle-task"
       default: command = nil
       }
@@ -347,6 +368,243 @@ final class NoteTextView: NSTextView {
   }
 }
 
+
+// MARK: - Action palette (⌘K)
+
+struct PaletteAction {
+  let title: String
+  let keys: String
+  let symbol: String
+  let command: String
+}
+
+/// Child panel that lets ⌘K close the palette while its search field is key.
+final class PalettePanel: NSPanel {
+  var onToggleShortcut: (() -> Void)?
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if flags == .command, event.charactersIgnoringModifiers == "k" {
+      onToggleShortcut?()
+      return true
+    }
+    return super.performKeyEquivalent(with: event)
+  }
+}
+
+/// Search field over a list of actions, shown as a sheet-like child panel.
+/// Up/down move, return runs, escape or ⌘K closes, typing filters.
+final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+  private let panel: PalettePanel
+  private let search = NSSearchField()
+  private let table = NSTableView()
+  private let actions: [PaletteAction]
+  private var visible: [PaletteAction] = []
+  private let run: (String) -> Void
+  private static let width: CGFloat = 420
+
+  init(actions: [PaletteAction], run: @escaping (String) -> Void) {
+    self.actions = actions
+    self.run = run
+    panel = PalettePanel(
+      contentRect: NSRect(x: 0, y: 0, width: ActionPalette.width, height: 380),
+      styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
+    super.init()
+    panel.onToggleShortcut = { [weak self] in self?.hide() }
+
+    panel.titleVisibility = .hidden
+    panel.titlebarAppearsTransparent = true
+    panel.isMovable = false
+    panel.isReleasedWhenClosed = false
+    panel.hasShadow = true
+    panel.level = .floating
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+    let root = NSVisualEffectView(frame: panel.contentView!.bounds)
+    root.material = .popover
+    root.blendingMode = .behindWindow
+    root.state = .active
+    root.autoresizingMask = [.width, .height]
+    panel.contentView = root
+
+    search.placeholderString = "Search for actions..."
+    search.font = NSFont.systemFont(ofSize: 17)
+    search.focusRingType = .none
+    search.isBordered = false
+    search.drawsBackground = false
+    search.delegate = self
+    search.frame = NSRect(x: 16, y: panel.frame.height - 52, width: ActionPalette.width - 32, height: 34)
+    search.autoresizingMask = [.width, .minYMargin]
+    if let cell = search.cell as? NSSearchFieldCell {
+      cell.searchButtonCell = nil
+      cell.cancelButtonCell = nil
+    }
+    root.addSubview(search)
+
+    let divider = NSBox(frame: NSRect(x: 0, y: panel.frame.height - 62, width: ActionPalette.width, height: 1))
+    divider.boxType = .separator
+    divider.autoresizingMask = [.width, .minYMargin]
+    root.addSubview(divider)
+
+    let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action"))
+    column.width = ActionPalette.width - 16
+    table.addTableColumn(column)
+    table.headerView = nil
+    table.rowHeight = 40
+    table.intercellSpacing = NSSize(width: 0, height: 2)
+    table.backgroundColor = .clear
+    table.selectionHighlightStyle = .regular
+    table.style = .inset
+    table.dataSource = self
+    table.delegate = self
+    table.target = self
+    table.action = #selector(rowClicked)
+
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 8, width: ActionPalette.width, height: panel.frame.height - 72))
+    scroll.autoresizingMask = [.width, .height]
+    scroll.drawsBackground = false
+    scroll.hasVerticalScroller = true
+    scroll.documentView = table
+    root.addSubview(scroll)
+  }
+
+  var isVisible: Bool { panel.isVisible }
+
+  func show(over parent: NSWindow) {
+    search.stringValue = ""
+    filter()
+    let width = min(ActionPalette.width, parent.frame.width - 40)
+    let height = min(CGFloat(visible.count) * (table.rowHeight + 2) + 80, parent.frame.height - 40, 480)
+    let origin = NSPoint(
+      x: parent.frame.midX - width / 2,
+      y: parent.frame.midY - height / 2)
+    panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
+    parent.addChildWindow(panel, ordered: .above)
+    panel.makeKeyAndOrderFront(nil)
+    panel.makeFirstResponder(search)
+  }
+
+  func hide() {
+    guard panel.isVisible else { return }
+    panel.parent?.removeChildWindow(panel)
+    panel.orderOut(nil)
+  }
+
+  private func filter() {
+    let query = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+    visible = query.isEmpty
+      ? actions
+      : actions.filter { action in
+        let words = query.split(separator: " ")
+        let haystack = action.title.lowercased()
+        return words.allSatisfy { haystack.contains($0) }
+      }
+    table.reloadData()
+    if !visible.isEmpty {
+      table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+      table.scrollRowToVisible(0)
+    }
+  }
+
+  private func runSelected() {
+    let row = table.selectedRow
+    guard row >= 0, row < visible.count else { return }
+    let command = visible[row].command
+    hide()
+    run(command)
+  }
+
+  @objc private func rowClicked() {
+    runSelected()
+  }
+
+  private func moveSelection(by delta: Int) {
+    guard !visible.isEmpty else { return }
+    let next = (max(table.selectedRow, 0) + delta + visible.count) % visible.count
+    table.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+    table.scrollRowToVisible(next)
+  }
+
+  // NSSearchFieldDelegate
+
+  func controlTextDidChange(_ notification: Notification) {
+    filter()
+  }
+
+  func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+    switch selector {
+    case #selector(NSResponder.moveDown(_:)):
+      moveSelection(by: 1)
+    case #selector(NSResponder.moveUp(_:)):
+      moveSelection(by: -1)
+    case #selector(NSResponder.insertNewline(_:)):
+      runSelected()
+    case #selector(NSResponder.cancelOperation(_:)):
+      hide()
+    default:
+      return false
+    }
+    return true
+  }
+
+  // NSTableViewDataSource / Delegate
+
+  func numberOfRows(in tableView: NSTableView) -> Int { visible.count }
+
+  func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+    let action = visible[row]
+    let cell = NSView()
+
+    let icon = NSImageView()
+    icon.image = NSImage(systemSymbolName: action.symbol, accessibilityDescription: nil)
+    icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+    icon.contentTintColor = .secondaryLabelColor
+    icon.translatesAutoresizingMaskIntoConstraints = false
+
+    let title = NSTextField(labelWithString: action.title)
+    title.font = NSFont.systemFont(ofSize: 15)
+    title.translatesAutoresizingMaskIntoConstraints = false
+
+    let keys = NSStackView()
+    keys.orientation = .horizontal
+    keys.spacing = 4
+    keys.translatesAutoresizingMaskIntoConstraints = false
+    for key in action.keys {
+      let badge = NSTextField(labelWithString: String(key))
+      badge.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+      badge.textColor = .secondaryLabelColor
+      badge.alignment = .center
+      badge.wantsLayer = true
+      badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
+      badge.layer?.cornerRadius = 5
+      badge.translatesAutoresizingMaskIntoConstraints = false
+      badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
+      badge.heightAnchor.constraint(equalToConstant: 22).isActive = true
+      keys.addArrangedSubview(badge)
+    }
+
+    cell.addSubview(icon)
+    cell.addSubview(title)
+    cell.addSubview(keys)
+    NSLayoutConstraint.activate([
+      icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
+      icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+      icon.widthAnchor.constraint(equalToConstant: 22),
+      title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+      title.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+      keys.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+      keys.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+    ])
+    return cell
+  }
+
+  func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+    let view = NSTableRowView()
+    view.isEmphasized = true
+    return view
+  }
+}
+
 // MARK: - Controller
 
 final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate, NSWindowDelegate {
@@ -358,17 +616,60 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var saveTimer: Timer?
   private var watcher: DispatchSourceFileSystemObject?
   private var pendingCommand: String
+  private var palette: ActionPalette!
 
   init(initialCommand: String) {
     pendingCommand = initialCommand
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    installMainMenu()
     buildPanel()
     handle(pendingCommand)
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard saveNow() else {
+      panel.title = "Could not save; quit cancelled"
+      return .terminateCancel
+    }
+    return .terminateNow
+  }
+
+  /// Accessory apps start without a menu bar, and without one the Edit
+  /// key equivalents (⌘Z, ⌘C, ⌘V, ⌘A...) have nothing to route to.
+  private func installMainMenu() {
+    let main = NSMenu()
+    let appItem = NSMenuItem()
+    appItem.submenu = NSMenu()
+    appItem.submenu?.addItem(withTitle: "Quit Notes Window", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    main.addItem(appItem)
+
+    let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+    let edit = NSMenu(title: "Edit")
+    edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+    let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+    redo.keyEquivalentModifierMask = [.command, .shift]
+    edit.addItem(.separator())
+    edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    edit.addItem(.separator())
+    let find = edit.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+    find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+    let next = edit.addItem(withTitle: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+    next.tag = Int(NSFindPanelAction.next.rawValue)
+    let previous = edit.addItem(withTitle: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+    previous.tag = Int(NSFindPanelAction.previous.rawValue)
+    previous.keyEquivalentModifierMask = [.command, .shift]
+    editItem.submenu = edit
+    main.addItem(editItem)
+
+    NSApp.mainMenu = main
+  }
 
   private func buildPanel() {
     panel = NSPanel(
@@ -416,6 +717,22 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
     scroll.documentView = textView
     panel.contentView?.addSubview(scroll)
+
+    palette = ActionPalette(actions: [
+      PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
+      PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
+      PaletteAction(title: "Browse Notes", keys: "⌘P", symbol: "square.grid.2x2", command: "browse"),
+      PaletteAction(title: "Previous Note", keys: "⌘[", symbol: "arrow.left.circle", command: "prev"),
+      PaletteAction(title: "Next Note", keys: "⌘]", symbol: "arrow.right.circle", command: "next"),
+      PaletteAction(title: "Toggle Task", keys: "⌘↩", symbol: "checkmark.circle", command: "toggle-task"),
+      PaletteAction(title: "Find in Note", keys: "⌘F", symbol: "magnifyingglass", command: "find"),
+      PaletteAction(title: "Copy Note", keys: "⇧⌘C", symbol: "doc.on.clipboard", command: "copy"),
+      PaletteAction(title: "Reveal in Finder", keys: "", symbol: "folder", command: "reveal"),
+      PaletteAction(title: "Delete Note", keys: "⌃X", symbol: "trash", command: "delete"),
+      PaletteAction(title: "Hide Window", keys: "⎋", symbol: "eye.slash", command: "hide"),
+    ]) { [weak self] command in
+      self?.handle(command)
+    }
   }
 
   // MARK: Commands
@@ -440,6 +757,23 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       NSWorkspace.shared.open(URL(string: "raycast://extensions/c-wenlong/notes/browseNotes")!)
     case "toggle-task":
       toggleTaskOnCurrentLine()
+    case "palette":
+      palette.isVisible ? palette.hide() : palette.show(over: panel)
+    case "duplicate":
+      duplicateNote()
+    case "find":
+      let item = NSMenuItem()
+      item.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+      textView.performFindPanelAction(item)
+    case "copy":
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(textView.string, forType: .string)
+    case "reveal":
+      if let path = currentPath {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+      }
+    case "delete":
+      deleteNote()
     default:
       if command.hasPrefix("open ") {
         let path = String(command.dropFirst(5)).trimmingCharacters(in: .whitespaces)
@@ -459,6 +793,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private func hide() {
+    palette.hide()
     saveNow()
     panel.orderOut(nil)
   }
@@ -502,6 +837,68 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     load(path)
   }
 
+  /// Copies the open note. The heading gets " copy" appended and a
+  /// generated filename follows that heading's slug, so the title-driven
+  /// rename on the next save leaves the copy's name alone.
+  private func duplicateNote() {
+    saveNow()
+    guard let path = currentPath, textView.isEditable else {
+      NSSound.beep()
+      return
+    }
+    let filename = (path as NSString).lastPathComponent
+    let directory = (path as NSString).deletingLastPathComponent
+    var text = loadedText
+    var copyName = "\((filename as NSString).deletingPathExtension) copy.md"
+
+    if let heading = headingPattern.firstMatch(in: text, range: fullRange(text)) {
+      let headingRange = heading.range(at: 1)
+      let copyTitle = (text as NSString).substring(with: headingRange) + " copy"
+      text = (text as NSString).replacingCharacters(in: headingRange, with: copyTitle)
+      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)) {
+        let prefix = (filename as NSString).substring(with: match.range(at: 1))
+        copyName = "\(prefix) - \(slugify(copyTitle)).md"
+      }
+    }
+
+    let copyPath = uniquePath(for: copyName, in: directory)
+    do {
+      try text.write(toFile: copyPath, atomically: false, encoding: .utf8)
+    } catch {
+      NSSound.beep()
+      return
+    }
+    refreshList()
+    load(copyPath)
+  }
+
+  /// Moves the open note to the Trash after confirming, then shows the
+  /// newest remaining note.
+  private func deleteNote() {
+    guard let path = currentPath else { return }
+    let alert = NSAlert()
+    alert.messageText = "Move note to Trash?"
+    alert.informativeText = (path as NSString).lastPathComponent
+    alert.addButton(withTitle: "Move to Trash")
+    alert.addButton(withTitle: "Cancel")
+    alert.alertStyle = .warning
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    saveNow()
+    watcher?.cancel()
+    watcher = nil
+    do {
+      try diskFiles.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+    } catch {
+      NSSound.beep()
+      watch(path)
+      return
+    }
+    currentPath = nil
+    loadedText = ""
+    refreshList()
+    if let first = notes.first { load(first.path) } else { newNote() }
+  }
+
   private func newNote() {
     saveNow()
     let path = uniquePath(for: "\(timestampPrefix()) - untitled.md")
@@ -521,8 +918,18 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   // MARK: Loading and saving
 
   private func load(_ path: String) {
-    let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     currentPath = path
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+      // Not UTF-8 (or unreadable): show it read-only so nothing here can
+      // overwrite or copy a file we cannot represent.
+      loadedText = ""
+      textView.string = ""
+      textView.isEditable = false
+      watch(path)
+      panel.title = "Cannot read \((path as NSString).lastPathComponent) as UTF-8"
+      return
+    }
+    textView.isEditable = true
     loadedText = text
     textView.string = text
     restyle()
@@ -542,18 +949,23 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     updateTitle()
   }
 
-  private func saveNow() {
+  /// Writes unsaved text. Returns false when the write failed, in which
+  /// case the text stays dirty and the next save retries.
+  @discardableResult
+  private func saveNow() -> Bool {
     saveTimer?.invalidate()
-    guard let path = currentPath else { return }
+    guard let path = currentPath, textView.isEditable else { return true }
     let text = textView.string
-    guard text != loadedText else { return }
+    guard text != loadedText else { return true }
     do {
       try text.write(toFile: path, atomically: false, encoding: .utf8)
       loadedText = text
       renameToMatchTitleIfNeeded()
       updateTitle()
+      return true
     } catch {
       NSSound.beep()
+      return false
     }
   }
 
@@ -626,6 +1038,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   /// Takes the on-disk text when it changed and we have nothing unsaved.
   private func reloadFromDisk(_ path: String) {
+    if !textView.isEditable {
+      // Was undecodable; if it reads as UTF-8 now, open it for real.
+      if (try? String(contentsOfFile: path, encoding: .utf8)) != nil { load(path) }
+      return
+    }
     let onDisk = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     guard onDisk != loadedText, textView.string == loadedText else { return }
     let selection = textView.selectedRange()
@@ -685,6 +1102,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       panel.title = "Notes"
       return
     }
+    guard textView.isEditable else { return }
     let noteTitle = title(of: textView.string, filename: (path as NSString).lastPathComponent)
     let position = currentIndex.map { "\($0 + 1)/\(notes.count)" } ?? ""
     let unsaved = textView.string != loadedText ? " •" : ""
