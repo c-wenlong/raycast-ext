@@ -440,7 +440,10 @@ enum Markdown {
   /// A callout: ">> " lines, drawn in an outlined box (a nested quote to
   /// other markdown viewers).
   static let callout = try! NSRegularExpression(pattern: #"^(>>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
-  static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?(?:^ {0,3}(?:\1`*|\2~*)[ \t]*$|\z)"#, options: .anchorsMatchLines)
+  // A block needs its closing fence: an opening fence typed on its own
+  // stays literal text (the Enter and Space rules add the closing fence)
+  // rather than swallowing the rest of the note.
+  static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?^ {0,3}(?:\1`*|\2~*)[ \t]*$"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
   static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
   // Groups 1/2 for `*`, 3/4 for `_`. Each marker is a lone character (so
@@ -762,6 +765,9 @@ enum Markdown {
       if (matched.hasPrefix("*") || matched.hasPrefix("_")),
         ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines) == matched
       { continue }
+      // Two backticks stay visible: they are usually the start of a
+      // fence being typed, and code styling wants text between them.
+      if matched.hasPrefix("`") { continue }
       let half = match.range.length / 2
       marker(NSRange(location: match.range.location, length: half), .open)
       marker(NSRange(location: match.range.location + half, length: half), .close)

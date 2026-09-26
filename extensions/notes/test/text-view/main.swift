@@ -201,7 +201,13 @@ tv.setSelectedRange(NSRange(location: 9, length: 0))
 tv.deleteBackward(nil)
 check("backspace at the start of an adjacent pair deletes the visible char", tv.string == "**on****two**" && caret() == 8, "\(tv.string) \(caret())")
 load("``")
-check("an empty code pair on its own line is hidden", tv.textStorage!.attribute(Markdown.hiddenRun, at: 0, effectiveRange: nil) != nil)
+check("two backticks stay visible until there is text between them", tv.textStorage!.attribute(Markdown.hiddenRun, at: 0, effectiveRange: nil) == nil)
+load("x `k` y")
+check("backticks around text are hidden", tv.textStorage!.attribute(Markdown.hiddenRun, at: 2, effectiveRange: nil) != nil)
+load("```\nbelow\nmore")
+check("an opening fence on its own is not a code block", Markdown.codeBlocks(in: tv.string).isEmpty && tv.textStorage!.attribute(Markdown.codeBlock, at: 5, effectiveRange: nil) == nil)
+load("```\ncode\n```\nafter")
+check("a closed fence is a code block that ends at its closing fence", Markdown.codeBlocks(in: tv.string).count == 1 && tv.textStorage!.attribute(Markdown.codeBlock, at: 5, effectiveRange: nil) != nil && tv.textStorage!.attribute(Markdown.codeBlock, at: 14, effectiveRange: nil) == nil)
 
 // 12. list grid: text starts one column per level, markers stay off the grid
 func textX(_ line: Int, _ column: Int) -> CGFloat {
