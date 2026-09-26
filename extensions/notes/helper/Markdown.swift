@@ -171,7 +171,7 @@ enum Markdown {
   /// which the overlay controls sit in.
   static var codeHeaderHeight: CGFloat { (34 * max(zoom, 1)).rounded() }
   /// Height of the (hidden) closing fence line: the card's bottom padding.
-  static var codeFooterHeight: CGFloat { (10 * zoom).rounded() }
+  static var codeFooterHeight: CGFloat { (18 * zoom).rounded() }
   /// How far the card reaches past the text container on each side.
   static let codeCardOutset: CGFloat = 12
   static let codeCardRadius: CGFloat = 10

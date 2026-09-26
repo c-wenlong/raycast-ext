@@ -25,7 +25,7 @@ load("a\n```python\nx = 1\n```\nb\n")
 tv.setSelectedRange(NSRange(location: 3, length: 0))
 check("caret on opening fence moves to body", caret() == 12, "\(caret())")
 tv.setSelectedRange(NSRange(location: 19, length: 0))  // on closing ```
-check("caret on closing fence moves past block", caret() == 22, "\(caret())")
+check("caret on closing fence goes to end of last body line", caret() == 17, "\(caret())")
 
 // 2. arrow down from last body line leaves the block
 tv.setSelectedRange(NSRange(location: 14, length: 0))
@@ -73,6 +73,29 @@ tv.setSelectedRange(NSRange(location: 6, length: 0))  // column 0 of "y"
 tv.moveUp(nil)
 check("arrow up from second body line stays in block", caret() == 4, "\(caret())")
 
+// 6d. arrow up from the line after a block enters its last line
+load("```\nx\nyy\n```\nafter\n")
+tv.setSelectedRange(NSRange(location: 14, length: 0))  // start of "after"
+tv.moveUp(nil)
+check("arrow up from below enters last body line", caret() == 8, "\(caret())")
+
+// 6e. arrow up inside a wrapped first body line stays in the block
+load("```\n" + String(repeating: "word ", count: 30) + "\n```\n")
+tv.frame.size.width = 160
+tv.layoutManager?.ensureLayout(for: tv.textContainer!)
+tv.setSelectedRange(NSRange(location: 4 + 100, length: 0))  // deep into the wrapped line
+tv.moveUp(nil)
+check("arrow up within a wrapped line stays in block", caret() > 4 && caret() < 104, "\(caret())")
+tv.frame.size.width = 420
+
+// 6f. loading a note does not edit it
+tv.suppressFenceRelocation = true
+load("```\n```")
+tv.setSelectedRange(NSRange(location: 7, length: 0))
+tv.suppressFenceRelocation = false
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+check("placing the caret while loading leaves the file alone", tv.string == "```\n```", tv.string.debugDescription)
+
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")
 tv.setSelectedRange(NSRange(location: 0, length: 28))
@@ -80,5 +103,22 @@ tv.needsDisplay = true
 let rep = tv.bitmapImageRepForCachingDisplay(in: tv.bounds)!
 tv.cacheDisplay(in: tv.bounds, to: rep)
 try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+// Pixels: the first line band must show the accent box and no bright glyph pixels left of the text.
+func colour(_ x: Int, _ y: Int) -> (CGFloat, CGFloat, CGFloat) {
+  let c = rep.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!
+  return (c.redComponent, c.greenComponent, c.blueComponent)
+}
+let scale = Int(rep.pixelsWide) / Int(tv.bounds.width)
+var accentPixels = 0
+var brightPixels = 0
+for y in (16 * scale)..<(40 * scale) {
+  for x in (18 * scale)..<(44 * scale) {
+    let (r, g, b) = colour(x, y)
+    if r > 0.75 && g < 0.5 && b < 0.5 { accentPixels += 1 }
+    if r > 0.85 && g > 0.85 && b > 0.85 { brightPixels += 1 }
+  }
+}
+check("selection render shows the box", accentPixels > 20, "\(accentPixels)")
+check("selection render shows no hidden characters", brightPixels == 0, "\(brightPixels)")
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
