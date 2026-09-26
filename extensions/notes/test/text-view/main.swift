@@ -91,10 +91,21 @@ tv.frame.size.width = 420
 // 6f. loading a note does not edit it
 tv.suppressFenceRelocation = true
 load("```\n```")
-tv.setSelectedRange(NSRange(location: 7, length: 0))
 tv.suppressFenceRelocation = false
+tv.suppressFenceEdits = true
+tv.setSelectedRange(NSRange(location: 7, length: 0))
+tv.suppressFenceEdits = false
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 check("placing the caret while loading leaves the file alone", tv.string == "```\n```", tv.string.debugDescription)
+
+// 6g. loading a note that ends with a closing fence lands in the body
+tv.suppressFenceRelocation = true
+load("```\nx\n```")
+tv.suppressFenceRelocation = false
+tv.suppressFenceEdits = true
+tv.setSelectedRange(NSRange(location: 9, length: 0))
+tv.suppressFenceEdits = false
+check("caret at end of a fence-terminated note goes to the body", caret() == 5, "\(caret())")
 
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")

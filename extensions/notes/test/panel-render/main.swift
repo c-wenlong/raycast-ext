@@ -13,7 +13,8 @@ let notePath = (args[0] as NSString).expandingTildeInPath
 notesDir = (notePath as NSString).deletingLastPathComponent
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-let controller = PanelController(initialCommand: "show")
+// "hide" so nothing is created if the folder has no notes; "open" below shows the panel.
+let controller = PanelController(initialCommand: "hide")
 app.delegate = controller
 controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
 guard let panel = NSApp.windows.first(where: { $0 is NSPanel && $0.frame.width >= 300 }) else { exit(3) }

@@ -415,13 +415,16 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     }
     textView.isEditable = true
     loadedText = text
-    // Setting the string resets the caret, so keep fence relocation (and
-    // its deferred body-line edit) off for the whole load.
+    // Setting the string resets the caret; keep relocation off for that,
+    // then place the caret with relocation on (so it never rests on a
+    // fence) but with fence edits off (so opening a note never changes it).
     textView.suppressFenceRelocation = true
     textView.string = text
-    restyle()
-    textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
     textView.suppressFenceRelocation = false
+    restyle()
+    textView.suppressFenceEdits = true
+    textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+    textView.suppressFenceEdits = false
     textView.undoManager?.removeAllActions()
     textView.scrollToEndOfDocument(nil)
     codeBlocks.update()

@@ -24,6 +24,9 @@ final class NoteTextView: NSTextView {
   /// moves that inspect where the caret landed) so fence lines are not
   /// relocated or edited underneath.
   var suppressFenceRelocation = false
+  /// Set while a note loads: the caret may still be redirected off a fence,
+  /// but nothing is edited to make room for it.
+  var suppressFenceEdits = false
 
   private func codeBlock(containing location: Int) -> Markdown.CodeBlock? {
     Markdown.codeBlocks(in: string).first { NSLocationInRange(location, $0.range) || location == NSMaxRange($0.range) && $0.closingLine != nil }
@@ -59,7 +62,7 @@ final class NoteTextView: NSTextView {
       if let block = codeBlock(containing: target), block.closingLine != nil, block.body.length == 0,
         target == block.body.location {
         target = block.openingLine.location
-        if window?.firstResponder === self {
+        if !suppressFenceEdits, window?.firstResponder === self {
           DispatchQueue.main.async { [weak self] in self?.insertBodyLine(into: block) }
         }
       }
