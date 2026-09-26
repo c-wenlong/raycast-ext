@@ -653,9 +653,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let find = edit.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
     find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
     let next = edit.addItem(withTitle: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-    next.tag = Int(NSFindPanelAction.nextMatch.rawValue)
+    next.tag = Int(NSFindPanelAction.next.rawValue)
     let previous = edit.addItem(withTitle: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-    previous.tag = Int(NSFindPanelAction.previousMatch.rawValue)
+    previous.tag = Int(NSFindPanelAction.previous.rawValue)
     previous.keyEquivalentModifierMask = [.command, .shift]
     editItem.submenu = edit
     main.addItem(editItem)
