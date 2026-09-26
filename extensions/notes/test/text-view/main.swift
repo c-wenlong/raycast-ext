@@ -368,6 +368,16 @@ let firstQuote = tv.textStorage!.attribute(.paragraphStyle, at: 2, effectiveRang
 let lastQuote = tv.textStorage!.attribute(.paragraphStyle, at: 8, effectiveRange: nil) as! NSParagraphStyle
 check("a quote keeps air above its first line and below its last", firstQuote.paragraphSpacingBefore == Markdown.quoteGap && lastQuote.paragraphSpacing == Markdown.quoteGap && firstQuote.paragraphSpacing == 2 * Markdown.zoom && lastQuote.paragraphSpacingBefore == 0)
 check("a tab after > stays visible rather than kerned", tv.textStorage!.attribute(Markdown.hiddenRun, at: 16, effectiveRange: nil) == nil && tv.textStorage!.attribute(Markdown.quoteBar, at: 16, effectiveRange: nil) != nil)
+let barHost = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 80))
+let bar = FormatBar(apply: { _ in })
+barHost.addSubview(bar)
+NSLayoutConstraint.activate([
+  bar.leadingAnchor.constraint(equalTo: barHost.leadingAnchor), bar.trailingAnchor.constraint(equalTo: barHost.trailingAnchor),
+  bar.bottomAnchor.constraint(equalTo: barHost.bottomAnchor, constant: -10),
+])
+barHost.layoutSubtreeIfNeeded()
+check("a click on the format bar's pill hits the bar", bar.hitTest(NSPoint(x: bar.frame.midX, y: bar.frame.midY)) != nil)
+check("a click beside the pill falls through to what is under the bar", bar.hitTest(NSPoint(x: bar.frame.maxX - 20, y: bar.frame.midY)) == nil, "\(bar.frame)")
 check("a short window trims the menu to fit", menu.frame.maxY <= 200 && menu.frame.minY >= 0 && menu.frame.height >= 2 * SlashMenu.rowHeight, "\(menu.frame)")
 
 // 7. render a selection over task lines
