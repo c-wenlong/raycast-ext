@@ -1,9 +1,8 @@
-import { readdir, rename, stat } from "node:fs/promises";
+import { link, readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import {
   appendToFile,
   ensureDirExists,
-  ensureUniqueFilename,
   readFileUtf8,
   writeFileUtf8Exclusive,
 } from "./fs";
@@ -20,6 +19,11 @@ export type NoteFile = {
 };
 
 export type NoteListItem = Omit<NoteFile, "content" | "characterCount">;
+
+// CRLF only if the file already uses it, so appends never mix endings.
+export function lineEndingOf(content: string): "\r\n" | "\n" {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -278,13 +282,10 @@ export async function appendDailyEntry(
   }
 
   const existingContent = await readFileUtf8(dailyPath);
+  const eol = lineEndingOf(existingContent);
   const separator =
-    existingContent.length === 0
-      ? ""
-      : existingContent.endsWith("\n")
-        ? ""
-        : "\n";
-  const entry = `- ${formatTimeHHmm(date)} ${cleanText}\n`;
+    existingContent.length === 0 || existingContent.endsWith("\n") ? "" : eol;
+  const entry = `- ${formatTimeHHmm(date)} ${cleanText}${eol}`;
 
   await appendToFile(dailyPath, `${separator}${entry}`);
   return dailyPath;
@@ -344,11 +345,39 @@ export async function renameNoteFromTitleIfNeeded(
   }
 
   const directory = path.dirname(notePath);
-  const uniqueFilename = await ensureUniqueFilename(directory, nextFilename);
-  const nextPath = path.join(directory, uniqueFilename);
-
-  await rename(notePath, nextPath);
+  const nextPath = await claimUniquePath(directory, nextFilename, notePath);
+  await unlink(notePath);
   return nextPath;
+}
+
+// Hard-links sourcePath at the first free name. link() fails with EEXIST
+// when the target already exists, so two renames can never land on the
+// same file; the caller removes the old name afterwards.
+async function claimUniquePath(
+  dir: string,
+  filename: string,
+  sourcePath: string,
+): Promise<string> {
+  const extension = path.extname(filename);
+  const basename = path.basename(filename, extension);
+
+  let attempt = 1;
+  while (true) {
+    const candidate =
+      attempt === 1 ? filename : `${basename}-${attempt}${extension}`;
+    const candidatePath = path.join(dir, candidate);
+
+    try {
+      await link(sourcePath, candidatePath);
+      return candidatePath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        attempt += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 export function syncTitleInMarkdown(content: string, title: string): string {

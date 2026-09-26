@@ -14,7 +14,7 @@ import {
   NoteListItem,
   appendDailyEntry,
   createNewNoteFile,
-  listMarkdownFileMetadata,
+  listMarkdownFiles,
 } from "../lib/notes";
 import { appendTaskToDaily } from "../lib/tasks";
 import { NoteDetailView } from "./NoteDetailView";
@@ -50,7 +50,7 @@ export function QuickCaptureForm({ onCaptured }: QuickCaptureFormProps) {
         setIsLoadingNotes(true);
         const notesDir = getNotesDirectory();
         let skippedFiles = 0;
-        const foundNotes = await listMarkdownFileMetadata(notesDir, () => {
+        const foundNotes = await listMarkdownFiles(notesDir, () => {
           skippedFiles += 1;
         });
         setNotes(foundNotes);

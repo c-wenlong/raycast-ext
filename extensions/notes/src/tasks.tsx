@@ -7,7 +7,7 @@ import {
   Toast,
   showToast,
 } from "@raycast/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AddTaskForm } from "./components/AddTaskForm";
 import { NoteDetailView } from "./components/NoteDetailView";
 import { getNotesDirectory } from "./lib/config";
@@ -19,11 +19,24 @@ export default function TasksCommand() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("open");
+  const hasShownReadWarning = useRef(false);
 
   const reload = useCallback(async () => {
     try {
       setIsLoading(true);
-      setTasks(await listTasks(getNotesDirectory()));
+      let skippedFiles = 0;
+      setTasks(
+        await listTasks(getNotesDirectory(), () => {
+          skippedFiles += 1;
+        }),
+      );
+      if (skippedFiles > 0 && !hasShownReadWarning.current) {
+        hasShownReadWarning.current = true;
+        await showToast({
+          style: Toast.Style.Failure,
+          title: `Skipped ${skippedFiles} unreadable note${skippedFiles > 1 ? "s" : ""}`,
+        });
+      }
     } catch (error) {
       await showToast({
         style: Toast.Style.Failure,

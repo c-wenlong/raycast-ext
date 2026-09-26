@@ -1,13 +1,16 @@
 import {
   Action,
   ActionPanel,
+  Alert,
   Detail,
   Form,
   Icon,
   Toast,
+  confirmAlert,
   showToast,
   useNavigation,
 } from "@raycast/api";
+import { stat } from "node:fs/promises";
 import { useEffect, useState } from "react";
 import { appendToFile, readFileUtf8, writeFileUtf8 } from "../lib/fs";
 import {
@@ -58,6 +61,22 @@ export function NoteEditForm({ note, onSaved }: NoteEditFormProps) {
     }
 
     try {
+      const onDisk = await stat(note.path);
+      if (onDisk.mtimeMs !== note.mtimeMs) {
+        const overwrite = await confirmAlert({
+          title: "Note changed on disk",
+          message:
+            "This note was edited elsewhere while the form was open. Save anyway and overwrite those changes?",
+          primaryAction: {
+            title: "Overwrite",
+            style: Alert.ActionStyle.Destructive,
+          },
+        });
+        if (!overwrite) {
+          return;
+        }
+      }
+
       const nextContent = syncTitleInMarkdown(content, cleanTitle);
       await writeFileUtf8(note.path, nextContent);
       const updatedPath = await renameNoteFromTitleIfNeeded(

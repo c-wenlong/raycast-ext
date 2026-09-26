@@ -19,8 +19,10 @@ Local markdown notes and tasks in Raycast, with no note limit. Forked from
 ## Storage
 
 Plain `.md` files in the folder set in preferences, default `~/.raycast/notes`.
-That folder is gitignored at the repo root. Pins are kept in Raycast
-LocalStorage so the files stay untouched.
+This repo is checked out at `~/.raycast`, so `/notes/` in the root
+`.gitignore` covers the default folder. Point the preference at another
+folder inside the repo and those files will be tracked. Pins are kept in
+Raycast LocalStorage so the files stay untouched.
 
 Naming:
 
@@ -34,4 +36,5 @@ npm install
 npm run dev
 ```
 
-`npm run build` type-checks, `npm run lint` runs ESLint and Prettier.
+`npm run build` type-checks, `npm run lint` runs ESLint and Prettier, and
+`npm test` runs the library tests in `test/` against a stubbed `@raycast/api`.
