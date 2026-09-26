@@ -225,5 +225,110 @@ do {
   check("code block unwraps", text == "b", text)
 }
 
+// end of file, CRLF
+
+do {
+  let (text, cursor) = applied("- one\n", ListEditing.newline(in: "- one\n", cursor: 5))!
+  check("enter before a final newline continues", text == "- one\n- \n" && cursor == 8, "\(text.debugDescription) \(cursor)")
+}
+check("enter on the empty last line is plain", ListEditing.newline(in: "- one\n", cursor: 6) == nil)
+check("enter in empty text is plain", ListEditing.newline(in: "", cursor: 0) == nil)
+do {
+  let src = "- one\r\n- two"
+  let (text, cursor) = applied(src, ListEditing.newline(in: src, cursor: 5))!
+  check("crlf list keeps crlf", text == "- one\r\n- \r\n- two", text.debugDescription)
+  check("crlf cursor counts both characters", cursor == 9, "\(cursor)")
+}
+do {
+  let (text, cursor) = applied("```\r\nx", ListEditing.codeFence(in: "```\r\nx", cursor: 3))!
+  check("crlf fence uses crlf", text == "```\r\n\r\n```\r\nx" && cursor == 5, "\(text.debugDescription) \(cursor)")
+}
+do {
+  let edit = ListEditing.toggleCodeBlock(in: "a\r\nb", selection: NSRange(location: 0, length: 0))
+  let (text, _) = applied("a\r\nb", edit)!
+  check("crlf code block", text == "```\r\na\r\n```\r\nb", text.debugDescription)
+}
+
+// tab finds the previous sibling and moves nested lines along
+
+do {
+  let src = "- a\n  - b\n- c"
+  let (text, _) = applied(src, ListEditing.indent(in: src, cursor: cursorAtEnd(src), by: 1))!
+  check("tab after a child list joins it", text == "- a\n  - b\n  - c", text)
+}
+do {
+  let src = "- a\n- b\n  - c"
+  let (text, _) = applied(src, ListEditing.indent(in: src, cursor: 7, by: 1))!  // end of "- b"
+  check("tab carries children", text == "- a\n  - b\n    - c", text)
+}
+do {
+  let src = "- a\n  - b\n    - c"
+  let (text, _) = applied(src, ListEditing.indent(in: src, cursor: 9, by: -1))!  // end of "  - b"
+  check("shift-tab carries children", text == "- a\n- b\n  - c", text)
+}
+do {
+  let src = "1. a\n2. b\n   1. c\n3. d"
+  let (text, _) = applied(src, ListEditing.indent(in: src, cursor: 9, by: 1))!  // end of "2. b"
+  check("tab carries numbered children and renumbers", text == "1. a\n   1. b\n      1. c\n2. d", text)
+}
+check("tab on a first child is nil", ListEditing.indent(in: "- a\n  - b", cursor: 9, by: 1) == nil)
+check("tab does not reach across a blank line", ListEditing.indent(in: "- a\n\n- b", cursor: 8, by: 1) == nil)
+
+// typed space
+
+do {
+  let (text, cursor) = applied("[] ", ListEditing.afterSpace(in: "[] ", cursor: 3))!
+  check("space after [] makes a task", text == "- [ ] " && cursor == 6, "\(text) \(cursor)")
+}
+do {
+  let src = "a\n  [x] "
+  let (text, _) = applied(src, ListEditing.afterSpace(in: src, cursor: cursorAtEnd(src)))!
+  check("space after indented [x] makes a done task", text == "a\n  - [x] ", text)
+}
+do {
+  let (text, cursor) = applied("``` ", ListEditing.afterSpace(in: "``` ", cursor: 4))!
+  check("space after ``` opens a block", text == "```\n\n```" && cursor == 4, "\(text.debugDescription) \(cursor)")
+}
+check("space after a task marker is a no-op", ListEditing.afterSpace(in: "- [ ] ", cursor: 6) == nil)
+check("space mid-line is nil", ListEditing.afterSpace(in: "[] x", cursor: 3) == nil)
+check("other characters are nil", ListEditing.afterSpace(in: "[]x", cursor: 3) == nil)
+
+// fences that are already closed
+
+check("``` that opens an existing block is left alone", ListEditing.codeFence(in: "```\ncode\n```", cursor: 3) == nil)
+do {
+  let src = "```js\n```\nA\n```"  // typed above an existing block
+  let (text, _) = applied(src, ListEditing.codeFence(in: src, cursor: 5))!
+  check("``` typed above a closed block closes itself", text == "```js\n\n```\n```\nA\n```", text.debugDescription)
+}
+
+// code block toggles off from inside
+
+do {
+  let src = "x\n```\none\ntwo\n```\ny"
+  let edit = ListEditing.toggleCodeBlock(in: src, selection: NSRange(location: 8, length: 0))  // in "one"
+  let (text, cursor) = applied(src, edit)!
+  check("code block unwraps from a caret inside", text == "x\none\ntwo\ny", text.debugDescription)
+  check("unwrap keeps the caret in place", cursor == 4, "\(cursor)")
+}
+do {
+  let src = "```\nopen"
+  let (text, _) = applied(src, ListEditing.toggleCodeBlock(in: src, selection: NSRange(location: 5, length: 0)))!
+  check("unclosed block loses its fence", text == "open", text)
+}
+
+// backspace and links
+
+check("backspace after a non-space is nil", ListEditing.backspace(in: "- a", cursor: 3) == nil)
+do {
+  let src = "- a\n- "
+  let (text, cursor) = applied(src, ListEditing.backspace(in: src, cursor: 6))!
+  check("backspace on an empty item clears it", text == "- a\n" && cursor == 4, "\(text.debugDescription) \(cursor)")
+}
+do {
+  let (text, cursor) = applied("ab", ListEditing.link(in: "ab", selection: NSRange(location: 1, length: 0), url: nil))!
+  check("⌘L with no selection puts the caret in the brackets", text == "a[]()b" && cursor == 2, "\(text) \(cursor)")
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)
