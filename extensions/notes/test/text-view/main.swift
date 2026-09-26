@@ -9,7 +9,7 @@ let tv = NoteTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
 tv.textContainer?.replaceLayoutManager(TaskBoxLayoutManager())
 tv.isRichText = false
 tv.linkTextAttributes = [:]
-tv.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
+tv.selectedTextAttributes = [.backgroundColor: Markdown.selection]
 tv.backgroundColor = NSColor(white: 0.12, alpha: 1)
 tv.textContainerInset = NSSize(width: 18, height: 16)
 tv.allowsUndo = true
@@ -202,6 +202,46 @@ tv.deleteBackward(nil)
 check("backspace at the start of an adjacent pair deletes the visible char", tv.string == "**on****two**" && caret() == 8, "\(tv.string) \(caret())")
 load("``")
 check("an empty code pair on its own line is hidden", tv.textStorage!.attribute(Markdown.hiddenRun, at: 0, effectiveRange: nil) != nil)
+
+// 12. list grid: text starts one column per level, markers stay off the grid
+func textX(_ line: Int, _ column: Int) -> CGFloat {
+  let lm = tv.layoutManager!
+  let ns = tv.string as NSString
+  var start = 0
+  for _ in 0..<line { start = NSMaxRange(ns.lineRange(for: NSRange(location: start, length: 0))) }
+  let glyph = lm.glyphIndexForCharacter(at: start + column)
+  return lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minX + lm.location(forGlyphAt: glyph).x - tv.textContainer!.lineFragmentPadding
+}
+let column = Markdown.listColumn
+load("- a\n  - b\n    - c\n1. d\n   10. e\n- [ ] f\n  - [x] g\nplain\n  - h")
+check("bullet text sits at one column", abs(textX(0, 2) - column) < 0.5, "\(textX(0, 2))")
+check("nested bullet text sits at two columns", abs(textX(1, 4) - 2 * column) < 0.5, "\(textX(1, 4))")
+check("third level sits at three columns", abs(textX(2, 6) - 3 * column) < 0.5, "\(textX(2, 6))")
+check("numbered text sits at one column", abs(textX(3, 3) - column) < 0.5, "\(textX(3, 3))")
+check("a wide number keeps a space before its text", textX(4, 7) >= 2 * column, "\(textX(4, 7))")
+check("task text sits at one column", abs(textX(5, 6) - column) < 0.5, "\(textX(5, 6))")
+check("nested task text sits at two columns", abs(textX(6, 8) - 2 * column) < 0.5, "\(textX(6, 8))")
+check("a list after plain text starts over at one column", abs(textX(8, 4) - column) < 0.5, "\(textX(8, 4))")
+let wrapped = "- " + String(repeating: "word ", count: 30)
+load(wrapped)
+let lm = tv.layoutManager!
+let secondLineGlyph = (0..<lm.numberOfGlyphs).first { lm.lineFragmentRect(forGlyphAt: $0, effectiveRange: nil).minY > 0 }
+check("the wrapped item takes more than one line", secondLineGlyph != nil)
+if let glyph = secondLineGlyph {
+  let x = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minX + lm.location(forGlyphAt: glyph).x - tv.textContainer!.lineFragmentPadding
+  check("wrapped list lines hang at the text column", abs(x - column) < 0.5, "\(x)")
+}
+
+// 13. selection rects hug the text
+load("`x` yy\n\n- z")
+let hugLM = tv.layoutManager as! TaskBoxLayoutManager
+let mixed = hugLM.hugRects(forCharacterRange: NSRange(location: 0, length: 6))
+let bodyHeight = Markdown.baseFont.ascender - Markdown.baseFont.descender
+check("a mixed-font line's rect is as tall as its body font", mixed.count == 1 && abs(mixed[0].height - bodyHeight) < 0.5, "\(mixed)")
+let all = hugLM.hugRects(forCharacterRange: NSRange(location: 0, length: 11))
+check("one rect per line, the blank line a thin bar", all.count == 3 && all[1].width == 2, "\(all)")
+check("a list line's rect starts at its text, not its marker", all.count == 3 && abs(all[2].minX - column - tv.textContainer!.lineFragmentPadding) < 0.5, "\(all)")
+check("rects are shorter than the line pitch", all.allSatisfy { $0.height < 24 }, "\(all)")
 
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")

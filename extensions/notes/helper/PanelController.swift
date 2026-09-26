@@ -129,17 +129,28 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private func applyTextContainerInset() {
     textView.textContainerInset = NSSize(
       width: Self.baseTextInset.width * Markdown.zoom, height: Self.baseTextInset.height * Markdown.zoom)
-    // The inset is symmetric; the bottom bar's extra room comes from the
-    // scroll view instead, so the last line always scrolls clear of it.
+    // Text scrolls under the translucent header and footer; the insets
+    // only decide where the first and last lines rest when not scrolled.
     if let scroll = textView.enclosingScrollView {
-      scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: StatusBar.reservedHeight, right: 0)
+      scroll.contentInsets = NSEdgeInsets(top: headerHeight, left: 0, bottom: StatusBar.reservedHeight, right: 0)
+      scroll.scrollerInsets = NSEdgeInsets(top: headerHeight, left: 0, bottom: 0, right: 0)
     }
+  }
+
+  /// Height of the title bar plus unified toolbar, which the content
+  /// extends under. contentLayoutRect is not laid out yet while the panel
+  /// is being built, so the known height is used until it is.
+  private var headerHeight: CGFloat {
+    guard let content = panel.contentView, panel.contentLayoutRect.height > 0,
+      panel.contentLayoutRect.height < content.bounds.height
+    else { return 52 }
+    return content.bounds.height - panel.contentLayoutRect.height
   }
 
   private func buildPanel() {
     panel = NSPanel(
       contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
-      styleMask: [.titled, .closable, .resizable, .miniaturizable, .nonactivatingPanel],
+      styleMask: [.titled, .closable, .resizable, .miniaturizable, .nonactivatingPanel, .fullSizeContentView],
       backing: .buffered, defer: false)
     panel.contentMinSize = NSSize(width: 420, height: 240)
     panel.level = .floating
@@ -167,7 +178,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.linkTextAttributes = [:]
     // Only a background for selections: the default also recolours the
     // text, which would reveal the characters hidden under boxes.
-    textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
+    textView.selectedTextAttributes = [.backgroundColor: Markdown.selection]
+    textView.backgroundColor = Markdown.canvas
+    panel.backgroundColor = Markdown.canvas
     textView.isAutomaticLinkDetectionEnabled = false
     textView.isAutomaticQuoteSubstitutionEnabled = false
     textView.isAutomaticDashSubstitutionEnabled = false
@@ -196,6 +209,16 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
     titlebarChrome = TitlebarChrome { [weak self] command in self?.handle(command) }
     titlebarChrome.install(in: panel)
+    // Fades under the header and footer so text scrolling beneath them
+    // dissolves instead of being clipped.
+    let fadeColor = textView.backgroundColor
+    let topFade = FadeOverlay(edge: .top)
+    topFade.color = fadeColor
+    topFade.install(in: panel.contentView!, height: headerHeight + 28)
+    let bottomFade = FadeOverlay(edge: .bottom)
+    bottomFade.color = fadeColor
+    bottomFade.install(in: panel.contentView!, height: StatusBar.reservedHeight + 34)
+    applyTextContainerInset()
     statusBar = StatusBar { [weak self] in self?.handle("format") }
     statusBar.install(in: panel.contentView!)
 
