@@ -14,9 +14,14 @@ import Foundation
 /// It also measures and paints the rounded card behind each fenced code
 /// block (tagged `Markdown.codeBlock`), for NoteTextView to call.
 final class TaskBoxLayoutManager: NSLayoutManager {
-  override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
-    super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-    guard let storage = textStorage, glyphsToShow.location != NSNotFound, glyphsToShow.length > 0 else { return }
+  /// Draws the task boxes that fall inside `rect` (text view coordinates).
+  /// NoteTextView calls it from `draw(_:)` after the text and selection are
+  /// drawn, so a selection never reveals the hidden characters under a box.
+  func drawTaskBoxes(in rect: NSRect, origin: NSPoint) {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
+    let band = NSRect(x: 0, y: rect.minY - origin.y, width: container.size.width, height: rect.height)
+    let glyphsToShow = glyphRange(forBoundingRect: band, in: container)
+    guard glyphsToShow.location != NSNotFound, glyphsToShow.length > 0 else { return }
     let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
     guard chars.location != NSNotFound, chars.length > 0,
       NSMaxRange(chars) <= storage.length
@@ -166,7 +171,7 @@ enum Markdown {
   /// which the overlay controls sit in.
   static var codeHeaderHeight: CGFloat { (34 * max(zoom, 1)).rounded() }
   /// Height of the (hidden) closing fence line: the card's bottom padding.
-  static var codeFooterHeight: CGFloat { (10 * zoom).rounded() }
+  static var codeFooterHeight: CGFloat { (18 * zoom).rounded() }
   /// How far the card reaches past the text container on each side.
   static let codeCardOutset: CGFloat = 12
   static let codeCardRadius: CGFloat = 10

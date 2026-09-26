@@ -156,6 +156,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.isRichText = false
     textView.font = Markdown.baseFont
     textView.linkTextAttributes = [:]
+    // Only a background for selections: the default also recolours the
+    // text, which would reveal the characters hidden under boxes.
+    textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
     textView.isAutomaticLinkDetectionEnabled = false
     textView.isAutomaticQuoteSubstitutionEnabled = false
     textView.isAutomaticDashSubstitutionEnabled = false
@@ -412,9 +415,16 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     }
     textView.isEditable = true
     loadedText = text
+    // Setting the string resets the caret; keep relocation off for that,
+    // then place the caret with relocation on (so it never rests on a
+    // fence) but with fence edits off (so opening a note never changes it).
+    textView.suppressFenceRelocation = true
     textView.string = text
+    textView.suppressFenceRelocation = false
     restyle()
+    textView.suppressFenceEdits = true
     textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+    textView.suppressFenceEdits = false
     textView.undoManager?.removeAllActions()
     textView.scrollToEndOfDocument(nil)
     codeBlocks.update()
