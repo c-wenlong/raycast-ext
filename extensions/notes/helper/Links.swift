@@ -573,9 +573,9 @@ final class LinkBubble: NSView {
   var onCopy: (() -> Void)?
   private let wash = PillView()
   private let label = NSTextField(labelWithString: "")
-  private let openButton = ChromeButton(symbol: "arrow.up.right.square", pointSize: 12, label: "Open")
-  private let editButton = ChromeButton(symbol: "pencil", pointSize: 12, label: "Edit")
-  private let copyButton = ChromeButton(symbol: "doc.on.doc", pointSize: 12, label: "Copy")
+  private let openButton = ChromeButton(symbol: "arrow.up.right.square", pointSize: 11, label: "Open")
+  private let editButton = ChromeButton(symbol: "pencil", pointSize: 11, label: "Edit")
+  private let copyButton = ChromeButton(symbol: "doc.on.doc", pointSize: 11, label: "Copy")
   private var buttons: [ChromeButton] { [openButton, editButton, copyButton] }
   /// The address's own width (up to maxURLWidth), and the width it gets
   /// after `size(fitting:)`.
@@ -583,19 +583,21 @@ final class LinkBubble: NSView {
   private var labelWidth: CGFloat = 0
   private var copyReset: DispatchWorkItem?
 
-  static let height: CGFloat = 32
+  // Room around the buttons: 24pt circles in a 36pt bubble, so a hover
+  // fill never touches the edge and the icons read as separate.
+  static let height: CGFloat = 36
   static let maxURLWidth: CGFloat = 320
-  private static let buttonSize: CGFloat = 26
+  private static let buttonSize: CGFloat = 24
   private static let leading: CGFloat = 12
-  private static let gap: CGFloat = 6
-  private static let buttonGap: CGFloat = 2
-  private static let trailing: CGFloat = 3
+  private static let gap: CGFloat = 8
+  private static let buttonGap: CGFloat = 4
+  private static let trailing: CGFloat = 6
   private static let copyImage = symbol("doc.on.doc")
   private static let copiedImage = symbol("checkmark")
 
   private static func symbol(_ name: String) -> NSImage? {
     NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+      .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
   }
 
   init() {
