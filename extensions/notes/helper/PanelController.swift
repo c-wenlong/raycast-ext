@@ -13,12 +13,16 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var watcher: DispatchSourceFileSystemObject?
   private var pendingCommand: String
   private var palette: ActionPalette!
+  private var zoomHUD: ZoomHUD!
+  private static let baseTextInset = NSSize(width: 18, height: 16)
+  private static let zoomDefaultsKey = "notesPanelZoom"
 
   init(initialCommand: String) {
     pendingCommand = initialCommand
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    loadZoom()
     installMainMenu()
     buildPanel()
     handle(pendingCommand)
@@ -64,13 +68,69 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     editItem.submenu = edit
     main.addItem(editItem)
 
+    let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+    let view = NSMenu(title: "View")
+    let zoomIn = view.addItem(withTitle: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "=")
+    zoomIn.target = self
+    let zoomInAlt = view.addItem(withTitle: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "+")
+    zoomInAlt.target = self
+    zoomInAlt.isHidden = true
+    let zoomOut = view.addItem(withTitle: "Zoom Out", action: #selector(zoomOut(_:)), keyEquivalent: "-")
+    zoomOut.target = self
+    let zoomReset = view.addItem(withTitle: "Actual Size", action: #selector(zoomReset(_:)), keyEquivalent: "0")
+    zoomReset.target = self
+    viewItem.submenu = view
+    main.addItem(viewItem)
+
+    let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+    let windowMenu = NSMenu(title: "Window")
+    let minimize = windowMenu.addItem(
+      withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+    minimize.target = nil
+    windowItem.submenu = windowMenu
+    main.addItem(windowItem)
+
     NSApp.mainMenu = main
+  }
+
+  // MARK: Zoom
+
+  /// Reads the persisted zoom, applied before the first note loads.
+  private func loadZoom() {
+    let stored = CGFloat(UserDefaults.standard.double(forKey: Self.zoomDefaultsKey))
+    Markdown.zoom = ZoomLevels.steps.contains(where: { abs($0 - stored) < 0.001 }) ? stored : ZoomLevels.default
+  }
+
+  @objc private func zoomIn(_ sender: Any?) {
+    setZoom(ZoomLevels.next(after: Markdown.zoom))
+  }
+
+  @objc private func zoomOut(_ sender: Any?) {
+    setZoom(ZoomLevels.previous(before: Markdown.zoom))
+  }
+
+  @objc private func zoomReset(_ sender: Any?) {
+    setZoom(ZoomLevels.default)
+  }
+
+  private func setZoom(_ value: CGFloat) {
+    Markdown.zoom = value
+    UserDefaults.standard.set(Double(value), forKey: Self.zoomDefaultsKey)
+    restyle()
+    textView.font = Markdown.baseFont
+    applyTextContainerInset()
+    zoomHUD.show(text: "Zoomed to \(ZoomLevels.percentageString(for: value))")
+  }
+
+  private func applyTextContainerInset() {
+    textView.textContainerInset = NSSize(
+      width: Self.baseTextInset.width * Markdown.zoom, height: Self.baseTextInset.height * Markdown.zoom)
   }
 
   private func buildPanel() {
     panel = NSPanel(
       contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
-      styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel],
+      styleMask: [.titled, .closable, .resizable, .miniaturizable, .utilityWindow, .nonactivatingPanel],
       backing: .buffered, defer: false)
     panel.level = .floating
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -95,7 +155,6 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.font = Markdown.baseFont
     textView.linkTextAttributes = [:]
     textView.isAutomaticLinkDetectionEnabled = false
-    textView.textContainerInset = NSSize(width: 18, height: 16)
     textView.isAutomaticQuoteSubstitutionEnabled = false
     textView.isAutomaticDashSubstitutionEnabled = false
     textView.isAutomaticTextReplacementEnabled = false
@@ -111,9 +170,13 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     textView.isVerticallyResizable = true
     textView.textContainer?.widthTracksTextView = true
+    applyTextContainerInset()
 
     scroll.documentView = textView
     panel.contentView?.addSubview(scroll)
+
+    zoomHUD = ZoomHUD()
+    zoomHUD.install(in: panel.contentView!)
 
     palette = ActionPalette(actions: [
       PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
@@ -127,6 +190,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       PaletteAction(title: "Reveal in Finder", keys: "", symbol: "folder", command: "reveal"),
       PaletteAction(title: "Delete Note", keys: "⌃X", symbol: "trash", command: "delete"),
       PaletteAction(title: "Hide Window", keys: "⎋", symbol: "eye.slash", command: "hide"),
+      PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "plus.magnifyingglass", command: "zoom-in"),
+      PaletteAction(title: "Zoom Out", keys: "⌘-", symbol: "minus.magnifyingglass", command: "zoom-out"),
+      PaletteAction(title: "Actual Size", keys: "⌘0", symbol: "1.magnifyingglass", command: "zoom-reset"),
+      PaletteAction(title: "Minimize Window", keys: "⌘M", symbol: "minus.square", command: "minimize"),
     ]) { [weak self] command in
       self?.handle(command)
     }
@@ -137,7 +204,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   func handle(_ command: String) {
     switch command {
     case "toggle":
-      panel.isVisible ? hide() : show()
+      // A miniaturized panel is not considered visible in the usual sense
+      // (it's parked in the Dock), so treat it like "hidden": restore it
+      // rather than trying to hide it again.
+      panel.isVisible && !panel.isMiniaturized ? hide() : show()
     case "show":
       show()
     case "hide":
@@ -171,6 +241,14 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       }
     case "delete":
       deleteNote()
+    case "zoom-in":
+      zoomIn(nil)
+    case "zoom-out":
+      zoomOut(nil)
+    case "zoom-reset":
+      zoomReset(nil)
+    case "minimize":
+      panel.performMiniaturize(nil)
     default:
       if command.hasPrefix("open ") {
         let path = String(command.dropFirst(5)).trimmingCharacters(in: .whitespaces)
@@ -185,6 +263,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     if currentPath == nil {
       if let first = notes.first { load(first.path) } else { newNote() }
     }
+    if panel.isMiniaturized { panel.deminiaturize(nil) }
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(textView)
   }
