@@ -1,0 +1,164 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  appendDailyEntry,
+  createNewNoteFile,
+  getDailyFilename,
+  renameNoteFromTitleIfNeeded,
+} from "../src/lib/notes";
+import { getPinnedPaths, movePin, removePin, togglePin } from "../src/lib/pins";
+import {
+  appendTaskToDaily,
+  formatTaskLine,
+  listTasks,
+  setTaskDone,
+} from "../src/lib/tasks";
+
+type Case = [string, () => Promise<void>];
+
+function freshDir(): string {
+  return mkdtempSync(path.join(tmpdir(), "notes-test-"));
+}
+
+const cases: Case[] = [
+  [
+    "parses tasks with any bullet, nesting and case",
+    async () => {
+      const dir = freshDir();
+      writeFileSync(
+        path.join(dir, "a.md"),
+        "# A\n\n- [ ] one\n* [X] two\n  + [ ] nested\n- not a task\n",
+      );
+      const tasks = await listTasks(dir);
+      assert.deepEqual(
+        tasks.map((t) => [t.text, t.done, t.occurrence]),
+        [
+          ["one", false, 0],
+          ["two", true, 0],
+          ["nested", false, 0],
+        ],
+      );
+      assert.equal(tasks[0].noteTitle, "A");
+    },
+  ],
+  [
+    "toggles in place and keeps the bullet style",
+    async () => {
+      const dir = freshDir();
+      const note = path.join(dir, "a.md");
+      writeFileSync(note, "- [ ] one\n* [x] two\n");
+      const [one, two] = await listTasks(dir);
+      await setTaskDone(one, true);
+      await setTaskDone(two, false);
+      assert.equal(readFileSync(note, "utf8"), "- [x] one\n* [ ] two\n");
+    },
+  ],
+  [
+    "falls back to the same occurrence when lines shift",
+    async () => {
+      const dir = freshDir();
+      const note = path.join(dir, "a.md");
+      writeFileSync(note, "- [ ] same\n- [ ] same\n- [ ] same\n");
+      const tasks = await listTasks(dir);
+      const second = tasks[1];
+      assert.equal(second.occurrence, 1);
+      // Two lines inserted above: index 1 now points at a non-task line.
+      writeFileSync(note, "intro\nmore\n- [ ] same\n- [ ] same\n- [ ] same\n");
+      await setTaskDone(second, true);
+      assert.equal(
+        readFileSync(note, "utf8"),
+        "intro\nmore\n- [ ] same\n- [x] same\n- [ ] same\n",
+      );
+    },
+  ],
+  [
+    "refuses when the task is gone",
+    async () => {
+      const dir = freshDir();
+      const note = path.join(dir, "a.md");
+      writeFileSync(note, "- [ ] one\n");
+      const [one] = await listTasks(dir);
+      writeFileSync(note, "- [ ] something else\n");
+      await assert.rejects(setTaskDone(one, true), /note changed/);
+    },
+  ],
+  [
+    "keeps CRLF files CRLF on toggle and append",
+    async () => {
+      const dir = freshDir();
+      const note = path.join(dir, "a.md");
+      writeFileSync(note, "- [ ] one\r\n- [ ] two\r\n");
+      const [one] = await listTasks(dir);
+      await setTaskDone(one, true);
+      assert.equal(readFileSync(note, "utf8"), "- [x] one\r\n- [ ] two\r\n");
+
+      const daily = path.join(dir, getDailyFilename());
+      writeFileSync(daily, "# today\r\n");
+      await appendTaskToDaily(dir, "x");
+      await appendDailyEntry(dir, "y");
+      const text = readFileSync(daily, "utf8");
+      assert.ok(!/[^\r]\n/.test(text), `mixed endings: ${JSON.stringify(text)}`);
+      assert.match(text, /- \[ \] x\r\n- \d\d:\d\d y\r\n$/);
+    },
+  ],
+  [
+    "collapses multi-line capture into one task",
+    async () => {
+      assert.equal(formatTaskLine("  buy\n\n  milk  \r\nand eggs"), "- [ ] buy milk and eggs");
+      const dir = freshDir();
+      const daily = await appendTaskToDaily(dir, "line one\nline two");
+      const tasks = await listTasks(dir);
+      assert.deepEqual(
+        tasks.map((t) => t.text),
+        ["line one line two"],
+      );
+      assert.match(readFileSync(daily, "utf8"), /^# \d{4}-\d{2}-\d{2}\n\n- \[ \] line one line two\n$/);
+    },
+  ],
+  [
+    "rename never lands on an existing file",
+    async () => {
+      const dir = freshDir();
+      const created = await createNewNoteFile(dir, "First", "body");
+      const prefix = path.basename(created).slice(0, 15);
+      const taken = path.join(dir, `${prefix} - second.md`);
+      writeFileSync(taken, "# Second\n\nkeep me\n");
+
+      const renamed = await renameNoteFromTitleIfNeeded(created, "Second");
+      assert.equal(path.basename(renamed), `${prefix} - second-2.md`);
+      assert.equal(readFileSync(taken, "utf8"), "# Second\n\nkeep me\n");
+      assert.match(readFileSync(renamed, "utf8"), /^# First/);
+      assert.throws(() => readFileSync(created), /ENOENT/);
+    },
+  ],
+  [
+    "pins toggle, move on rename and clear on delete",
+    async () => {
+      assert.equal(await togglePin("/a.md"), true);
+      await movePin("/a.md", "/b.md");
+      assert.deepEqual([...(await getPinnedPaths())], ["/b.md"]);
+      await removePin("/b.md");
+      assert.equal((await getPinnedPaths()).size, 0);
+      assert.equal(await togglePin("/a.md"), true);
+      assert.equal(await togglePin("/a.md"), false);
+    },
+  ],
+];
+
+(async () => {
+  let failed = 0;
+  for (const [name, run] of cases) {
+    try {
+      await run();
+      console.log(`ok   ${name}`);
+    } catch (error) {
+      failed += 1;
+      console.log(`FAIL ${name}`);
+      console.log(error instanceof Error ? error.stack : error);
+    }
+  }
+  console.log(`${cases.length - failed}/${cases.length} passed`);
+  process.exit(failed === 0 ? 0 : 1);
+})();

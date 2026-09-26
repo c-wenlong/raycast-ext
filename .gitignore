@@ -10,3 +10,9 @@ compiled_raycast_rust
 
 # misc
 .DS_Store
+
+# local notes, not code (root only; extensions/notes is the extension)
+/notes/
+
+# ray build output
+dist/
