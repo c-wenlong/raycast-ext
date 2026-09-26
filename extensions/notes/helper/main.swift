@@ -328,7 +328,19 @@ final class NoteTextView: NSTextView {
     if flags == .control, event.charactersIgnoringModifiers == "x" {
       return onCommand?("delete") == true
     }
+    if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "z" {
+      undoManager?.redo()
+      return true
+    }
     if flags == .command, let key = event.charactersIgnoringModifiers {
+      switch key {
+      case "z": undoManager?.undo(); return true
+      case "x": cut(nil); return true
+      case "c": copy(nil); return true
+      case "v": paste(nil); return true
+      case "a": selectAll(nil); return true
+      default: break
+      }
       let command: String?
       switch key {
       case "[": command = "prev"
@@ -611,11 +623,45 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    installMainMenu()
     buildPanel()
     handle(pendingCommand)
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+  /// Accessory apps start without a menu bar, and without one the Edit
+  /// key equivalents (⌘Z, ⌘C, ⌘V, ⌘A...) have nothing to route to.
+  private func installMainMenu() {
+    let main = NSMenu()
+    let appItem = NSMenuItem()
+    appItem.submenu = NSMenu()
+    appItem.submenu?.addItem(withTitle: "Quit Notes Window", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    main.addItem(appItem)
+
+    let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+    let edit = NSMenu(title: "Edit")
+    edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+    let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+    redo.keyEquivalentModifierMask = [.command, .shift]
+    edit.addItem(.separator())
+    edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    edit.addItem(.separator())
+    let find = edit.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+    find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+    let next = edit.addItem(withTitle: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+    next.tag = Int(NSFindPanelAction.nextMatch.rawValue)
+    let previous = edit.addItem(withTitle: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+    previous.tag = Int(NSFindPanelAction.previousMatch.rawValue)
+    previous.keyEquivalentModifierMask = [.command, .shift]
+    editItem.submenu = edit
+    main.addItem(editItem)
+
+    NSApp.mainMenu = main
+  }
 
   private func buildPanel() {
     panel = NSPanel(
