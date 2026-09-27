@@ -461,29 +461,41 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     formatter.dateFormat = "yyyy-MM-dd"
     let day = formatter.string(from: Date())
     let path = (notesDir as NSString).appendingPathComponent(day + ".md")
-    // The heading is written to a hidden temporary file first and linked
-    // into place: the note appears complete in one step, and the link
-    // fails (EEXIST) if the extension made the note in the meantime.
-    let temp = (notesDir as NSString).appendingPathComponent(".today-\(UUID().uuidString).md")
-    do {
-      try diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
-      try "# \(day)\n\n".write(toFile: temp, atomically: false, encoding: .utf8)
-    } catch {
-      unlink(temp)
-      NSSound.beep()
-      panel.title = "Cannot write to \(notesDir)"
-      return
+    if !diskFiles.fileExists(atPath: path) {
+      guard createDailyNote(at: path, heading: "# \(day)\n\n") else {
+        NSSound.beep()
+        panel.title = "Cannot write to \(notesDir)"
+        return
+      }
+      refreshList()
     }
-    let linked = link(temp, path) == 0
-    let existed = !linked && errno == EEXIST
-    unlink(temp)
-    guard linked || existed else {
-      NSSound.beep()
-      panel.title = "Cannot write to \(notesDir)"
-      return
-    }
-    if linked { refreshList() }
     load(path)
+  }
+
+  /// Creates the daily note with `heading` so that it appears complete in
+  /// one step and an existing note is never touched: the heading goes to
+  /// a hidden temporary file (not `.md`, so Browse Notes ignores it) that
+  /// is linked into place, or, where the filesystem has no hard links,
+  /// into an exclusively created file. Returns false when nothing could
+  /// be written; true when the note now exists, whoever made it.
+  private func createDailyNote(at path: String, heading: String) -> Bool {
+    try? diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
+    let temp = (notesDir as NSString).appendingPathComponent(".today-\(UUID().uuidString).tmp")
+    defer { unlink(temp) }
+    guard (try? heading.write(toFile: temp, atomically: false, encoding: .utf8)) != nil else { return false }
+    if link(temp, path) == 0 { return true }
+    if errno == EEXIST { return true }
+    // No hard links here: create exclusively and write the heading whole.
+    let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+    if fd < 0 { return errno == EEXIST }
+    defer { close(fd) }
+    let bytes = Array(heading.utf8)
+    let written = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    if written != bytes.count {
+      unlink(path)
+      return false
+    }
+    return true
   }
 
   // MARK: Loading and saving
