@@ -333,9 +333,12 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     return line.isEmpty ? nil : line
   }
 
-  /// "Time's up" when the planned end was reached, "Stopped" when ended early.
+  /// "Time's up" when the planned end was reached, "Stopped" when ended
+  /// early. SessionView carries no end reason, so this reads the clock: the
+  /// timer only ends a session once `now` has passed `plannedEnd`, so any
+  /// time still ahead (even under a second) means a manual stop.
   static func headline(_ view: SessionView, now: Date) -> String {
-    view.remainingSeconds == 0 && view.plannedEnd.timeIntervalSince(now) <= 1 ? "Time's up" : "Stopped"
+    view.remainingSeconds == 0 && view.plannedEnd <= now ? "Time's up" : "Stopped"
   }
 
   /// "under a minute", "25 min", "1 h", "1 h 5 min".

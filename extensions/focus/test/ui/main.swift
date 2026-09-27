@@ -148,6 +148,8 @@ check("sheet is 420 wide", panel.frame.width == 420, "\(panel.frame)")
 check("content is first responder", panel.firstResponder === sheet.content)
 
 check("stopped early text", EndSheet.statusText(session(state: "ending", remaining: 0, started: -600, plannedEnd: 900), now: now) == "Stopped · 10 min focused")
+check("stopped in the final second reads Stopped", EndSheet.headline(session(state: "ending", remaining: 0, plannedEnd: 0.4), now: now) == "Stopped")
+check("planned end just passed reads Time's up", EndSheet.headline(session(state: "ending", remaining: 0, plannedEnd: -0.2), now: now) == "Time's up")
 check("stopped with time left text", EndSheet.headline(session(state: "ending", remaining: 300), now: now) == "Stopped")
 check("duration under a minute", EndSheet.duration(59) == "under a minute")
 check("duration hours", EndSheet.duration(3600) == "1 h" && EndSheet.duration(3900) == "1 h 5 min", EndSheet.duration(3900))
