@@ -1,7 +1,7 @@
 // notes-panel: a floating, always-on-top markdown editor over the notes
 // folder, in the spirit of the Raycast Notes window.
 //
-//   notes-panel [toggle|show|hide|new|open <path>] [--dir <folder>]
+//   notes-panel [toggle|show|hide|new|today|open <path>] [--dir <folder>]
 //
 // The first invocation becomes a small server on a unix socket and shows
 // the panel; later invocations just forward their command to it and exit.

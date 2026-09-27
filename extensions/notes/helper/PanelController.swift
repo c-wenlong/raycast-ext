@@ -226,6 +226,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
     palette = ActionPalette(actions: [
       PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
+      PaletteAction(title: "Open Today's Note", keys: "", symbol: "calendar", command: "today"),
       PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
       PaletteAction(title: "Browse Notes", keys: "⌘P", symbol: "square.grid.2x2", command: "browse"),
       PaletteAction(title: "Previous Note", keys: "⌘[", symbol: "arrow.left.circle", command: "prev"),
@@ -261,6 +262,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       hide()
     case "new":
       newNote()
+      show()
+    case "today":
+      openToday()
       show()
     case "prev":
       move(by: 1)
@@ -444,6 +448,54 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     refreshList()
     load(path)
     textView.setSelectedRange(NSRange(location: 2, length: 0))
+  }
+
+  /// Today's daily note, `YYYY-MM-DD.md`, created on first use with the
+  /// same date heading Browse Notes and Tasks write (createDailyIfMissing
+  /// in src/lib/notes.ts). The create is exclusive, so a note the
+  /// extension makes at the same moment is never overwritten.
+  private func openToday() {
+    saveNow()
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    let day = formatter.string(from: Date())
+    let path = (notesDir as NSString).appendingPathComponent(day + ".md")
+    if !diskFiles.fileExists(atPath: path) {
+      guard createDailyNote(at: path, heading: "# \(day)\n\n") else {
+        NSSound.beep()
+        panel.title = "Cannot write to \(notesDir)"
+        return
+      }
+      refreshList()
+    }
+    load(path)
+  }
+
+  /// Creates the daily note with `heading` so that it appears complete in
+  /// one step and an existing note is never touched: the heading goes to
+  /// a hidden temporary file (not `.md`, so Browse Notes ignores it) that
+  /// is linked into place, or, where the filesystem has no hard links,
+  /// into an exclusively created file. Returns false when nothing could
+  /// be written; true when the note now exists, whoever made it.
+  private func createDailyNote(at path: String, heading: String) -> Bool {
+    try? diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
+    let temp = (notesDir as NSString).appendingPathComponent(".today-\(UUID().uuidString).tmp")
+    defer { unlink(temp) }
+    guard (try? heading.write(toFile: temp, atomically: false, encoding: .utf8)) != nil else { return false }
+    if link(temp, path) == 0 { return true }
+    if errno == EEXIST { return true }
+    // No hard links here: create exclusively and write the heading whole.
+    let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+    if fd < 0 { return errno == EEXIST }
+    defer { close(fd) }
+    let bytes = Array(heading.utf8)
+    let written = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    if written != bytes.count {
+      unlink(path)
+      return false
+    }
+    return true
   }
 
   // MARK: Loading and saving
