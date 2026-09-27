@@ -19,7 +19,7 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 
 | Question | Decision |
 |---|---|
-| Which events are startable | Only events from calendars picked in a settings page that lists every calendar Calendar.app knows about. |
+| Which events are startable | Only events from calendars picked in a settings page that lists every calendar Calendar.app knows about, and only while their planned end is more than one minute away. Events that already ended today are not listed; to focus on one anyway, start an ad-hoc session with its title. |
 | What "start" does | Our own blocking and UI, built in the Swift helper. Optionally also fire `raycast://focus/start` so the two can run side by side during migration. |
 | Where actual time goes | A new event in a log calendar Kai picks from the same calendar list. The planned event is never edited. |
 | When the log event is written | Only at the end. A running or abandoned session leaves no trace on the calendar. |
@@ -76,6 +76,10 @@ Rules:
 - Apps: the helper observes `NSWorkspace.didActivateApplicationNotification`.
   When a blocked app comes forward it is hidden (`NSRunningApplication.hide`)
   and the overlay shows for three seconds with the goal and time left.
+  Whenever blocking turns on (session start, resume, extend, profile change)
+  the helper applies the same rule to `NSWorkspace.shared.frontmostApplication`
+  at once and polls both browsers immediately, so an app or tab that was
+  already in front is blocked without waiting for a switch.
 - Sites: every two seconds the helper asks Chrome and Dia for the active tab
   URL over AppleScript (one Automation permission prompt per browser). A
   blocked host gets the tab navigated to a bundled "blocked" page that shows
@@ -112,6 +116,21 @@ Written once, at Finish, to the chosen log calendar:
 - Description: source calendar and event id, focused minutes, pauses, blocked
   attempts, rating as five characters (★★★★☆), the note.
 - Colour and alerts: none.
+
+Order and recovery, so a session is never lost and never logged twice:
+
+1. Finish first closes the sqlite row: `ended_at`, `end_reason`, `rating`,
+   `note`. From here the session is finished even if everything after fails.
+2. The helper then creates the log event. Its description carries the line
+   `focus-session: <sqlite id>` and the row gets `log_event_id` once the save
+   returns.
+3. On launch and on every heartbeat the helper looks for finished rows with a
+   null `log_event_id`. For each one it first searches the log calendar over
+   the session's span for an event whose description carries that session id
+   and adopts it if found (the save succeeded but the id was never stored);
+   otherwise it creates the event. Failures are logged and retried on the
+   next heartbeat, so a calendar outage delays the log event but cannot
+   duplicate it.
 
 Duplicate calendars (the same Google calendar reachable through two accounts
 shows twice in Calendar.app) are listed with their account name in Settings so
@@ -165,10 +184,10 @@ Each step is its own PR through the normal loop, with tests before the window.
 
 | Step | Delivers | Tests |
 |---|---|---|
-| 1 | Helper skeleton: socket, EventKit read of today's events for chosen calendars, sqlite schema, log event write. Focus Today lists and starts a session with no timer UI yet. | Duration rule (until planned end), sqlite round trip, log event description text. |
+| 1 | Helper skeleton: socket, EventKit read of today's events for chosen calendars, sqlite schema, log event write with the recovery loop above. Focus Settings with its calendar half (startable calendars, log calendar) so the step can be configured; Focus Today lists and starts a session with no timer UI yet. | Duration rule (until planned end), past-event filter, sqlite round trip, log event description text, adopt-or-create recovery. |
 | 2 | Timer, menu bar countdown, pause and resume, end sheet with rating and note, heartbeat and abandoned recovery, optional Raycast deeplink. | Session state machine as a pure Swift type in `Session.swift`, tested like `ListEditing.swift`. |
-| 3 | Blocker: app hide plus overlay, Chrome and Dia tab polling, categories, profiles, per-calendar defaults, allowlist mode. | Host and bundle matching, allowlist inversion, always-allowed set. |
-| 4 | Settings command (calendars, log calendar, profiles, browsers), Ad-hoc Session form, Stats view with SVG chart. | Stats aggregation over fixture rows. |
+| 3 | Blocker: app hide plus overlay, frontmost check on every blocking start, Chrome and Dia tab polling, categories, profiles, per-calendar defaults, allowlist mode. | Host and bundle matching, allowlist inversion, always-allowed set. |
+| 4 | Focus Settings second half (profiles, categories, browsers, Raycast deeplink toggle), Ad-hoc Session form, Stats view with SVG chart. | Stats aggregation over fixture rows. |
 
 Estimate: four to six working days, most of it in step 3.
 
