@@ -27,7 +27,10 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 | Ad-hoc sessions | Yes. A goal, a length, and a calendar to file the session under for stats. |
 | How a session ends | The timer runs out and a sheet asks Extend or Finish, or Kai stops it manually at any time. |
 | What the log records | Start, end, source event, pauses and resumes, every blocked attempt, the end reason, a 5-star rating and a one-line note. |
-| Blocking configuration | Built-in categories (social, gaming, and the rest below) on by default, a default profile per startable calendar, and an allowlist mode. No bypass countdown. |
+| Blocking configuration | Built-in categories (social, gaming, and the rest below) on by default, a default profile per startable calendar, and an allowlist mode. |
+| What a block looks like | Like Raycast Focus: a dark block page saying "<host> has been blocked", one "Snooze for 3 minutes" button, and the footer "End your focus session to access this page". Snoozes are logged. Apps get the same page as a native window. |
+| Overlapping events | Both are listed in Focus Today; Kai picks, and the session runs until the planned end of the one picked. |
+| Paused past planned end | A paused session goes straight to the end sheet when its planned end passes, same as a running one. |
 | Browsers | Chrome and Dia for now. Both expose tab URLs over AppleScript (checked on this Mac: Dia's dictionary has `active tab`, `URL`, `title`). |
 | Calendar access | EventKit through Calendar.app, which already syncs the Google account (41 CalDAV calendars found in `Calendar.sqlitedb` on 2026-09-27). No OAuth, works offline, one permission prompt. |
 | Surfaces in v1 | Menu bar countdown, full-screen block overlay, stats view, end-of-session sheet. |
@@ -70,20 +73,37 @@ Rules:
   The helper writes a heartbeat to sqlite every 30 seconds for this.
 - If Kai starts a session while one is running, the current one goes to the
   end sheet first.
+- A session still paused when its planned end passes goes to the end sheet
+  at that moment, exactly as if it had been running.
+- Focus Today lists every startable event whose planned end is still ahead,
+  overlapping ones included; the session length follows the event picked.
 
 ## Blocking
 
+- The block page mirrors Raycast Focus (screenshot from Kai on 2026-09-27):
+  a dark page with the extension icon, "<host> has been blocked", one button
+  "Snooze for 3 minutes", and the footer "End your focus session to access
+  this page". The helper serves it from a loopback HTTP server on a random
+  port (`http://127.0.0.1:<port>/blocked?host=…&redirect=…`), so the button
+  can call the helper back (`/snooze?host=…`) and then continue to the
+  original URL. Nothing leaves the machine.
+- Snooze allows that host or app for three minutes, logged as a
+  `blocked_attempts` row with `outcome = snoozed`; when the three minutes end
+  the normal rule applies again. The length is a setting, default 180
+  seconds like Raycast.
 - Apps: the helper observes `NSWorkspace.didActivateApplicationNotification`.
   When a blocked app comes forward it is hidden (`NSRunningApplication.hide`)
-  and the overlay shows for three seconds with the goal and time left.
-  Whenever blocking turns on (session start, resume, extend, profile change)
-  the helper applies the same rule to `NSWorkspace.shared.frontmostApplication`
-  at once and polls both browsers immediately, so an app or tab that was
-  already in front is blocked without waiting for a switch.
+  and the same block page opens as a native full-screen window showing the
+  app name instead of a host; Snooze unhides the app, Escape or clicking
+  outside just closes the page. Whenever blocking turns on (session start,
+  resume, extend, profile change) the helper applies the same rule to
+  `NSWorkspace.shared.frontmostApplication` at once and polls both browsers
+  immediately, so an app or tab that was already in front is blocked without
+  waiting for a switch.
 - Sites: every two seconds the helper asks Chrome and Dia for the active tab
   URL over AppleScript (one Automation permission prompt per browser). A
-  blocked host gets the tab navigated to a bundled "blocked" page that shows
-  the goal and time left; the attempt is logged with the host.
+  blocked host gets the tab navigated to the block page with the original
+  URL as `redirect`; the attempt is logged with the host.
 - Matching is by host suffix (`youtube.com` also blocks `m.youtube.com`) and
   by bundle id for apps.
 - Allowlist mode inverts a profile: everything not listed is blocked, with
@@ -181,7 +201,8 @@ create table pauses (
 create table blocked_attempts (
   id integer primary key, session_id integer not null references sessions(id),
   at text not null, kind text not null,   -- app, site
-  target text not null                    -- bundle id or host
+  target text not null,                   -- bundle id or host
+  outcome text not null                   -- blocked, snoozed
 );
 ```
 
@@ -205,16 +226,13 @@ Each step is its own PR through the normal loop, with tests before the window.
 |---|---|---|
 | 1 | Helper skeleton: socket, EventKit read of today's events for chosen calendars, sqlite schema, log event write with the recovery loop above running on its 30-second tick from day one. Focus Settings with its calendar half (startable calendars, log calendar) so the step can be configured; Focus Today lists and starts a session with no timer UI yet. | Duration rule (until planned end), past-event filter, sqlite round trip, log event description text, adopt-or-create recovery. |
 | 2 | Timer, menu bar countdown, pause and resume, end sheet with rating and note, heartbeat and abandoned recovery, optional Raycast deeplink. | Session state machine as a pure Swift type in `Session.swift`, tested like `ListEditing.swift`. |
-| 3 | Blocker: app hide plus overlay, frontmost check on every blocking start, Chrome and Dia tab polling, categories, profiles, per-calendar defaults, allowlist mode. | Host and bundle matching, allowlist inversion, always-allowed set. |
-| 4 | Focus Settings second half (profiles, categories, browsers, Raycast deeplink toggle), Ad-hoc Session form, Stats view with SVG chart. | Stats aggregation over fixture rows. |
+| 3 | Blocker: loopback block page with Snooze, app hide plus the native block window, frontmost check on every blocking start, Chrome and Dia tab polling, categories, profiles, per-calendar defaults, allowlist mode. | Host and bundle matching, allowlist inversion, always-allowed set, snooze expiry. |
+| 4 | Focus Settings second half (profiles, categories, browsers, snooze length, Raycast deeplink toggle), Ad-hoc Session form, Stats view with SVG chart. | Stats aggregation over fixture rows. |
 
 Estimate: four to six working days, most of it in step 3.
 
 ## Open questions
 
-- Should the overlay stay up until the blocked app is closed, or three seconds
-  as planned above?
-- What happens when two startable events overlap: list both, or prefer the one
-  that started later?
-- Should a paused session that stays paused past the planned end go straight to
-  the end sheet?
+None. The three from the first draft (block page behaviour, overlapping
+events, paused past planned end) were answered on 2026-09-27 and folded into
+the decisions table.
