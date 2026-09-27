@@ -613,8 +613,10 @@ final class NoteTextView: NSTextView {
     // pick lands before the slash, ⇧⌘Z brings the pick back.
     let withoutQuery = (string as NSString).replacingCharacters(in: typed, with: "")
     if let undoManager, undoManager.canUndo {
+      // The length check is what stops the loop (each group only ever
+      // shortens the text towards the target); the count is a last guard.
       var steps = 0
-      while string != withoutQuery, undoManager.canUndo, steps < 8,
+      while string != withoutQuery, undoManager.canUndo, steps < 1000,
         (string as NSString).length > (withoutQuery as NSString).length
       {
         undoManager.undo()
