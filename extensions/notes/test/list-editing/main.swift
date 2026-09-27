@@ -183,6 +183,69 @@ do {
   let (text, cursor) = applied("ab", edit)!
   check("empty selection inserts a pair", text == "a__b" && cursor == 2, "\(text) \(cursor)")
 }
+
+/// Runs toggleWrap and returns (text, selection) after the edit.
+func toggled(_ src: String, _ location: Int, _ length: Int, _ marker: String) -> (String, NSRange) {
+  let edit = ListEditing.toggleWrap(in: src, selection: NSRange(location: location, length: length), marker: marker)
+  let (text, cursor) = applied(src, edit)!
+  return (text, NSRange(location: cursor, length: edit.selectionLength))
+}
+do {
+  // "a **bold** c": markers at 2-3 and 8-9, "bold" at 4-7
+  let cases: [(String, Int, Int, NSRange)] = [
+    ("caret inside bold unwraps", 5, 0, NSRange(location: 3, length: 0)),
+    ("caret at bold start unwraps", 4, 0, NSRange(location: 2, length: 0)),
+    ("caret at bold end unwraps", 8, 0, NSRange(location: 6, length: 0)),
+    ("selection inside bold unwraps", 5, 2, NSRange(location: 3, length: 2)),
+    ("selection over bold and its markers unwraps", 2, 8, NSRange(location: 2, length: 4)),
+    ("selection over bold and one marker unwraps", 2, 6, NSRange(location: 2, length: 4)),
+    ("selection from mid-marker unwraps", 3, 7, NSRange(location: 2, length: 4)),
+  ]
+  for (name, location, length, expected) in cases {
+    let (text, selection) = toggled("a **bold** c", location, length, "**")
+    check(name, text == "a bold c" && selection == expected, "\(text) \(selection)")
+  }
+}
+do {
+  let (text, selection) = toggled("an _em_ word", 5, 0, "_")
+  check("caret inside italic unwraps", text == "an em word" && selection.location == 4, "\(text) \(selection)")
+}
+do {
+  let (text, selection) = toggled("~~gone~~ now", 3, 2, "~~")
+  check("selection inside strike unwraps", text == "gone now" && selection == NSRange(location: 1, length: 2), "\(text) \(selection)")
+}
+do {
+  let (text, selection) = toggled("x `k` y", 3, 0, "`")
+  check("caret inside code unwraps", text == "x k y" && selection.location == 2, "\(text) \(selection)")
+}
+do {
+  let (text, selection) = toggled("**a** and **b**", 12, 0, "**")
+  check("caret picks the pair it is in", text == "**a** and b" && selection.location == 10, "\(text) \(selection)")
+}
+do {
+  let (text, _) = toggled("_a **b** c_", 6, 0, "_")
+  check("⌘I inside bold inside italic unwraps the italic", text == "a **b** c", text)
+  let (bold, _) = toggled("_a **b** c_", 6, 0, "**")
+  check("⌘B inside bold inside italic unwraps the bold", bold == "_a b c_", bold)
+}
+do {
+  let (text, selection) = toggled("ab**cd**", 0, 2, "**")
+  check("a selection touching a pair still wraps", text == "**ab****cd**" && selection == NSRange(location: 2, length: 2), "\(text) \(selection)")
+  let (after, caret) = toggled("**bold** x", 8, 0, "**")
+  check("a caret after the closing marker does not unwrap", after.hasPrefix("**bold**") && caret.location == 10, "\(after) \(caret)")
+  let (before, _) = toggled("x **bold**", 2, 0, "**")
+  check("a caret before the opening marker does not unwrap", before.hasSuffix("**bold**"), before)
+}
+do {
+  let (text, _) = toggled("a **bold** c", 5, 0, "_")
+  check("another marker inside bold adds its own pair", text == "a **b__old** c", text)
+  let (fenced, _) = toggled("```\n**b**\n```", 6, 0, "**")
+  check("bold markers in a code block are not a pair", fenced != "```\nb\n```", fenced)
+  let (swallowed, _) = toggled("*x _y_ z*", 4, 0, "_")
+  check("underscores inside a star italic are not a pair", swallowed != "*x y z*", swallowed)
+  let (underscored, _) = toggled("__a **b** c__", 6, 0, "**")
+  check("stars inside an underscore bold are not a pair", underscored != "__a b c__", underscored)
+}
 do {
   let edit = ListEditing.link(in: "see docs", selection: NSRange(location: 4, length: 4), url: "https://x.y")
   let (text, _) = applied("see docs", edit)!
