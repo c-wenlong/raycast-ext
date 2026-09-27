@@ -66,7 +66,7 @@
     "test": "esbuild test/lib.test.ts --bundle --platform=node --format=cjs --alias:@raycast/api=./test/raycast-stub.js --outfile=dist/test.cjs --log-level=warning && node dist/test.cjs && npm run test-helper && npm run test-view",
     "build-helper": "swiftc -O -swift-version 5 -o assets/notes-panel helper/*.swift",
     "test-helper": "mkdir -p dist && swiftc -swift-version 5 -o dist/list-tests helper/ListEditing.swift test/list-editing/main.swift && dist/list-tests",
-    "test-view": "mkdir -p dist && swiftc -swift-version 5 -o dist/view-tests helper/Markdown.swift helper/Highlighter.swift helper/NoteTextView.swift helper/ListEditing.swift helper/Chrome.swift helper/ActionPalette.swift helper/Links.swift helper/SlashMenu.swift test/text-view/shim.swift test/text-view/main.swift && dist/view-tests dist/view-selection.png",
+    "test-view": "mkdir -p dist && swiftc -swift-version 5 -o dist/view-tests helper/Markdown.swift helper/Highlighter.swift helper/NoteTextView.swift helper/ListEditing.swift helper/Chrome.swift helper/ActionPalette.swift helper/Links.swift helper/SlashMenu.swift helper/CodeBlocks.swift helper/Zoom.swift test/text-view/shim.swift test/text-view/main.swift && dist/view-tests dist/view-selection.png",
     "render-panel": "mkdir -p dist && sed '/MARK: - Entry point/,$d' helper/main.swift > dist/main.swift && sed '/^import /d' test/panel-render/main.swift >> dist/main.swift && swiftc -swift-version 5 -o dist/render-panel dist/main.swift $(ls helper/*.swift | grep -v /main.swift) && dist/render-panel"
   },
   "dependencies": {

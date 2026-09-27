@@ -245,6 +245,10 @@ final class CodeBlockOverlay: NSObject {
     picker.hide(restoreFocus: false)
   }
 
+  /// Frames of the visible control strips, in text view coordinates
+  /// (for the view tests).
+  var visibleControlFrames: [NSRect] { controls.filter { !$0.isHidden }.map(\.frame) }
+
   func update() {
     guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer
     else { return }
