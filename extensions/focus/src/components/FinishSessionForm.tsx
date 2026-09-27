@@ -11,9 +11,10 @@ import { useState } from "react";
 import { FinishResult, Session, errorMessage, getDaemon } from "../lib/daemon";
 import { stars } from "../lib/time";
 
-// Step 1 stand-in for the end-of-session sheet. Step 2 moves this into the
-// helper as a native window; delete this file and the Finish action in
-// focusToday.tsx then.
+// Finish from Raycast: the fallback for the helper's native end sheet (the
+// menu bar and the sheet are the main way to finish), and the only way when
+// the helper runs without its UI. The helper records why the session ended
+// (timer or stop), so no reason is sent.
 
 const RATINGS = [5, 4, 3, 2, 1];
 
@@ -45,7 +46,6 @@ export function FinishSessionForm(props: {
       const result = await getDaemon().finish({
         rating: Number(values.rating),
         note: values.note,
-        reason: "manual",
       });
       toast.style = Toast.Style.Success;
       toast.title = `Finished: ${result.session.goal}`;

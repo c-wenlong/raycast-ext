@@ -15,12 +15,20 @@ import { FocusConfig, readConfig } from "./lib/config";
 import { moveTarget } from "./lib/settings";
 import {
   Calendar,
+  EXTEND_MINUTES,
   Session,
   TodayEvent,
   WaitingSession,
   errorMessage,
   getDaemon,
 } from "./lib/daemon";
+import {
+  effectiveSession,
+  pausedSecondsNow,
+  pausedText,
+  sessionActions,
+  sessionStatusText,
+} from "./lib/session";
 import {
   durationText,
   formatClockIso,
@@ -33,10 +41,19 @@ import {
 interface Data {
   config: FocusConfig;
   session: Session | null;
+  // When `session` was read, for the paused time shown since.
+  fetchedAt: Date;
   events: TodayEvent[];
   waiting: WaitingSession[];
   colors: Map<string, string>;
 }
+
+const STATE_COLORS: Record<Session["state"], Color> = {
+  running: Color.Green,
+  paused: Color.Orange,
+  ending: Color.Red,
+  finished: Color.SecondaryText,
+};
 
 async function openSettings() {
   try {
@@ -77,21 +94,33 @@ export default function FocusTodayCommand() {
     try {
       const config = await readConfig();
       const daemon = getDaemon();
-      const [session, waiting, events, calendars] = await Promise.all([
-        daemon.status(),
-        daemon.pending(),
-        config.startableCalendars.length > 0
-          ? daemon.today()
-          : Promise.resolve([]),
-        // Only for row colours; the list works without them.
-        daemon.calendars().catch((): Calendar[] => []),
-      ]);
+      const [{ session, fetchedAt }, waiting, events, calendars] =
+        await Promise.all([
+          // The paused time is counted from when this reply came back, not
+          // from when the slowest of the four did.
+          daemon
+            .status()
+            .then((session) => ({ session, fetchedAt: new Date() })),
+          daemon.pending(),
+          config.startableCalendars.length > 0
+            ? daemon.today()
+            : Promise.resolve([]),
+          // Only for row colours; the list works without them.
+          daemon.calendars().catch((): Calendar[] => []),
+        ]);
       if (id !== latest.current) return;
       const colors = new Map<string, string>();
       for (const calendar of calendars) {
         if (calendar.color) colors.set(calendar.id, calendar.color);
       }
-      setData({ config, session, events, waiting, colors });
+      setData({
+        config,
+        session,
+        fetchedAt,
+        events,
+        waiting,
+        colors,
+      });
       setError(null);
     } catch (loadError) {
       if (id !== latest.current || options.quiet) return;
@@ -115,6 +144,25 @@ export default function FocusTodayCommand() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // The helper sends a session to the end sheet at its planned end; refetch
+  // then so the row shows it (the view already treats it as ending).
+  const deadline = data?.session?.plannedEnd;
+  const deadlineOpen =
+    data?.session?.state === "running" || data?.session?.state === "paused";
+  useEffect(() => {
+    if (!deadline || !deadlineOpen) return;
+    const wait = Date.parse(deadline) - Date.now();
+    if (!Number.isFinite(wait) || wait > 2 ** 31 - 1) return;
+    const timer = setTimeout(
+      () => {
+        setNow(new Date());
+        reload({ quiet: true });
+      },
+      Math.max(0, wait) + 1_000,
+    );
+    return () => clearTimeout(timer);
+  }, [deadline, deadlineOpen, reload]);
 
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 30_000);
@@ -144,6 +192,28 @@ export default function FocusTodayCommand() {
       toast.style = Toast.Style.Failure;
       toast.title = "Could not start the session";
       toast.message = errorMessage(startError);
+      // Starting while a session is open sends that one to the end sheet.
+      await reload({ quiet: true });
+    }
+  }
+
+  // Pause, Resume, Extend and Stop: one round trip, a toast, a reload.
+  async function handleChange(
+    busy: string,
+    change: () => Promise<Session>,
+    done: (session: Session) => string,
+  ) {
+    const toast = await showToast({ style: Toast.Style.Animated, title: busy });
+    try {
+      const session = await change();
+      toast.style = Toast.Style.Success;
+      toast.title = done(session);
+      await reload();
+    } catch (changeError) {
+      toast.style = Toast.Style.Failure;
+      toast.title = `${busy.replace(/…$/, "")} failed`;
+      toast.message = errorMessage(changeError);
+      await reload({ quiet: true });
     }
   }
 
@@ -208,24 +278,40 @@ export default function FocusTodayCommand() {
     </ActionPanel.Section>
   );
 
-  function renderSession(session: Session, config: FocusConfig) {
+  function renderSession(
+    session: Session,
+    config: FocusConfig,
+    fetchedAt: Date,
+  ) {
+    const allowed = sessionActions(session);
+    const paused = pausedText(pausedSecondsNow(session, fetchedAt, now));
     const accessories: List.Item.Accessory[] = [];
-    if (session.plannedEnd) {
-      accessories.push({
-        text: remainingText(secondsUntil(session.plannedEnd, now)),
-        tooltip: `Planned end ${formatClockIso(session.plannedEnd)}`,
-      });
-    }
+    if (paused) accessories.push({ text: paused, icon: Icon.Pause });
     accessories.push({
-      tag: {
-        value: session.state,
-        color: session.state === "running" ? Color.Green : Color.Orange,
-      },
+      text: sessionStatusText(session, now),
+      tooltip: session.plannedEnd
+        ? `Planned end ${formatClockIso(session.plannedEnd)}`
+        : undefined,
     });
+    accessories.push({
+      tag: { value: session.state, color: STATE_COLORS[session.state] },
+    });
+    const finishForm = (
+      <FinishSessionForm
+        session={session}
+        logCalendarName={config.logCalendarName}
+        onFinished={() => {
+          reload();
+        }}
+      />
+    );
     return (
       <List.Item
         key={`session-${session.id}`}
-        icon={{ source: Icon.Clock, tintColor: Color.Green }}
+        icon={{
+          source: session.state === "paused" ? Icon.Pause : Icon.Clock,
+          tintColor: STATE_COLORS[session.state],
+        }}
         title={session.goal}
         subtitle={
           session.plannedEnd
@@ -235,19 +321,80 @@ export default function FocusTodayCommand() {
         accessories={accessories}
         actions={
           <ActionPanel>
-            <Action.Push
-              title="Finish Session"
-              icon={Icon.CheckCircle}
-              target={
-                <FinishSessionForm
-                  session={session}
-                  logCalendarName={config.logCalendarName}
-                  onFinished={() => {
-                    reload();
-                  }}
-                />
-              }
-            />
+            {allowed.pause ? (
+              <Action
+                title="Pause"
+                icon={Icon.Pause}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
+                onAction={() =>
+                  handleChange(
+                    "Pausing…",
+                    () => getDaemon().pause(),
+                    () => "Paused",
+                  )
+                }
+              />
+            ) : null}
+            {allowed.resume ? (
+              <Action
+                title="Resume"
+                icon={Icon.Play}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
+                onAction={() =>
+                  handleChange(
+                    "Resuming…",
+                    () => getDaemon().resume(),
+                    () => "Resumed",
+                  )
+                }
+              />
+            ) : null}
+            {allowed.extend ? (
+              <ActionPanel.Submenu
+                title="Extend"
+                icon={Icon.PlusCircle}
+                shortcut={{ modifiers: ["cmd"], key: "e" }}
+              >
+                {EXTEND_MINUTES.map((minutes) => (
+                  <Action
+                    key={minutes}
+                    title={`${minutes} Minutes`}
+                    onAction={() =>
+                      handleChange(
+                        `Extending by ${minutes} min…`,
+                        () => getDaemon().extend(minutes * 60),
+                        (next) =>
+                          next.plannedEnd
+                            ? `Extended until ${formatClockIso(next.plannedEnd)}`
+                            : "Extended",
+                      )
+                    }
+                  />
+                ))}
+              </ActionPanel.Submenu>
+            ) : null}
+            {allowed.stop ? (
+              <Action
+                title="Stop"
+                icon={Icon.Stop}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
+                onAction={() =>
+                  handleChange(
+                    "Stopping…",
+                    () => getDaemon().stop(),
+                    () => "Stopped: rate it on the end sheet",
+                  )
+                }
+              />
+            ) : null}
+            {allowed.finish ? (
+              <Action.Push
+                title="Finish (Rating and Note)"
+                icon={Icon.CheckCircle}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+                target={finishForm}
+              />
+            ) : null}
             {commonActions}
           </ActionPanel>
         }
@@ -390,7 +537,11 @@ export default function FocusTodayCommand() {
       />
       {session && config ? (
         <List.Section title="Running">
-          {renderSession(session, config)}
+          {renderSession(
+            effectiveSession(session, data?.fetchedAt ?? now, now),
+            config,
+            data?.fetchedAt ?? now,
+          )}
         </List.Section>
       ) : null}
       {groups.now.length > 0 ? (

@@ -19,10 +19,18 @@ import {
 } from "../src/lib/config";
 import {
   DaemonError,
+  EXTEND_MINUTES,
   FocusDaemon,
   calendarLabel,
   sendRequest,
 } from "../src/lib/daemon";
+import {
+  effectiveSession,
+  pausedSecondsNow,
+  pausedText,
+  sessionActions,
+  sessionStatusText,
+} from "../src/lib/session";
 import {
   NO_LOG_CALENDAR,
   moveTarget,
@@ -588,7 +596,9 @@ net.createServer((socket) => {
         assert.equal(session.goal, "Review the Focus plan");
         assert.equal(session.plannedEnd, at(clock, 3000));
         assert.equal((await daemon.status())?.id, session.id);
-        await rejectsWith(daemon.start("ev-pset"), "daemon", /already running/);
+        // Starting while one is open sends that one to the end sheet.
+        await rejectsWith(daemon.start("ev-pset"), "daemon", /already running.*end sheet/);
+        assert.equal((await daemon.status())?.state, "ending");
 
         // Rating and note are checked before anything is sent.
         const sent = fake.state.requests.length;
@@ -600,8 +610,8 @@ net.createServer((socket) => {
         const finished = await daemon.finish({ rating: 4, note: "  good\n run \n" });
         assert.equal(finished.logPending, true);
         assert.equal(finished.logEventId, null);
+        // No reason unless asked: the helper knows why the session ended.
         assert.deepEqual(fake.state.requests.at(-1), {
-          reason: "manual",
           rating: 4,
           note: "good run",
           cmd: "finish",
@@ -632,13 +642,133 @@ net.createServer((socket) => {
         const logged = await daemon.finish({ note: "   " });
         assert.equal(logged.logPending, false);
         assert.equal(logged.logEventId, `log-${adhoc.id}`);
-        assert.deepEqual(fake.state.requests.at(-1), { reason: "manual", cmd: "finish" });
+        assert.deepEqual(fake.state.requests.at(-1), { cmd: "finish" });
 
         await daemon.startAdhoc({ goal: "Deep", durationSeconds: 60, calendarId: "cal-work", profile: "deep" });
         assert.equal(fake.state.requests.at(-1).profile, "deep");
         await daemon.finish({ reason: "timer" });
 
         await rejectsWith(daemon.request("nonsense"), "daemon", /Unknown command/);
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  // ---- session state: pause, resume, extend, stop ----
+  [
+    "session: actions follow the state",
+    async () => {
+      assert.deepEqual(sessionActions({ state: "running" }), { pause: true, resume: false, extend: true, stop: true, finish: true });
+      assert.deepEqual(sessionActions({ state: "paused" }), { pause: false, resume: true, extend: true, stop: true, finish: true });
+      assert.deepEqual(sessionActions({ state: "ending" }), { pause: false, resume: false, extend: true, stop: false, finish: true });
+      assert.deepEqual(sessionActions({ state: "finished" }), { pause: false, resume: false, extend: false, stop: false, finish: false });
+      assert.deepEqual([...EXTEND_MINUTES], [5, 10, 15, 25]);
+    },
+  ],
+  [
+    "session: status text and paused time",
+    async () => {
+      const now = new Date(2026, 8, 27, 14, 10, 0);
+      const plannedEnd = at(now, 1190);
+      assert.equal(sessionStatusText({ state: "running", plannedEnd, endReason: null }, now), "20 min left");
+      assert.equal(sessionStatusText({ state: "paused", plannedEnd, endReason: null }, now), "paused, 20 min left");
+      assert.equal(sessionStatusText({ state: "running", plannedEnd: at(now, -5), endReason: null }, now), "ending");
+      assert.equal(sessionStatusText({ state: "ending", plannedEnd, endReason: "timer" }, now), "time's up");
+      assert.equal(sessionStatusText({ state: "ending", plannedEnd, endReason: "manual" }, now), "stopped");
+      assert.equal(sessionStatusText({ state: "running", plannedEnd: null, endReason: null }, now), "ending");
+      const fetchedAt = new Date(now.getTime() - 90_000);
+      assert.equal(pausedSecondsNow({ state: "paused", pausedSeconds: 30 }, fetchedAt, now), 120);
+      assert.equal(pausedSecondsNow({ state: "running", pausedSeconds: 30 }, fetchedAt, now), 30);
+      assert.equal(pausedSecondsNow({ state: "running" }, fetchedAt, now), 0);
+      assert.equal(pausedText(0), null);
+      assert.equal(pausedText(0.5), null);
+      assert.equal(pausedText(120), "paused 2 min");
+      assert.equal(pausedText(61), "paused 2 min");
+      // A reply from before the deadline is read as the end sheet after it.
+      // Paused since before the reply: the paused time runs on to the deadline.
+      const past = { state: "paused" as const, plannedEnd: at(now, -1), endReason: null, pausedSeconds: 30 };
+      const fetched = new Date(now.getTime() - 120_000);
+      assert.deepEqual(effectiveSession(past, fetched, now), { ...past, state: "ending", endReason: "timer", pausedSeconds: 149 });
+      assert.equal(pausedSecondsNow(effectiveSession(past, fetched, now), fetched, now), 149);
+      assert.deepEqual(sessionActions(effectiveSession(past, fetched, now)).pause, false);
+      const runningPast = { state: "running" as const, plannedEnd: at(now, -1), endReason: null, pausedSeconds: 30 };
+      assert.equal(effectiveSession(runningPast, fetched, now).pausedSeconds, 30);
+      const exact = { state: "running" as const, plannedEnd: at(now, 0), endReason: null };
+      assert.equal(effectiveSession(exact, now, now).state, "ending");
+      const ahead = { state: "running" as const, plannedEnd: at(now, 1), endReason: null };
+      assert.equal(effectiveSession(ahead, now, now), ahead);
+      const stopped = { state: "ending" as const, plannedEnd: at(now, 600), endReason: "manual" };
+      assert.equal(effectiveSession(stopped, now, now), stopped);
+      const unknown = { state: "running" as const, plannedEnd: null, endReason: null };
+      assert.equal(effectiveSession(unknown, now, now), unknown);
+    },
+  ],
+  [
+    "daemon: pause, resume, extend, stop and finish round-trip against the fake daemon",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      let clock = new Date(2026, 8, 27, 10, 0, 0);
+      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      await fake.listen();
+      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const start = clock;
+      try {
+        await rejectsWith(daemon.pause(), "daemon", /^no session is running$/);
+        const session = await daemon.startAdhoc({ goal: "Draft", durationSeconds: 600, calendarId: "cal-work" });
+        assert.equal(session.state, "running");
+        assert.equal(session.remainingSeconds, 600);
+
+        clock = new Date(start.getTime() + 120_000);
+        const paused = await daemon.pause();
+        assert.equal(paused.state, "paused");
+        assert.deepEqual(fake.state.requests.at(-1), { cmd: "pause" });
+        await rejectsWith(daemon.pause(), "daemon", /already paused/);
+        clock = new Date(start.getTime() + 180_000);
+        const status = await daemon.status();
+        assert.equal(status?.pausedSeconds, 60);
+        assert.equal(status?.remainingSeconds, 420);
+
+        const resumed = await daemon.resume();
+        assert.equal(resumed.state, "running");
+        await rejectsWith(daemon.resume(), "daemon", /not paused/);
+
+        // Extend is checked before anything is sent.
+        const sent = fake.state.requests.length;
+        await assert.rejects(daemon.extend(30), RangeError);
+        await assert.rejects(daemon.extend(90.5), RangeError);
+        assert.equal(fake.state.requests.length, sent);
+        const extended = await daemon.extend(300);
+        assert.deepEqual(fake.state.requests.at(-1), { seconds: 300, cmd: "extend" });
+        assert.equal(extended.plannedEnd, at(start, 900));
+        assert.equal(extended.extendedSeconds, 300);
+
+        const stopped = await daemon.stop();
+        assert.equal(stopped.state, "ending");
+        assert.equal(stopped.endReason, "manual");
+        assert.equal(stopped.remainingSeconds, 0);
+        await rejectsWith(daemon.pause(), "daemon", /end sheet/);
+        await rejectsWith(daemon.stop(), "daemon", /end sheet/);
+
+        // Extend from the end sheet returns to running.
+        const back = await daemon.extend(600);
+        assert.equal(back.state, "running");
+        assert.equal(back.plannedEnd, at(start, 1500));
+
+        // The planned end passes while paused: ending by the timer.
+        await daemon.pause();
+        clock = new Date(start.getTime() + 1_600_000);
+        const ending = await daemon.status();
+        assert.equal(ending?.state, "ending");
+        assert.equal(ending?.endReason, "timer");
+        const finished = await daemon.finish({ rating: 5 });
+        assert.equal(finished.session.state, "finished");
+        assert.equal(finished.session.endReason, "timer");
+        assert.equal(finished.session.extendedSeconds, 900);
+        assert.deepEqual(fake.state.requests.at(-1), { rating: 5, cmd: "finish" });
+        assert.equal(await daemon.status(), null);
+        await rejectsWith(daemon.stop(), "daemon", /no session is running/);
       } finally {
         await fake.close();
       }

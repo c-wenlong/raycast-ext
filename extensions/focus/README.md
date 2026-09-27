@@ -16,8 +16,13 @@ end-of-session sheet, app and site blocking, stats), is
   end is more than a minute away, in a **Now** section (already started) and a
   **Later** section, each row with its calendar, time range and the minutes a
   session started now would run. `↩` starts a session that runs until the
-  event's planned end. A running session sits on top under **Running** with
-  a Finish action (rating and a one-line note). Sessions whose log event could
+  event's planned end. The open session sits on top under **Running** with
+  its state (running, paused, or ending at the end sheet), the time left and
+  the time paused, and actions Pause or Resume (`⌘⇧P`), Extend by 5, 10, 15
+  or 25 minutes (`⌘E`), Stop (`⌘⇧S`, goes to the end sheet), and "Finish
+  (Rating and Note)" (`⌘⇧F`), the fallback for the helper's native end sheet.
+  Starting another event while a session is open sends that one to the end
+  sheet first. Sessions whose log event could
   not be written yet are listed under **Waiting for log calendar**, with Retry
   and "Move Waiting Sessions to <current log calendar>". `⌘R` refreshes,
   `⌘,` opens Focus Settings.
@@ -39,14 +44,16 @@ Everything is in `~/.raycast/focus/` (gitignored at the repo root as `/focus/`):
 The commands launch the helper (`assets/focus-daemon`) on first use if nothing
 answers on the socket.
 
-## Status: step 1
+## Status: step 2
 
-This is PLAN step 1. Focus Today lists and starts sessions and Focus
-Settings has its calendar half. There is no timer UI yet: the Finish form in
-Focus Today stands in for the native end-of-session sheet that arrives in
-step 2 ([src/components/FinishSessionForm.tsx](src/components/FinishSessionForm.tsx),
-removed then). Ad-hoc sessions, stats and the rest of Settings are step 4;
-the client library already has `startAdhoc`.
+PLAN step 1 and the session half of step 2: the helper runs the timer,
+pause, resume, extend and stop, keeps a heartbeat, marks a session abandoned
+when the helper died with it open, and can fire the Raycast Focus deeplink.
+The menu bar countdown and the native end sheet arrive with the step 2 UI PR;
+until then Focus Today's Finish form
+([src/components/FinishSessionForm.tsx](src/components/FinishSessionForm.tsx))
+is the way to finish. Ad-hoc sessions, stats and the rest of Settings are
+step 4; the client library already has `startAdhoc`.
 
 ## Development
 

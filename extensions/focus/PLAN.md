@@ -1,7 +1,10 @@
 # Focus: plan
 
 Status: step 1 of the build order is merged (helper, Focus Today, Focus
-Settings calendar half); steps 2 to 4 are still to do. Written 2026-09-27
+Settings calendar half). Step 2 is in two PRs: 2a, the session logic (state
+machine, timer, pause, resume, extend, stop, heartbeat recovery, deeplink,
+socket commands and Focus Today actions), and 2b, the native menu bar
+countdown and end sheet. Steps 3 and 4 are still to do. Written 2026-09-27
 from an interview with Kai.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
@@ -81,6 +84,20 @@ Rules:
   at that moment, exactly as if it had been running.
 - Focus Today lists every startable event whose planned end is still ahead,
   overlapping ones included; the session length follows the event picked.
+- Decided while building step 2a (2026-09-27):
+  - Reaching the end sheet from paused closes the pause at the planned end
+    (at the stop for a manual stop): the sheet keeps blocking on, so that
+    time is not paused. Extend from the sheet returns to running, not paused.
+  - Extend from the end sheet counts from now when the planned end is already
+    behind: the new end is `max(planned end, now) + extension`. The log's
+    "after extending N min" is the sum asked for.
+  - The extended end is stored in a new column `extended_end` (schema 2);
+    `planned_end` keeps the planned end. An open row at the end sheet carries
+    its `end_reason` ("timer" or "manual") so a quick restart brings the sheet
+    back; Finish records that reason unless the client names one.
+  - Abandoned means a heartbeat more than 90 s old at launch (three missed
+    30 s beats). A Mac that sleeps with the helper alive is not abandoned: on
+    wake the timer finds the deadline passed and shows the end sheet.
 
 ## Blocking
 
@@ -202,8 +219,9 @@ create table sessions (
   planned_start text, planned_end text,   -- ISO 8601; ad hoc stores now and now + duration
   started_at text not null,
   ended_at text,
-  end_reason text,             -- timer, manual, abandoned
+  end_reason text,             -- timer, manual, abandoned; on an open row: at the end sheet, and why
   extended_seconds integer not null default 0,
+  extended_end text,           -- planned_end plus extensions, null until extended (schema 2)
   rating integer,              -- 1 to 5
   note text,
   log_calendar_id text,        -- EKCalendar the log event was (or will be) written to, fixed at Finish

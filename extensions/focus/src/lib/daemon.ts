@@ -37,16 +37,30 @@ export interface TodayEvent {
   remainingSeconds: number;
 }
 
+// "ending" is the end sheet: the timer ran out (or the planned end passed
+// while paused) or Kai pressed Stop; it waits for Extend or Finish.
+export type SessionState = "running" | "paused" | "ending" | "finished";
+
 export interface Session {
   id: number;
   goal: string;
-  // "running" or "paused" today; step 2 adds "ending".
-  state: string;
+  state: SessionState;
   startedAt: string;
+  // The end the timer runs to, extensions included.
   plannedEnd: string | null;
   calendarId: string;
   profile: string;
   sourceEventId: string | null;
+  // Seconds added by Extend so far.
+  extendedSeconds?: number;
+  // Seconds spent paused so far (open sessions count an open pause up to
+  // the moment of the reply).
+  pausedSeconds?: number;
+  // Open sessions only: whole seconds to the planned end, 0 while ending.
+  remainingSeconds?: number;
+  // While ending, why ("timer" or "manual"), which Finish records unless
+  // told otherwise; for a finished session, the recorded reason.
+  endReason?: string | null;
 }
 
 export interface FinishResult {
@@ -78,8 +92,13 @@ export interface AdhocRequest {
 export interface FinishRequest {
   rating?: number;
   note?: string;
+  // Left out, the helper records why the session reached the end sheet
+  // ("timer" or "manual"), or "manual" when it never did.
   reason?: "timer" | "manual";
 }
+
+// Extend choices, as on the native end sheet.
+export const EXTEND_MINUTES = [5, 10, 15, 25] as const;
 
 export type DaemonErrorCode =
   | "missing-binary" // assets/focus-daemon is not there
@@ -469,10 +488,37 @@ export class FocusDaemon {
     );
   }
 
+  // Pause, Resume, Extend and Stop reply with the session as it now is. The
+  // helper refuses a change the session's state does not allow (pausing at
+  // the end sheet, resuming a running session) with a message to show.
+  async pause(): Promise<Session> {
+    return this.sessionReply(await this.request("pause"));
+  }
+
+  async resume(): Promise<Session> {
+    return this.sessionReply(await this.request("resume"));
+  }
+
+  // Also works at the end sheet, which returns the session to running.
+  async extend(seconds: number): Promise<Session> {
+    if (!Number.isInteger(seconds) || seconds < 60 || seconds > 86_400) {
+      throw new RangeError("Extend takes whole seconds from 60 to 86400.");
+    }
+    return this.sessionReply(await this.request("extend", { seconds }));
+  }
+
+  // Sends the session to the end sheet.
+  async stop(): Promise<Session> {
+    return this.sessionReply(await this.request("stop"));
+  }
+
+  private sessionReply(reply: Reply): Session {
+    return field<Session>(reply, "session", isObject);
+  }
+
   async finish(request: FinishRequest = {}): Promise<FinishResult> {
-    const payload: Record<string, unknown> = {
-      reason: request.reason ?? "manual",
-    };
+    const payload: Record<string, unknown> = {};
+    if (request.reason) payload.reason = request.reason;
     if (request.rating !== undefined) {
       if (
         !Number.isInteger(request.rating) ||
