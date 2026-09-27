@@ -32,7 +32,12 @@ import {
   listMarkdownFiles,
 } from "./lib/notes";
 import { launchPanel } from "./lib/panel";
-import { getPinnedPaths, removePin, togglePin } from "./lib/pins";
+import {
+  getPinnedPaths,
+  reconcilePins,
+  removePin,
+  togglePin,
+} from "./lib/pins";
 
 function countOpenTasks(content: string): number {
   return (content.match(/^\s*[-*+]\s+\[ \]\s+/gm) ?? []).length;
@@ -53,12 +58,12 @@ export default function BrowseNotesCommand() {
       const notesDir = getNotesDirectory();
       let skippedFiles = 0;
       // Full contents are read so search can match note bodies too.
-      const [files, pins] = await Promise.all([
-        listMarkdownFiles(notesDir, () => {
-          skippedFiles += 1;
-        }),
-        getPinnedPaths(),
-      ]);
+      const files = await listMarkdownFiles(notesDir, () => {
+        skippedFiles += 1;
+      });
+      // The notes window may have renamed a pinned note to match its
+      // first line; the pin follows.
+      const pins = await reconcilePins(files.map((file) => file.path));
       setNotes(files);
       setPinned(pins);
       if (skippedFiles > 0 && !hasShownReadWarning.current) {

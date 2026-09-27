@@ -51,6 +51,55 @@ export async function movePin(fromPath: string, toPath: string): Promise<void> {
   await savePinnedPaths(pins);
 }
 
+/**
+ * Pins point at paths, and the notes window renames a generated file
+ * ("YYYY-MM-DD HHmm - slug.md") when its first line changes without
+ * being able to reach this storage. A pinned path that no longer exists
+ * is moved to the existing note with the same timestamp prefix, if
+ * there is exactly one; other dead pins are left alone (a note may be
+ * back later). Returns the pins as they stand afterwards.
+ */
+export async function reconcilePins(
+  existingPaths: string[],
+): Promise<Set<string>> {
+  const pins = await getPinnedPaths();
+  const existing = new Set(existingPaths);
+  let changed = false;
+  for (const pinned of [...pins]) {
+    if (existing.has(pinned)) {
+      continue;
+    }
+    const prefix = generatedPrefix(pinned);
+    if (!prefix) {
+      continue;
+    }
+    const candidates = existingPaths.filter(
+      (candidate) =>
+        candidate !== pinned &&
+        dirOf(candidate) === dirOf(pinned) &&
+        generatedPrefix(candidate) === prefix,
+    );
+    if (candidates.length === 1) {
+      pins.delete(pinned);
+      pins.add(candidates[0]);
+      changed = true;
+    }
+  }
+  if (changed) {
+    await savePinnedPaths(pins);
+  }
+  return pins;
+}
+
+function dirOf(filePath: string): string {
+  return filePath.slice(0, filePath.lastIndexOf("/"));
+}
+
+function generatedPrefix(filePath: string): string | undefined {
+  const filename = filePath.slice(filePath.lastIndexOf("/") + 1);
+  return filename.match(/^(\d{4}-\d{2}-\d{2} \d{4}) - .+\.md$/)?.[1];
+}
+
 export async function removePin(notePath: string): Promise<void> {
   const pins = await getPinnedPaths();
   if (pins.delete(notePath)) {

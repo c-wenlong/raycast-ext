@@ -385,11 +385,15 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     var text = loadedText
     var copyName = "\((filename as NSString).deletingPathExtension) copy.md"
 
-    if let heading = headingPattern.firstMatch(in: text, range: fullRange(text)) {
-      let headingRange = heading.range(at: 1)
-      let copyTitle = (text as NSString).substring(with: headingRange) + " copy"
-      text = (text as NSString).replacingCharacters(in: headingRange, with: copyTitle)
-      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)) {
+    // The copy's title line (heading or not) gets " copy", so the two
+    // notes read apart in the title bar and in Browse Notes.
+    if let titleRange = Titles.titleLineRange(of: text) {
+      let line = (text as NSString).substring(with: titleRange)
+      let trimmed = line.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
+      text = (text as NSString).replacingCharacters(in: titleRange, with: trimmed + " copy")
+      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)),
+        let copyTitle = Titles.firstLine(of: text)
+      {
         let prefix = (filename as NSString).substring(with: match.range(at: 1))
         copyName = "\(prefix) - \(slugify(copyTitle)).md"
       }

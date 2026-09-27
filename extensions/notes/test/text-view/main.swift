@@ -471,6 +471,9 @@ check("blank lines and fences are skipped", Titles.firstLine(of: "\n```\ncode\n`
 check("a link keeps its text", Titles.firstLine(of: "see [the manual](https://x.y)") == "see the manual")
 check("an empty note has no title", Titles.firstLine(of: "\n\n") == nil)
 check("a long first line is cut", Titles.firstLine(of: String(repeating: "a", count: 100))!.count == Titles.maxLength)
+check("an image keeps its alt text", Titles.firstLine(of: "![diagram](image.png) here") == "diagram here")
+check("a long emoji line is cut at whole characters", Titles.firstLine(of: String(repeating: "👍🏽", count: 90))!.count == Titles.maxLength)
+check("the title line range covers the raw line", Titles.titleLineRange(of: "\n# Hi there\nmore") == NSRange(location: 1, length: 10))
 
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")

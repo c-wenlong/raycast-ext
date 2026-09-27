@@ -10,7 +10,13 @@ import {
   parseTitleFromContentOrFilename,
   renameNoteFromTitleIfNeeded,
 } from "../src/lib/notes";
-import { getPinnedPaths, movePin, removePin, togglePin } from "../src/lib/pins";
+import {
+  getPinnedPaths,
+  movePin,
+  reconcilePins,
+  removePin,
+  togglePin,
+} from "../src/lib/pins";
 import {
   appendTaskToDaily,
   formatTaskLine,
@@ -26,6 +32,29 @@ function freshDir(): string {
 
 const cases: Case[] = [
   [
+    "a pin follows a note the window renamed (same prefix, new slug)",
+    async () => {
+      await togglePin("/n/2026-01-01 0900 - old.md");
+      await togglePin("/n/keep.md");
+      const pins = await reconcilePins([
+        "/n/2026-01-01 0900 - new-title.md",
+        "/n/2026-01-01 0901 - other.md",
+        "/n/keep.md",
+      ]);
+      assert.deepEqual([...pins].sort(), ["/n/2026-01-01 0900 - new-title.md", "/n/keep.md"]);
+      // Two candidates with the prefix: the pin is left alone.
+      await togglePin("/n/2026-02-02 1000 - gone.md");
+      const ambiguous = await reconcilePins([
+        "/n/2026-02-02 1000 - a.md",
+        "/n/2026-02-02 1000 - b.md",
+      ]);
+      assert.ok(ambiguous.has("/n/2026-02-02 1000 - gone.md"));
+      for (const pin of ambiguous) {
+        await removePin(pin);
+      }
+    },
+  ],
+  [
     "the title is the first line with its markdown stripped",
     async () => {
       assert.equal(firstLineTitle("## Hello **world**\nmore"), "Hello world");
@@ -37,6 +66,10 @@ const cases: Case[] = [
       assert.equal(firstLineTitle("see [the manual](https://x.y)"), "see the manual");
       assert.equal(firstLineTitle("\n\n"), undefined);
       assert.equal(firstLineTitle("a".repeat(100))?.length, 80);
+      assert.equal(firstLineTitle("![diagram](image.png) here"), "diagram here");
+      const emoji = firstLineTitle("👍🏽".repeat(90)) ?? "";
+      assert.equal([...new Intl.Segmenter().segment(emoji)].length, 80);
+      assert.equal(emoji, "👍🏽".repeat(80));
       assert.equal(parseTitleFromContentOrFilename("/n/2026-01-01 0900 - x.md", "plain first line"), "plain first line");
       assert.equal(parseTitleFromContentOrFilename("/n/2026-01-01 0900 - my-note.md", ""), "My Note");
     },
