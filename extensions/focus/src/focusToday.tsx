@@ -60,13 +60,19 @@ export default function FocusTodayCommand() {
   // Re-render every 30 s so remaining minutes and the Now/Later split stay
   // current while the list is open.
   const [now, setNow] = useState(() => new Date());
-  const inFlight = useRef(false);
+  // Each load gets a number; only the newest one may write state, so a slow
+  // background refresh can never overwrite what a later reload (after Start
+  // or Finish) showed. `running` counts loads still in flight.
+  const latest = useRef(0);
+  const running = useRef(0);
 
   // A quiet reload (the background refresh) shows no spinner and no toast,
-  // and is skipped while another load is still running.
+  // is skipped while another load is running, and on failure keeps the last
+  // good view; the next tick tries again.
   const reload = useCallback(async (options: { quiet?: boolean } = {}) => {
-    if (options.quiet && inFlight.current) return;
-    inFlight.current = true;
+    if (options.quiet && running.current > 0) return;
+    const id = ++latest.current;
+    running.current += 1;
     if (!options.quiet) setIsLoading(true);
     try {
       const config = await readConfig();
@@ -80,6 +86,7 @@ export default function FocusTodayCommand() {
         // Only for row colours; the list works without them.
         daemon.calendars().catch((): Calendar[] => []),
       ]);
+      if (id !== latest.current) return;
       const colors = new Map<string, string>();
       for (const calendar of calendars) {
         if (calendar.color) colors.set(calendar.id, calendar.color);
@@ -87,20 +94,21 @@ export default function FocusTodayCommand() {
       setData({ config, session, events, waiting, colors });
       setError(null);
     } catch (loadError) {
+      if (id !== latest.current || options.quiet) return;
       // Drop what was shown before: a stale Running row would mislead.
       setData(null);
       setError(errorMessage(loadError));
-      if (!options.quiet) {
-        await showToast({
-          style: Toast.Style.Failure,
-          title: "Could not load Focus Today",
-          message: errorMessage(loadError),
-        });
-      }
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Could not load Focus Today",
+        message: errorMessage(loadError),
+      });
     } finally {
-      inFlight.current = false;
-      setNow(new Date());
-      setIsLoading(false);
+      running.current -= 1;
+      if (id === latest.current) {
+        setNow(new Date());
+        setIsLoading(false);
+      }
     }
   }, []);
 
