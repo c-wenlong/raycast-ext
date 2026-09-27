@@ -1,6 +1,8 @@
 # Focus: plan
 
-Status: planned, no code yet. Written 2026-09-27 from an interview with Kai.
+Status: step 1 of the build order is merged (helper, Focus Today, Focus
+Settings calendar half); steps 2 to 4 are still to do. Written 2026-09-27
+from an interview with Kai.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
 
@@ -197,7 +199,7 @@ create table sessions (
   calendar_id text not null,   -- EKCalendar identifier used for stats
   goal text not null,
   profile text not null,
-  planned_start text, planned_end text,   -- ISO 8601, null for ad hoc
+  planned_start text, planned_end text,   -- ISO 8601; ad hoc stores now and now + duration
   started_at text not null,
   ended_at text,
   end_reason text,             -- timer, manual, abandoned

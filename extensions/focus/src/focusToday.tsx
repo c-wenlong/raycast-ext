@@ -133,7 +133,7 @@ export default function FocusTodayCommand() {
       title: "Starting session",
     });
     try {
-      const session = await getDaemon().start(event.id);
+      const session = await getDaemon().start(event.id, event.start);
       toast.style = Toast.Style.Success;
       toast.title = `Focusing: ${session.goal}`;
       toast.message = session.plannedEnd
@@ -263,7 +263,7 @@ export default function FocusTodayCommand() {
       : `Starting now runs ${durationText(left)}, until ${formatClockIso(event.end)}`;
     return (
       <List.Item
-        key={event.id}
+        key={`${event.id}|${event.start}`}
         icon={
           color
             ? { source: Icon.CircleFilled, tintColor: color }

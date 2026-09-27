@@ -342,14 +342,15 @@ const cases: Case[] = [
         setTimeout(() => socket.end("\ntrailing junk"), 40);
       });
       const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
-      assert.equal(await daemon.start("e1").catch((error) => error.message), 'The Focus helper\'s reply is missing a valid "session".');
+      assert.equal(await daemon.start("e1", "2026-09-27T14:00:00+08:00").catch((error) => error.message), 'The Focus helper\'s reply is missing a valid "session".');
       assert.equal(await daemon.status(), null);
       assert.equal(server.received.length, 2);
       for (const raw of server.received) {
         assert.ok(raw.endsWith("\n"));
         assert.equal(raw.indexOf("\n"), raw.length - 1, "exactly one newline, at the end");
       }
-      assert.deepEqual(JSON.parse(server.received[0]), { eventId: "e1", cmd: "start" });
+      // Recurring occurrences share an id, so the occurrence start goes along.
+      assert.deepEqual(JSON.parse(server.received[0]), { eventId: "e1", start: "2026-09-27T14:00:00+08:00", cmd: "start" });
       assert.deepEqual(JSON.parse(server.received[1]), { cmd: "status" });
       await server.close();
     },

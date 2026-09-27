@@ -425,9 +425,13 @@ export class FocusDaemon {
     );
   }
 
-  async start(eventId: string): Promise<Session> {
+  // Occurrences of a recurring event share an id, so the occurrence's start
+  // is sent too and the helper picks that one.
+  async start(eventId: string, start?: string): Promise<Session> {
+    const payload: Record<string, unknown> = { eventId };
+    if (start) payload.start = start;
     return field<Session>(
-      await this.request("start", { eventId }),
+      await this.request("start", payload),
       "session",
       isObject,
     );
