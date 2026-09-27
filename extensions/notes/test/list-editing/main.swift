@@ -211,9 +211,14 @@ do {
   let out = (src as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
   check("a selection over two pairs becomes one pair", out == "**a and b**", out)
   check("the merged run stays selected", edit.cursor == 2 && edit.selectionLength == 7, "\(edit)")
-  let partial = ListEditing.toggleWrap(in: src, selection: NSRange(location: 3, length: 9), marker: "**")  // mid a … mid b
+  let partial = ListEditing.toggleWrap(in: src, selection: NSRange(location: 3, length: 9), marker: "**")  // "** and **b" … visible " and b"
   let partialOut = (src as NSString).replacingCharacters(in: partial.range, with: partial.replacement)
   check("a selection reaching into pairs folds them in whole", partialOut == "**a and b**", partialOut)
+  check("the selection keeps to the visible text it covered (\" and \")", partial.cursor == 3 && partial.selectionLength == 5, "\(partial)")
+  let lines = ListEditing.toggleWrap(in: "xx **a**\nb yy", selection: NSRange(location: 7, length: 4), marker: "**")  // "a**\nb " visible "a\nb "
+  let linesOut = ("xx **a**\nb yy" as NSString).replacingCharacters(in: lines.range, with: lines.replacement)
+  check("across lines, styled and plain parts end up styled", linesOut == "xx **a**\n**b **yy", linesOut.debugDescription)
+  check("across lines the selection still covers just the visible text it did", lines.cursor == 7 && lines.selectionLength == 6, "\(lines)")
   let mixed = ListEditing.toggleWrap(in: "plain **b** c", selection: NSRange(location: 0, length: 13), marker: "**")
   let mixedOut = ("plain **b** c" as NSString).replacingCharacters(in: mixed.range, with: mixed.replacement)
   check("a mixed selection becomes all styled", mixedOut == "**plain b c**", mixedOut)

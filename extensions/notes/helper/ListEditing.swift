@@ -591,7 +591,19 @@ enum ListEditing {
         let content = (inner as NSString).substring(with: NSRange(location: local.location + width, length: local.length - width * 2))
         inner = (inner as NSString).replacingCharacters(in: local, with: content)
       }
-      return Edit(range: range, replacement: marker + inner + marker, cursor: range.location + width, selectionLength: (inner as NSString).length)
+      // The selection keeps to the same visible text: each position moves
+      // right by the new opening marker and left by the marker
+      // characters removed before it.
+      func shifted(_ position: Int) -> Int {
+        var removed = 0
+        for span in touched {
+          removed += min(max(position - span.location, 0), width)
+          removed += min(max(position - (NSMaxRange(span) - width), 0), width)
+        }
+        return position + width - removed
+      }
+      let start = shifted(selection.location)
+      return Edit(range: range, replacement: marker + inner + marker, cursor: start, selectionLength: shifted(NSMaxRange(selection)) - start)
     }
     if selected.hasPrefix(marker), selected.hasSuffix(marker), (selected as NSString).length >= width * 2 {
       let inner = (selected as NSString).substring(with: NSRange(location: width, length: (selected as NSString).length - width * 2))
@@ -642,14 +654,28 @@ enum ListEditing {
       return Edit(range: selection, replacement: ns.substring(with: selection), cursor: selection.location, selectionLength: selection.length)
     }
     let whole = NSRange(location: min(first.range.location, selection.location), length: max(NSMaxRange(last.range), NSMaxRange(selection)) - min(first.range.location, selection.location))
+    // The selection keeps to the visible text it covered: its ends map
+    // through the edit on their own line (each line edit already reports
+    // where its selected text lands), or shift by what changed before them.
     var composed = ""
     var cursor = whole.location
+    var newStart = selection.location
+    var newEnd: Int?
     for edit in edits {
-      composed += ns.substring(with: NSRange(location: cursor, length: edit.range.location - cursor)) + edit.replacement
+      composed += ns.substring(with: NSRange(location: cursor, length: edit.range.location - cursor))
+      let editStart = whole.location + (composed as NSString).length
+      if selection.location >= edit.range.location, selection.location <= NSMaxRange(edit.range) {
+        newStart = editStart + (edit.cursor - edit.range.location)
+      }
+      if NSMaxRange(selection) >= edit.range.location, NSMaxRange(selection) <= NSMaxRange(edit.range) {
+        newEnd = editStart + (edit.cursor - edit.range.location) + edit.selectionLength
+      }
+      composed += edit.replacement
       cursor = NSMaxRange(edit.range)
     }
     composed += ns.substring(with: NSRange(location: cursor, length: NSMaxRange(whole) - cursor))
-    return Edit(range: whole, replacement: composed, cursor: whole.location, selectionLength: (composed as NSString).length)
+    let end = newEnd ?? NSMaxRange(selection) + (composed as NSString).length - whole.length
+    return Edit(range: whole, replacement: composed, cursor: newStart, selectionLength: max(0, end - newStart))
   }
 
   /// `[selection](url)` for ⌘L and for pasting a URL over a selection.
