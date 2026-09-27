@@ -493,13 +493,49 @@ enum ListEditing {
 
   // MARK: Formatting shortcuts
 
+  /// The styler's patterns (Markdown.bold, .italic, .strike, .code) for a
+  /// pair of one wrap marker: `**` without `__`, `_` without `*`.
+  private static let spanPatterns: [String: NSRegularExpression] = [
+    "**": try! NSRegularExpression(pattern: #"(\*\*)(?=\S)(.+?)(?<=\S)\1"#),
+    "_": try! NSRegularExpression(pattern: #"(?<![_\w])(_)(?!_)(?=\S)(.+?)(?<=\S)(?<!_)\1(?![_\w])"#),
+    "~~": try! NSRegularExpression(pattern: #"(~~)(?=\S)(.+?)(?<=\S)\1"#),
+    "`": try! NSRegularExpression(pattern: #"(`)([^`\n]+)\1"#),
+  ]
+
+  /// The styled `marker` pair (markers included) that holds the selection:
+  /// a caret between its outer edges, or a selection that starts and ends
+  /// anywhere from the opening marker to the closing one. Markers are
+  /// hidden on screen, so all of those show as the caret or selection
+  /// sitting in the styled text. Pairs never span lines, and fenced code
+  /// is not styled.
+  private static func wrapSpan(in text: String, around selection: NSRange, marker: String) -> NSRange? {
+    guard let pattern = spanPatterns[marker], !insideFence(text, cursor: selection.location) else { return nil }
+    let line = (text as NSString).lineRange(for: selection)
+    return pattern.matches(in: text, range: line).map(\.range).first { span in
+      selection.length == 0
+        ? span.location < selection.location && selection.location < NSMaxRange(span)
+        : span.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(span)
+    }
+  }
+
   /// Wraps the selection in `marker` (⌘B, ⌘I, ⇧⌘S, ⌘E), or unwraps it
-  /// when already wrapped. An empty selection gets an empty pair with the
+  /// when the caret or selection is inside a pair of that marker (or is
+  /// the pair). An empty selection elsewhere gets an empty pair with the
   /// caret inside.
   static func toggleWrap(in text: String, selection: NSRange, marker: String) -> Edit {
     let ns = text as NSString
     let selected = ns.substring(with: selection)
     let width = (marker as NSString).length
+    if let span = wrapSpan(in: text, around: selection, marker: marker) {
+      let inner = ns.substring(with: NSRange(location: span.location + width, length: span.length - width * 2))
+      // Each position moves left by the marker characters before it, so
+      // the caret or selection stays on the same visible text.
+      func shifted(_ position: Int) -> Int {
+        position - min(max(position - span.location, 0), width) - min(max(position - (NSMaxRange(span) - width), 0), width)
+      }
+      let start = shifted(selection.location)
+      return Edit(range: span, replacement: inner, cursor: start, selectionLength: shifted(NSMaxRange(selection)) - start)
+    }
     if selected.hasPrefix(marker), selected.hasSuffix(marker), (selected as NSString).length >= width * 2 {
       let inner = (selected as NSString).substring(with: NSRange(location: width, length: (selected as NSString).length - width * 2))
       return Edit(range: selection, replacement: inner, cursor: selection.location, selectionLength: (inner as NSString).length)

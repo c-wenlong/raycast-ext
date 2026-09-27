@@ -154,6 +154,18 @@ tv.setSelectedRange(NSRange(location: 2, length: 0))
 tv.deleteForward(nil)
 check("delete before a trailing empty pair removes it", tv.string == "a ", tv.string.debugDescription)
 
+// 9b. formatting again inside styled text removes the pair
+for (name, selection, expected) in [
+  ("⌘B with the caret in bold unwraps", NSRange(location: 5, length: 0), NSRange(location: 3, length: 0)),
+  ("⌘B with a selection in bold unwraps", NSRange(location: 5, length: 2), NSRange(location: 3, length: 2)),
+  ("⌘B over bold and its markers unwraps", NSRange(location: 2, length: 8), NSRange(location: 2, length: 4)),
+] {
+  load("a **bold** c")
+  tv.setSelectedRange(selection)
+  tv.applyFormat(.wrap("**"))
+  check(name, tv.string == "a bold c" && tv.selectedRange() == expected, "\(tv.string) \(tv.selectedRange())")
+}
+
 // 10. backspace after an opening marker
 load("ab **bold**")
 tv.setSelectedRange(NSRange(location: 5, length: 0))

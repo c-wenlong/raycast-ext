@@ -40,7 +40,7 @@ Inside the window:
 | `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (shown in a "Zoomed to 120%" bubble, remembered) |
 | `⌘M` | minimise the window |
 | `⌘W` or `Esc` | hide |
-| `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again to remove |
+| `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again with the caret or selection inside to remove |
 | `⌘L` | link the selection, caret between the `()` |
 | `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
 | `⇧⌘B` | quote the line; `↩` continues the quote, `↩` on an empty quote line ends it |
