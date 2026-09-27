@@ -446,6 +446,21 @@ check("a click on the format bar's pill hits the bar", bar.hitTest(NSPoint(x: ba
 check("a click beside the pill falls through to what is under the bar", bar.hitTest(NSPoint(x: bar.frame.maxX - 20, y: bar.frame.midY)) == nil, "\(bar.frame)")
 check("a short window trims the menu to fit", menu.frame.maxY <= 200 && menu.frame.minY >= 0 && menu.frame.height >= 2 * SlashMenu.rowHeight, "\(menu.frame)")
 
+// 16. a held ⌃X does not repeat the delete command
+var deleteCommands = 0
+tv.onCommand = { command in
+  if command == "delete" { deleteCommands += 1 }
+  return true
+}
+let ctrlX = { (repeated: Bool) in
+  NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0, windowNumber: 0, context: nil, characters: "\u{18}", charactersIgnoringModifiers: "x", isARepeat: repeated, keyCode: 7)!
+}
+_ = tv.performKeyEquivalent(with: ctrlX(false))
+_ = tv.performKeyEquivalent(with: ctrlX(true))
+_ = tv.performKeyEquivalent(with: ctrlX(true))
+check("⌃X trashes once per press, not per key repeat", deleteCommands == 1, "\(deleteCommands)")
+tv.onCommand = nil
+
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")
 tv.setSelectedRange(NSRange(location: 0, length: 28))

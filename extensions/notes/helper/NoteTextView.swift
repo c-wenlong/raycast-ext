@@ -366,6 +366,9 @@ final class NoteTextView: NSTextView {
       return onCommand?("copy") == true
     }
     if flags == .control, key == "x" {
+      // A held key repeats; without a confirmation each repeat would
+      // trash the next note, so only the first press counts.
+      if event.isARepeat { return true }
       return onCommand?("delete") == true
     }
     if flags == [.command, .shift], key == "z" {
