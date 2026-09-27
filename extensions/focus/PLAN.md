@@ -135,13 +135,16 @@ Order and recovery, so a session is never lost and never logged twice:
    id was never stored); otherwise it creates the event there. Failures are
    logged and retried on the next tick, so a calendar outage delays the log
    event but cannot duplicate it.
-4. If EventKit no longer has a calendar with that `log_calendar_id` (Kai
-   deleted it or removed the account), the row is re-pointed to the current
-   log calendar and step 3 runs there. A deleted calendar takes its events
-   with it, so nothing can be duplicated. If the calendar still exists but
-   cannot be written to, the row keeps waiting on it, and the stats view shows
-   "N sessions waiting for the log calendar" with the calendar's name so the
-   problem is visible rather than silent.
+4. If EventKit no longer has a calendar with that `log_calendar_id`, or has it
+   but cannot write to it, the row keeps waiting: the helper never re-points a
+   session on its own, because a calendar that vanished from EventKit (account
+   removed from Calendar.app) may still hold the saved event on Google and
+   come back later. The stats view shows "N sessions waiting for <calendar
+   name>" and offers one action, "Move waiting sessions to <current log
+   calendar>", which sets their `log_calendar_id` and lets step 3 run there.
+   Kai takes that step knowingly; if the old calendar returns afterwards, the
+   `focus-session: <id>` line in both descriptions makes the duplicate easy to
+   find and remove.
 
 Duplicate calendars (the same Google calendar reachable through two accounts
 shows twice in Calendar.app) are listed with their account name in Settings so
