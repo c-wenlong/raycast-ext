@@ -514,22 +514,28 @@ enum ListEditing {
   /// in `*x _y_ z*`, is not taken for a styled pair. Pairs never span
   /// lines, and fenced code is not styled.
   private static func wrapSpan(in text: String, around selection: NSRange, marker: String) -> NSRange? {
+    wrapSpans(in: text, on: selection, marker: marker).first { span in
+      selection.length == 0
+        ? span.location < selection.location && selection.location < NSMaxRange(span)
+        : span.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(span)
+    }
+  }
+
+  /// Every styled pair of `marker` on the line of `selection`, in order.
+  private static func wrapSpans(in text: String, on selection: NSRange, marker: String) -> [NSRange] {
     let pattern: NSRegularExpression
     switch marker {
     case "**": pattern = boldPattern
     case "_": pattern = italicPattern
     case "~~": pattern = strikePattern
     case "`": pattern = codePattern
-    default: return nil
+    default: return []
     }
-    guard !insideFence(text, cursor: selection.location) else { return nil }
+    guard !insideFence(text, cursor: selection.location) else { return [] }
     let ns = text as NSString
     let width = (marker as NSString).length
-    return pattern.matches(in: text, range: ns.lineRange(for: selection)).map(\.range).first { span in
-      guard ns.substring(with: NSRange(location: span.location, length: width)) == marker else { return false }
-      return selection.length == 0
-        ? span.location < selection.location && selection.location < NSMaxRange(span)
-        : span.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(span)
+    return pattern.matches(in: text, range: ns.lineRange(for: selection)).map(\.range).filter { span in
+      ns.substring(with: NSRange(location: span.location, length: width)) == marker
     }
   }
 
@@ -550,6 +556,28 @@ enum ListEditing {
       }
       let start = shifted(selection.location)
       return Edit(range: span, replacement: inner, cursor: start, selectionLength: shifted(NSMaxRange(selection)) - start)
+    }
+    let spans = wrapSpans(in: text, on: selection, marker: marker)
+    // A caret right against a pair's outer edge: typing there is already
+    // plain, so there is nothing to toggle, and an empty pair added here
+    // would only show as stray marker characters.
+    if selection.length == 0, spans.contains(where: { $0.location == selection.location || NSMaxRange($0) == selection.location }) {
+      return Edit(range: selection, replacement: "", cursor: selection.location)
+    }
+    // A selection reaching into one or more pairs but not held by one is
+    // mixed: it all becomes one styled run (the pairs it touches are
+    // folded in, whole), as the format keys do elsewhere.
+    let touched = spans.filter { $0.location < NSMaxRange(selection) && NSMaxRange($0) > selection.location }
+    if !touched.isEmpty {
+      var range = selection
+      for span in touched { range = NSUnionRange(range, span) }
+      var inner = ns.substring(with: range)
+      for span in touched.reversed() {
+        let local = NSRange(location: span.location - range.location, length: span.length)
+        let content = (inner as NSString).substring(with: NSRange(location: local.location + width, length: local.length - width * 2))
+        inner = (inner as NSString).replacingCharacters(in: local, with: content)
+      }
+      return Edit(range: range, replacement: marker + inner + marker, cursor: range.location + width, selectionLength: (inner as NSString).length)
     }
     if selected.hasPrefix(marker), selected.hasSuffix(marker), (selected as NSString).length >= width * 2 {
       let inner = (selected as NSString).substring(with: NSRange(location: width, length: (selected as NSString).length - width * 2))
