@@ -341,15 +341,19 @@ let boxStyle = tv.textStorage!.attribute(.paragraphStyle, at: 21, effectiveRange
 check("code and callout text share the block padding", codeStyle.firstLineHeadIndent == Markdown.blockPad && codeStyle.headIndent == Markdown.blockPad && codeStyle.tailIndent == -Markdown.blockPad && boxStyle.headIndent == Markdown.blockPad)
 // The language and copy controls stay inside the card at every width.
 let overlay = CodeBlockOverlay(textView: tv)
+tv.textContainer!.widthTracksTextView = true  // as in the panel: the column follows the view
+var cardWidths: [CGFloat] = []
 for width in [420, 560, 900] as [CGFloat] {
   tv.frame = NSRect(x: 0, y: 0, width: width, height: 400)
   tv.layoutManager?.ensureLayout(for: tv.textContainer!)
   overlay.update()
+  cardWidths.append(cardLM.codeCardRect(forCharacterRange: Markdown.codeBlocks(in: tv.string)[0].range)!.width)
   let cardNow = cardLM.codeCardRect(forCharacterRange: Markdown.codeBlocks(in: tv.string)[0].range)!
     .offsetBy(dx: tv.textContainerOrigin.x, dy: tv.textContainerOrigin.y)
   let frames = overlay.visibleControlFrames
   check("code controls sit inside the card at \(Int(width))pt", frames.count == 1 && frames[0].maxX <= cardNow.maxX && frames[0].minX >= cardNow.minX && frames[0].minY >= cardNow.minY, "\(frames) in \(cardNow)")
 }
+check("each width lays the card out afresh", cardWidths[0] < cardWidths[1] && cardWidths[1] < cardWidths[2], "\(cardWidths)")
 tv.frame = NSRect(x: 0, y: 0, width: 420, height: 400)
 
 // 15. slash menu
