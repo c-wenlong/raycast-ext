@@ -57,6 +57,8 @@ idle ──start(event | ad hoc)──▶ running ◀──resume── paused
                                   ├── timer ends ──▶ ending (sheet: Extend +5/+10/+15/+25 or Finish)
                                   ├── manual stop ─▶ ending (same sheet)
                                   └── helper dies ─▶ abandoned (marked on next launch)
+paused ── planned end passes ──▶ ending (same sheet; the deadline is checked every second while paused too)
+paused ── manual stop ─────────▶ ending
 ending ──Finish (rating, note)──▶ finished: sqlite row closed, log event written
 ```
 
@@ -83,14 +85,27 @@ Rules:
 - The block page mirrors Raycast Focus (screenshot from Kai on 2026-09-27):
   a dark page with the extension icon, "<host> has been blocked", one button
   "Snooze for 3 minutes", and the footer "End your focus session to access
-  this page". The helper serves it from a loopback HTTP server on a random
-  port (`http://127.0.0.1:<port>/blocked?host=…&redirect=…`), so the button
-  can call the helper back (`/snooze?host=…`) and then continue to the
-  original URL. Nothing leaves the machine.
-- Snooze allows that host or app for three minutes, logged as a
-  `blocked_attempts` row with `outcome = snoozed`; when the three minutes end
-  the normal rule applies again. The length is a setting, default 180
-  seconds like Raycast.
+  this page". The helper serves it from an HTTP server bound to 127.0.0.1
+  only, on a random port (`/blocked?host=…&redirect=…&token=…`), so the
+  button can call the helper back (`POST /snooze` with the same host and
+  token) and then continue to the original URL. Nothing leaves the machine.
+- Authorisation: the helper mints a random 32-byte token per session and
+  puts it in every block page URL it navigates a tab to. `/snooze` grants
+  nothing without a token that matches the running session; a wrong or
+  missing token, a different session's token, or a `GET` gets 403 and is
+  logged. The token dies with the session, so a page or process that learned
+  it cannot snooze a later session.
+- Encoding: `host`, `redirect` and `token` are percent-encoded as query
+  components on the way in. On the way out the host is HTML-escaped before it
+  is written into the page, and `redirect` is followed only if it parses as an
+  absolute `http` or `https` URL; anything else drops to a blank page. The
+  same escaping applies to the native window (which just sets a label, so
+  markup is not interpreted there).
+- Snooze allows that host or app for the configured snooze length, logged as
+  a `blocked_attempts` row with `outcome = snoozed`; when it ends the normal
+  rule applies again. The length is a setting, default 180 seconds like
+  Raycast, and the button label reads "Snooze for N minutes" (or "N seconds"
+  under a minute) from that setting, never a fixed "3".
 - Apps: the helper observes `NSWorkspace.didActivateApplicationNotification`.
   When a blocked app comes forward it is hidden (`NSRunningApplication.hide`)
   and the same block page opens as a native full-screen window showing the
