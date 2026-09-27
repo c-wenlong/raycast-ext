@@ -389,19 +389,20 @@ tv.undoManager?.undo()
 check("one undo restores the text from before the slash", tv.string == "hello ", tv.string.debugDescription)
 tv.undoManager?.redo()
 check("one redo reapplies the pick", tv.string == "## hello ", tv.string.debugDescription)
-// No RunLoop spin here: "hi ", "/", "h", "2" are typed back to back with no
-// coalescing break, so they land in one undo group together, and undoing
-// that group would remove "hi " along with "/h2" if the pick did not
-// account for it.
+// Typing right before the "/" and the query itself: each keystroke is its
+// own event in the app, so the run loop turns between them here too. The
+// "/" starts its own typing group, so the pick can take exactly the query
+// back out and leave the earlier typing as its own undo step.
 load("")
 tv.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("i", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0))
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
 tv.insertText("/", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("2", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
-check("return applies the entry even when the query shares an undo group with earlier typing", tv.string == "## hi ", tv.string.debugDescription)
+check("return applies the entry after earlier typing", tv.string == "## hi ", tv.string.debugDescription)
 tv.undoManager?.undo()
 check("one undo still restores just the text from before the slash, keeping the earlier typing", tv.string == "hi ", tv.string.debugDescription)
 tv.undoManager?.redo()

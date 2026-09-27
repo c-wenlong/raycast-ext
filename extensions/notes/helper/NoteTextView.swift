@@ -524,26 +524,13 @@ final class NoteTextView: NSTextView {
   private lazy var slashMenu = SlashMenu { [weak self] entry in self?.pickSlashEntry(entry) }
   /// Offset of the "/" that opened the menu, while it is open.
   private var slashStart: Int?
-  /// The text and caret from just before the "/" was typed, recorded when
-  /// the menu opens. A pick unwinds the query back to this exact state
-  /// (however many separate typing-undo groups it landed in) before
-  /// applying the format, so the two fold into one step: one ⌘Z after a
-  /// pick lands here, not on the typed "/query".
-  private var preSlashText: String?
-  private var preSlashSelection: NSRange?
 
   var slashMenuIsOpen: Bool { slashStart != nil }
 
-  /// `preText`/`preSelection` are the text and selection from just before
-  /// this "/" was inserted, captured by the caller before it edited
-  /// anything: when "/" replaced a selection, that selection's text has to
-  /// be part of the recording too, not just the "/" character itself.
-  private func openSlashMenu(at slash: Int, preText: String, preSelection: NSRange) {
+  private func openSlashMenu(at slash: Int) {
     slashStart = slash
     slashEnd = slash + 1
     slashTextLength = (string as NSString).length
-    preSlashText = preText
-    preSlashSelection = preSelection
     if slashMenu.superview == nil { addSubview(slashMenu, positioned: .above, relativeTo: nil) }
     slashMenu.filter("")
     positionSlashMenu()
@@ -552,8 +539,6 @@ final class NoteTextView: NSTextView {
 
   func closeSlashMenu() {
     slashStart = nil
-    preSlashText = nil
-    preSlashSelection = nil
     slashMenu.isHidden = true
   }
 
@@ -611,30 +596,26 @@ final class NoteTextView: NSTextView {
   }
 
   private func pickSlashEntry(_ entry: SlashMenu.Entry) {
-    guard let slash = slashStart else { return }
+    guard let slash = slashStart, let storage = textStorage else { return }
     let caret = selectedRange().location
-    let target = preSlashText
-    let targetSelection = preSlashSelection
     closeSlashMenu()
-
-    // Fold the typed query out of the undo history first, however many
-    // separate typing groups it landed in, so the format below becomes the
-    // one and only step between the current text and the state before "/".
-    if let undoManager, undoManager.canUndo, let target, let targetSelection,
-      foldQueryOutOfHistory(undoManager, target: target)
-    {
-      setSelectedRange(targetSelection)
-      undoManager.beginUndoGrouping()
-      apply(edit(for: entry.format))
-      undoManager.endUndoGrouping()
-      return
-    }
-
-    // No undo history to fold into (undo disabled): remove the query and
-    // apply the format as one step, the old way.
-    guard let storage = textStorage else { return }
     let typed = NSRange(location: slash, length: max(0, caret - slash))
     guard NSMaxRange(typed) <= storage.length else { return }
+    // The "/" began its own typing group (insertText breaks coalescing
+    // just before it), so one undo takes the whole "/query" back out and
+    // leaves the text as it was before the slash. The format then goes on
+    // as the only step above that: one ⌘Z after a pick lands before the
+    // slash, ⇧⌘Z brings the pick back.
+    let withoutQuery = (string as NSString).replacingCharacters(in: typed, with: "")
+    if let undoManager, undoManager.canUndo {
+      undoManager.undo()
+      if string == withoutQuery {
+        setSelectedRange(NSRange(location: slash, length: 0))
+        apply(edit(for: entry.format))
+        return
+      }
+      undoManager.redo()  // not the group we expected; take the plain route
+    }
     breakUndoCoalescing()
     undoManager?.beginUndoGrouping()
     if shouldChangeText(in: typed, replacementString: "") {
@@ -644,61 +625,6 @@ final class NoteTextView: NSTextView {
     }
     apply(edit(for: entry.format))
     undoManager?.endUndoGrouping()
-  }
-
-  /// Undoes repeatedly until the text matches `target`, since the query may
-  /// have landed in more than one separate typing-undo group. A group can
-  /// turn out to cover more than the query alone, when it was typed in one
-  /// unbroken run together with text right before the "/" (no coalescing
-  /// break in between, e.g. a plain word plus space that triggers no
-  /// rewrite): undoing that group removes both at once and overshoots past
-  /// `target`. Typing only ever grows text forward, so the overshot text is
-  /// still a prefix of `target` unless something else unexpected also
-  /// happened; when it is, the missing tail is typed back in as its own
-  /// ordinary, undo-registered edit, sealed off with an immediate undo/redo
-  /// round trip (below) so it stays reachable by undoing further rather
-  /// than folding into whatever the caller registers next. When it is not
-  /// a clean prefix, this puts the text back exactly as it was (redoing the
-  /// same number of steps) and reports failure, so picking an entry can
-  /// never discard text that came before the "/".
-  private func foldQueryOutOfHistory(_ undoManager: UndoManager, target: String) -> Bool {
-    var steps = 0
-    while string != target, undoManager.canUndo, steps < 64 {
-      undoManager.undo()
-      steps += 1
-    }
-    if string == target { return true }
-
-    if let storage = textStorage {
-      let targetNS = target as NSString
-      let currentLength = (string as NSString).length
-      if currentLength <= targetNS.length, targetNS.substring(to: currentLength) == string {
-        let missing = targetNS.substring(from: currentLength)
-        let insertAt = NSRange(location: currentLength, length: 0)
-        breakUndoCoalescing()
-        if shouldChangeText(in: insertAt, replacementString: missing) {
-          storage.replaceCharacters(in: insertAt, with: missing)
-          didChangeText()
-          breakUndoCoalescing()
-          // Without a real turn of the run loop, AppKit still treats this
-          // registration as part of the same pending undo step as whatever
-          // the caller registers next (explicit begin/endUndoGrouping calls
-          // and breakUndoCoalescing do not seal that on their own here). An
-          // immediate undo followed by a redo forces AppKit to settle this
-          // edit as its own, separately reachable step before the caller's
-          // format edit registers.
-          undoManager.undo()
-          undoManager.redo()
-          if string == target { return true }
-        }
-      }
-    }
-
-    while steps > 0, undoManager.canRedo {
-      undoManager.redo()
-      steps -= 1
-    }
-    return false
   }
 
   /// Keys the open menu takes before the text view sees them.
@@ -820,26 +746,28 @@ final class NoteTextView: NSTextView {
     if replacementRange.location == NSNotFound, selectedRange().length > 0, !hasMarkedText() {
       setSelectedRange(selectionCoveringPairs(selectedRange()))
     }
-    // Captured before the edit below, so a "/" that replaces a selection
-    // records that selection's text too, not just the "/" itself.
-    let beforeText = self.string
-    let beforeSelection = selectedRange()
-    super.insertText(string, replacementRange: replacementRange)
     let typed = (string as? String) ?? (string as? NSAttributedString)?.string
+    // A "/" at a line start or after a space opens the block menu. It is
+    // decided before the insert, and starts a fresh undo group, so a pick
+    // can take the whole "/query" back out with one undo.
+    var opensMenu = false
+    if typed == "/", !slashMenuIsOpen, !hasMarkedText(), replacementRange.location == NSNotFound {
+      let pre = selectedRange()
+      let ns = self.string as NSString
+      let lineStart = ns.lineRange(for: NSRange(location: pre.location, length: 0)).location
+      let previous = pre.location > lineStart ? ns.character(at: pre.location - 1) : 0x20
+      opensMenu = (previous == 0x20 || previous == 0x09) && !ListEditing.insideFence(self.string, cursor: pre.location)
+      if opensMenu { breakUndoCoalescing() }
+    }
+    super.insertText(string, replacementRange: replacementRange)
+    if opensMenu {
+      openSlashMenu(at: selectedRange().location - 1)
+      return
+    }
     // Programmatic replacements (the task box toggle) pass a non-empty range.
     guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
-    if typed == "/", !slashMenuIsOpen, selection.location > 0 {
-      let ns = self.string as NSString
-      let before = selection.location - 1
-      let lineStart = ns.lineRange(for: NSRange(location: before, length: 0)).location
-      let previous = before > lineStart ? ns.character(at: before - 1) : 0x20
-      if previous == 0x20 || previous == 0x09, !ListEditing.insideFence(self.string, cursor: before) {
-        openSlashMenu(at: before, preText: beforeText, preSelection: beforeSelection)
-      }
-      return
-    }
     guard typed == " " else { return }
     apply(ListEditing.afterSpace(in: self.string, cursor: selection.location))
   }
