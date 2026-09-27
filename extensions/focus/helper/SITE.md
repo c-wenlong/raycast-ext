@@ -42,12 +42,12 @@ HTTP), `BrowserWatch.swift` (AppleScript), `SiteBlocking.swift` (factory), `Bloc
   loopback names and the block page itself, and if `isBlocked(host:)` set the tab to the block
   page (only if it still shows the URL read) and call `recordBlocked(host:)`.
 - A tab showing the block page is never recorded again. Going Back to the site is a new attempt.
-  The same URL read again within 4 s of a redirect counts as the navigation settling.
+  The same URL read again within 4 s of a redirect is sent again but not recorded again.
 - AppleScript runs in `/usr/bin/osascript` (killed after 6 s), not `NSAppleScript`, which is
   main-thread only and could stall the menu bar for up to two minutes on a hung browser. URLs go
   in as arguments, never into the script source.
 - Automation permission: `AEDeterminePermissionToAutomateTarget` without prompting first. Not asked
-  yet: one prompt, on a side queue; that browser is skipped until it is answered (TCC makes even the
+  yet: one prompt per browser, each on its own thread; that browser is skipped until it is answered (TCC makes even the
   silent check wait while a prompt is up) and the others keep being polled. Denied (-1743) and
   other script errors are logged once per browser until it works again; -1728 (no window) is quiet.
 

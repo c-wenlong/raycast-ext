@@ -18,10 +18,11 @@ import Foundation
 //
 // Automation permission is checked first with
 // AEDeterminePermissionToAutomateTarget (no prompt). Never asked: one prompt
-// is requested on a separate queue, so waiting for Kai's answer never holds
-// up the other browser (TCC makes even the no-prompt check wait while a
-// prompt for the same browser is up, so that browser is skipped). Denied (-1743) and other failures are logged once
-// per browser until that browser works again; polling carries on.
+// per browser is requested on a thread of its own, so waiting for Kai's
+// answer never holds up polling or the other browser's prompt (TCC makes even
+// the no-prompt check wait while a prompt for the same browser is up, so that
+// browser is skipped meanwhile). Denied (-1743) and other failures are logged
+// once per browser until that browser works again; polling carries on.
 
 /// The outcome of one osascript run.
 struct ScriptResult: Equatable {
@@ -47,7 +48,7 @@ final class BrowserWatch {
 
   static let interval: TimeInterval = 2
   /// After sending a tab to the block page, the same URL read again this soon
-  /// is the navigation still settling, not a new attempt.
+  /// is the navigation still settling: it is sent again but not recorded again.
   static let settle: TimeInterval = 4
   static let scriptTimeout: TimeInterval = 6
 
@@ -57,7 +58,6 @@ final class BrowserWatch {
   static let notRunning: Int32 = -600  // procNotFound
 
   let queue = DispatchQueue(label: "focus.browser-watch")
-  private let askQueue = DispatchQueue(label: "focus.browser-watch.ask")
   private let log: (String) -> Void
   private let runner: Runner
   private let permission: PermissionCheck
@@ -173,7 +173,6 @@ final class BrowserWatch {
     let url = read.output.trimmingCharacters(in: .whitespacesAndNewlines)
     clearReport(bundle)
     guard !url.isEmpty, !isOwnPage(url), let host = Self.host(of: url), !Self.neverBlocked(host) else { return }
-    if let last = lastRedirect[bundle], last.url == url, clock().timeIntervalSince(last.at) < Self.settle { return }
     guard policy.isBlocked(host: host) else { return }
     guard let target = page(host, url, token) else { return }
 
@@ -184,16 +183,18 @@ final class BrowserWatch {
     }
     // "moved": the tab changed between the read and the write; the next pass looks again.
     guard sent.output.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else { return }
+    if let last = lastRedirect[bundle], last.url == url, clock().timeIntervalSince(last.at) < Self.settle { return }
     lastRedirect[bundle] = (url, clock())
     policy.recordBlocked(host: host)
     log("blocked \(host) in \(bundle)")
   }
 
-  /// Shows the Automation prompt for `bundle` once, off this queue.
+  /// Shows the Automation prompt for `bundle` once, on a thread of its own
+  /// (the call blocks until Kai answers; one browser's prompt never waits on another's).
   private func requestPermission(_ bundle: String) {
     asking.insert(bundle)
     log("\(bundle): asking for Automation permission to read its tabs")
-    askQueue.async {
+    DispatchQueue.global(qos: .utility).async {
       let status = self.permission(bundle, true)
       self.queue.async {
         self.asking.remove(bundle)

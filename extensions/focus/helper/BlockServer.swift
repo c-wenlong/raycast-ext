@@ -204,8 +204,9 @@ final class BlockServer {
       if needed == nil, let range = data.range(of: separator) {
         let head = String(decoding: data[..<range.lowerBound], as: UTF8.self)
         let length = max(0, contentLength(head) ?? 0)
+        // Compared before adding, so a huge Content-Length cannot overflow.
+        guard range.upperBound <= maxRequest, length <= maxRequest - range.upperBound else { return .tooLarge }
         let total = range.upperBound + length
-        if total > maxRequest { return .tooLarge }
         needed = total
         continue
       }

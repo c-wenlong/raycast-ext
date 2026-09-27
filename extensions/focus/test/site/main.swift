@@ -381,7 +381,10 @@ let bigHead = "GET /health HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nX-Pad: \(Strin
 check("oversized head: 400", exchange(port, Data(bigHead.utf8))?.status == 400)
 let bigBody = "POST /snooze HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nContent-Length: 20000\r\n\r\n" + String(repeating: "b", count: 20_000)
 check("oversized body: 400", exchange(port, Data(bigBody.utf8))?.status == 400)
-check("oversized: logged", serverLogs.count("over 16384 bytes") == 2, "\(serverLogs.all)")
+let hugeLength = "POST /snooze HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nContent-Length: 9223372036854775807\r\n\r\nx"
+check("Content-Length of Int.max: 400, no overflow", exchange(port, Data(hugeLength.utf8))?.status == 400)
+check("server still answers after it", request("GET", "/health")?.status == 200)
+check("oversized: logged", serverLogs.count("over 16384 bytes") == 3, "\(serverLogs.all)")
 
 // Parallel clients all get answers.
 let group = DispatchGroup()
@@ -467,6 +470,7 @@ final class FakeBrowsers {
   var moveBeforeSet: String?  // the tab changes between read and write
   var promptOpen: DispatchSemaphore?  // an ask waits on this, like the real prompt
   var checks: [String: Int] = [:]  // no-prompt permission checks per bundle
+  var sets = 0  // redirects written
 
   func locked<T>(_ body: () -> T) -> T {
     lock.lock()
@@ -486,6 +490,7 @@ final class FakeBrowsers {
           moveBeforeSet = nil
         }
         guard tabs[bundle] == args[0] else { return ScriptResult(status: 0, output: "moved\n", error: "") }
+        sets += 1
         if !ignoreSets { tabs[bundle] = args[1] }
         return ScriptResult(status: 0, output: "ok\n", error: "")
       }
@@ -495,11 +500,16 @@ final class FakeBrowsers {
   }
 
   func permission(_ bundle: String, _ ask: Bool) -> Int32 {
-    if ask, let prompt = locked({ promptOpen }) { prompt.wait() }  // Kai has not answered yet
+    if ask {
+      let prompt = locked { () -> DispatchSemaphore? in
+        asks.append(bundle)
+        return promptOpen
+      }
+      prompt?.wait()  // Kai has not answered yet
+    }
     return locked {
       if !ask { checks[bundle, default: 0] += 1 }
       if ask {
-        asks.append(bundle)
         let answer = askAnswer[bundle] ?? BrowserWatch.granted
         permissions[bundle] = answer
         return answer
@@ -559,9 +569,11 @@ browsers.locked {
   browsers.tabs[chrome] = "https://youtube.com/watch?v=9"
 }
 let before = watchPolicy.recordedHosts.count
+let setsBefore = browsers.locked { browsers.sets }
 watch.passAndWait()
 watch.passAndWait()
 check("watch: settling navigation not re-recorded", watchPolicy.recordedHosts.count == before + 1)
+check("watch: but the tab is sent again", browsers.locked { browsers.sets } == setsBefore + 2)
 now += BrowserWatch.settle + 1
 watch.passAndWait()
 check("watch: after the settle time it counts again", watchPolicy.recordedHosts.count == before + 2)
@@ -637,6 +649,24 @@ watch.pollNow()
 watch.passAndWait()
 check("watch: stopped, no scripts", browsers.locked { browsers.reads } == readsBefore)
 check("watch: stopped", !watch.isStarted)
+
+// Both browsers never asked: both prompts start without waiting on each other.
+let twoPrompts = FakeBrowsers()
+twoPrompts.running = [chrome, dia]
+twoPrompts.permissions = [chrome: BrowserWatch.notAsked, dia: BrowserWatch.notAsked]
+twoPrompts.promptOpen = DispatchSemaphore(value: 0)
+let twoWatch = BrowserWatch(
+  log: { _ in }, page: { _, _, _ in nil }, isOwnPage: { _ in false }, runner: twoPrompts.run,
+  permission: twoPrompts.permission, isRunning: { _ in true }, interval: 3600)
+let twoPolicy = FakePolicy(blocked: ["example.com"], browsers: [chrome, dia])  // held: the watcher keeps it weakly
+twoWatch.start(policy: twoPolicy)
+twoWatch.passAndWait()
+Thread.sleep(forTimeInterval: 0.3)
+check("watch: two prompts asked side by side", Set(twoPrompts.locked { twoPrompts.asks }) == [chrome, dia],
+  "\(twoPrompts.locked { twoPrompts.asks })")
+twoPrompts.promptOpen?.signal()
+twoPrompts.promptOpen?.signal()
+twoWatch.stop()
 
 // MARK: SiteBlocker composition
 
