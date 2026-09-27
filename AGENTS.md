@@ -24,7 +24,7 @@ Run from `extensions/notes`:
 - `npm run build-helper`: compiles `helper/*.swift` into `assets/notes-panel`. The binary is committed; rebuild and commit it with every helper change (it conflicts on every rebase, take either side and rebuild).
 - `npm test`: runs `lib.test.ts`, the ListEditing tests and the view harness. All three must be green before a push. Counts grow; the harness prints "all passed".
 - `npm run build` (`ray build`) and `npm run lint` (ESLint and Prettier; `npm run fix-lint` reformats) for the TypeScript side.
-- Top-level statements only compile in a file named `main.swift`; the test harnesses concatenate a trimmed `helper/main.swift` (everything above `MARK: - Entry point`) with their own `main.swift`.
+- Top-level statements only compile in a file named `main.swift`, so each harness has its own `main.swift`. The two test suites compile an explicit list of helper files (see `package.json`; add a new helper file to `test-view` when the view needs it). Only `render-panel` concatenates a trimmed `helper/main.swift` (everything above `MARK: - Entry point`) with its own.
 - `node_modules` is ignored without a trailing slash so a symlink in a worktree stays untracked. Worktrees for parallel agents: `git worktree add -b <branch> <dir> main`, then symlink `~/.raycast/extensions/notes/node_modules` into the worktree.
 
 ## The floating window (helper)
@@ -38,7 +38,7 @@ Run from `extensions/notes`:
 
 ## Verifying changes
 
-- Tests first, then the real window. Launch it with `open "raycast://extensions/c-wenlong/notes/toggleNotesWindow"` (Raycast copies the dev build) or run `assets/notes-panel open <note> --dir ~/.raycast/notes` directly for a specific note.
+- Tests first, then the real window. Launch it with `open "raycast://extensions/c-wenlong/notes/toggleNotesWindow"` (Raycast copies the dev build) or run `assets/notes-panel open ~/.raycast/notes/<file>.md --dir ~/.raycast/notes` directly for a specific note (`open` takes a full path; `--dir` only sets the folder the window lists).
 - Capture the live window with `screencapture -l <windowID> -x -o out.png`; get the id from `CGWindowListCopyWindowInfo` filtered on owner `notes-panel`. Measure pixels with Python and Pillow rather than eyeballing. The offscreen `render-panel` tool misrenders the chrome on macOS 26; do not trust it for header, footer or fades.
 - Kill the helper with `pkill -x notes-panel`, never `pkill -f` (it matches the shell running it). Launching, killing and socket access need the sandbox off.
 - Hover and right-click behaviour needs screen takeover approval; say so rather than claiming it was exercised.

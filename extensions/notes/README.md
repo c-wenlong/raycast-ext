@@ -42,7 +42,7 @@ Inside the window:
 | `⌘W` or `Esc` | hide |
 | `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again with the caret or selection inside to remove |
 | `⌘L` | link the selection, caret between the `()` |
-| hover or right-click a link | a bubble with the address, Open, Edit and Copy; the menu adds Remove Link. Edit opens a small form for text and address |
+| hover or right-click a link | hovering an `http(s)` link shows a bubble with the address, Open, Edit and Copy; right-clicking any link gives Copy, Open and Edit, and for a `[text](url)` link Remove Link too. Edit opens a small form for text and address |
 | `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
 | `⇧⌘B` | quote the line; `↩` continues the quote, `↩` on an empty quote line ends it |
 | `>> ` or `/callout` | callout: the lines sit in an outlined box; `↩` continues it, `↩` on an empty line ends it (a nested quote to other markdown viewers) |
