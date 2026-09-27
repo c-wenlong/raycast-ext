@@ -28,11 +28,12 @@
     "dev": "ray develop",
     "lint": "ray lint",
     "fix-lint": "ray lint --fix",
-    "test": "npm run test-ts && npm run test-helper",
+    "test": "npm run test-ts && npm run test-helper && npm run test-ui",
     "test-ts": "esbuild test/lib.test.ts --bundle --platform=node --format=cjs --alias:@raycast/api=./test/raycast-stub.js --outfile=dist/test.cjs --log-level=warning && node dist/test.cjs",
     "test-helper": "bash scripts/test-helper.sh",
     "build-helper": "bash scripts/build-helper.sh",
-    "fake-daemon": "node test/fake-daemon.js"
+    "fake-daemon": "node test/fake-daemon.js",
+    "test-ui": "bash scripts/test-ui.sh"
   },
   "dependencies": {
     "@raycast/api": "^1.104.8"

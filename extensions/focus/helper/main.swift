@@ -1,5 +1,6 @@
 // focus-daemon: the long-running half of the Focus extension. Owns EventKit,
-// the sqlite log and (from step 2) the session timer.
+// the sqlite log and (from step 2) the session timer, the menu bar countdown
+// and the end sheet (UIPresenter.swift).
 //
 //   focus-daemon [serve]              start the daemon if it is not running
 //   focus-daemon <cmd>                send {"cmd": "<cmd>"}, print the reply
@@ -11,6 +12,7 @@
 // permission belongs to focus-daemon rather than whatever launched it.
 // Protocol: extensions/focus/HELPER.md. Build: scripts/build-helper.sh.
 
+import AppKit
 import Darwin
 import Foundation
 
@@ -211,7 +213,7 @@ func runServer() -> Never {
   do {
     core = FocusCore(
       config: ConfigFile(path: focusDir + "/config.json", log: log),
-      db: try Database(path: focusDir + "/focus.db"), calendar: backend, log: log)
+      db: try Database(path: focusDir + "/focus.db"), calendar: backend, log: log, queue: work)
   } catch {
     unlink(socketPath)
     fail(error.localizedDescription)
@@ -220,6 +222,14 @@ func runServer() -> Never {
     core.extraHandler = { try backend.debug($0) }
     log("debug commands enabled")
   }
+
+  // The menu bar countdown and the end sheet need a running NSApplication.
+  // Accessory: no Dock icon, no app switcher entry. The socket and timers
+  // below run on GCD and a thread of their own, so app.run() serves them too.
+  let app = NSApplication.shared
+  app.setActivationPolicy(.accessory)
+  installEditMenu()
+  attachPresenter(to: core)
   log("serving \(socketPath) (version \(FocusCore.version))")
 
   // Recovery at launch, and again as soon as access is granted.
@@ -266,7 +276,7 @@ func runServer() -> Never {
     }
   }
 
-  RunLoop.main.run()
+  app.run()
   exit(0)
 }
 

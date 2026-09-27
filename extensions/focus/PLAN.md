@@ -1,11 +1,10 @@
 # Focus: plan
 
-Status: step 1 of the build order is merged (helper, Focus Today, Focus
-Settings calendar half). Step 2 is in two PRs: 2a, the session logic (state
-machine, timer, pause, resume, extend, stop, heartbeat recovery, deeplink,
-socket commands and Focus Today actions), and 2b, the native menu bar
-countdown and end sheet. Steps 3 and 4 are still to do. Written 2026-09-27
-from an interview with Kai.
+Status: steps 1 and 2 of the build order are merged: the helper, Focus Today,
+the calendar half of Focus Settings, the session logic (state machine, timer,
+pause, resume, extend, stop, heartbeat recovery, deeplink, socket commands and
+Focus Today actions) and the native menu bar countdown and end sheet. Steps 3
+and 4 are still to do. Written 2026-09-27 from an interview with Kai.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
 

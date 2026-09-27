@@ -776,3 +776,6 @@ final class FocusCore: SessionPresenterDelegate {
     }
   }
 }
+
+/// Lets `attachPresenter(to:)` in UIPresenter.swift hand the daemon its UI.
+extension FocusCore: PresenterHost {}
