@@ -15,13 +15,16 @@ import {
   writeConfig,
 } from "./lib/config";
 import { Calendar, calendarLabel, errorMessage, getDaemon } from "./lib/daemon";
+import {
+  NO_LOG_CALENDAR,
+  resolveLogCalendar,
+  settingsChoices,
+} from "./lib/settings";
 
 // Focus Settings, calendar half (PLAN step 1): which calendars Focus Today
 // can start sessions from, and which calendar the log events go to.
 // Profiles, categories, browsers, snooze length and the Raycast deeplink
 // toggle are step 4; they get their own Form sections below these two.
-
-const NO_LOG_CALENDAR = "__none__";
 
 function calendarIcon(calendar: Calendar): Image.ImageLike {
   return calendar.color
@@ -65,20 +68,11 @@ export default function FocusSettingsCommand() {
 
   async function handleSubmit() {
     if (!loaded) return;
-    const chosen = loaded.calendars.find((c) => c.id === logCalendar);
-    let logCalendarId: string | null = null;
-    let logCalendarName: string | null = null;
-    if (chosen) {
-      logCalendarId = chosen.id;
-      logCalendarName = calendarLabel(chosen);
-    } else if (
-      logCalendar !== NO_LOG_CALENDAR &&
-      logCalendar === loaded.config.logCalendarId
-    ) {
-      // The saved log calendar is not in EventKit right now; keep it as is.
-      logCalendarId = loaded.config.logCalendarId;
-      logCalendarName = loaded.config.logCalendarName;
-    }
+    const { logCalendarId, logCalendarName } = resolveLogCalendar(
+      logCalendar,
+      loaded.calendars,
+      loaded.config,
+    );
     try {
       const config = await writeConfig({
         startableCalendars: startable,
@@ -118,18 +112,8 @@ export default function FocusSettingsCommand() {
     );
   }
 
-  const { calendars, config } = loaded;
-  const knownIds = new Set(calendars.map((c) => c.id));
-  // Calendars saved earlier that EventKit does not list right now (an
-  // account offline or removed). They stay selectable so saving the form
-  // does not silently drop them.
-  const missingStartable = config.startableCalendars.filter(
-    (id) => !knownIds.has(id),
-  );
-  const writable = calendars.filter((c) => c.writable);
-  const logMissing =
-    config.logCalendarId !== null &&
-    !writable.some((c) => c.id === config.logCalendarId);
+  const { calendars, missingStartable, writable, unavailableLog } =
+    settingsChoices(loaded.calendars, loaded.config);
 
   return (
     <Form
@@ -203,10 +187,10 @@ export default function FocusSettingsCommand() {
             icon={calendarIcon(calendar)}
           />
         ))}
-        {logMissing && config.logCalendarId ? (
+        {unavailableLog ? (
           <Form.Dropdown.Item
-            value={config.logCalendarId}
-            title={`${config.logCalendarName ?? config.logCalendarId} (unavailable)`}
+            value={unavailableLog.id}
+            title={unavailableLog.title}
             icon={Icon.Warning}
           />
         ) : null}

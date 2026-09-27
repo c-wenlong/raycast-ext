@@ -24,6 +24,12 @@ import {
   sendRequest,
 } from "../src/lib/daemon";
 import {
+  NO_LOG_CALENDAR,
+  moveTarget,
+  resolveLogCalendar,
+  settingsChoices,
+} from "../src/lib/settings";
+import {
   durationText,
   formatClock,
   formatTimeRange,
@@ -261,6 +267,65 @@ const cases: Case[] = [
       assert.equal(stars(9), "★★★★★");
       assert.equal(stars(0), "☆☆☆☆☆");
       assert.equal(calendarLabel({ title: "Work", account: "kai@work.example" }), "Work (kai@work.example)");
+    },
+  ],
+
+  // ---- settings and waiting-session decisions ----
+  [
+    "settings: unavailable calendars stay selectable and survive a save",
+    async () => {
+      const calendars = [
+        { id: "w", title: "Work", account: "a", color: "#000", writable: true },
+        { id: "w2", title: "Work", account: "a", color: null, writable: true },
+        { id: "ro", title: "Holidays", account: "b", color: null, writable: false },
+      ];
+      const config = {
+        ...defaultConfig(),
+        startableCalendars: ["w", "gone"],
+        logCalendarId: "old-log",
+        logCalendarName: "Old Log (x)",
+      };
+      const choices = settingsChoices(calendars, config);
+      assert.deepEqual(choices.missingStartable, ["gone"]);
+      assert.deepEqual(choices.writable.map((c) => c.id), ["w", "w2"]);
+      assert.deepEqual(choices.unavailableLog, { id: "old-log", title: "Old Log (x) (unavailable)" });
+      // Keeping the unavailable log calendar keeps its stored name.
+      assert.deepEqual(resolveLogCalendar("old-log", calendars, config), {
+        logCalendarId: "old-log",
+        logCalendarName: "Old Log (x)",
+      });
+      assert.deepEqual(resolveLogCalendar("w2", calendars, config), {
+        logCalendarId: "w2",
+        logCalendarName: "Work (a)",
+      });
+      assert.deepEqual(resolveLogCalendar(NO_LOG_CALENDAR, calendars, config), {
+        logCalendarId: null,
+        logCalendarName: null,
+      });
+      assert.deepEqual(resolveLogCalendar("stranger", calendars, config), {
+        logCalendarId: null,
+        logCalendarName: null,
+      });
+      // A saved log calendar that became read-only is also flagged.
+      const readOnly = settingsChoices(calendars, { ...config, logCalendarId: "ro" });
+      assert.equal(readOnly.unavailableLog?.id, "ro");
+      assert.equal(settingsChoices(calendars, { ...config, logCalendarId: "w" }).unavailableLog, null);
+      assert.equal(settingsChoices(calendars, defaultConfig()).unavailableLog, null);
+    },
+  ],
+  [
+    "settings: the move action targets the log calendar by id, whatever the names",
+    async () => {
+      assert.equal(moveTarget(defaultConfig()), null);
+      // Two calendars can share "Work (a)"; the target is the id.
+      assert.deepEqual(
+        moveTarget({ ...defaultConfig(), logCalendarId: "w2", logCalendarName: "Work (a)" }),
+        { id: "w2", name: "Work (a)" },
+      );
+      assert.deepEqual(moveTarget({ ...defaultConfig(), logCalendarId: "w2" }), {
+        id: "w2",
+        name: "the log calendar",
+      });
     },
   ],
 

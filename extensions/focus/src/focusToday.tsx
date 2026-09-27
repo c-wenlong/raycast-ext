@@ -9,9 +9,10 @@ import {
   launchCommand,
   showToast,
 } from "@raycast/api";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FinishSessionForm } from "./components/FinishSessionForm";
 import { FocusConfig, readConfig } from "./lib/config";
+import { moveTarget } from "./lib/settings";
 import {
   Calendar,
   Session,
@@ -59,9 +60,14 @@ export default function FocusTodayCommand() {
   // Re-render every 30 s so remaining minutes and the Now/Later split stay
   // current while the list is open.
   const [now, setNow] = useState(() => new Date());
+  const inFlight = useRef(false);
 
-  const reload = useCallback(async () => {
-    setIsLoading(true);
+  // A quiet reload (the background refresh) shows no spinner and no toast,
+  // and is skipped while another load is still running.
+  const reload = useCallback(async (options: { quiet?: boolean } = {}) => {
+    if (options.quiet && inFlight.current) return;
+    inFlight.current = true;
+    if (!options.quiet) setIsLoading(true);
     try {
       const config = await readConfig();
       const daemon = getDaemon();
@@ -84,12 +90,15 @@ export default function FocusTodayCommand() {
       // Drop what was shown before: a stale Running row would mislead.
       setData(null);
       setError(errorMessage(loadError));
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Could not load Focus Today",
-        message: errorMessage(loadError),
-      });
+      if (!options.quiet) {
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Could not load Focus Today",
+          message: errorMessage(loadError),
+        });
+      }
     } finally {
+      inFlight.current = false;
       setNow(new Date());
       setIsLoading(false);
     }
@@ -100,9 +109,15 @@ export default function FocusTodayCommand() {
   }, [reload]);
 
   useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 30_000);
-    return () => clearInterval(timer);
-  }, []);
+    const clock = setInterval(() => setNow(new Date()), 30_000);
+    // Refetch too, so events added or moved while the list is open (or a
+    // new day) show up without a manual refresh.
+    const refresh = setInterval(() => reload({ quiet: true }), 60_000);
+    return () => {
+      clearInterval(clock);
+      clearInterval(refresh);
+    };
+  }, [reload]);
 
   async function handleStart(event: TodayEvent) {
     const toast = await showToast({
@@ -267,11 +282,7 @@ export default function FocusTodayCommand() {
   }
 
   function renderWaiting(item: WaitingSession, config: FocusConfig) {
-    const target = config.logCalendarId;
-    const targetName = config.logCalendarName ?? "the log calendar";
-    // Moving onto the calendar a session already waits for changes nothing.
-    const canMove =
-      target !== null && item.logCalendarName !== config.logCalendarName;
+    const target = moveTarget(config);
     return (
       <List.Item
         key={`waiting-${item.sessionId}`}
@@ -286,19 +297,20 @@ export default function FocusTodayCommand() {
               icon={Icon.ArrowClockwise}
               onAction={handleRetryPending}
             />
-            {canMove && target ? (
+            {target ? (
               <Action
-                title={`Move Waiting Sessions to ${targetName}`}
+                title={`Move Waiting Sessions to ${target.name}`}
                 icon={Icon.ArrowRight}
-                onAction={() => handleMovePending(target, targetName)}
+                onAction={() => handleMovePending(target.id, target.name)}
               />
-            ) : (
-              <Action
-                title="Choose Another Log Calendar"
-                icon={Icon.Gear}
-                onAction={openSettings}
-              />
-            )}
+            ) : null}
+            <Action
+              title={
+                target ? "Choose Another Log Calendar" : "Choose a Log Calendar"
+              }
+              icon={Icon.Gear}
+              onAction={openSettings}
+            />
             {commonActions}
           </ActionPanel>
         }
