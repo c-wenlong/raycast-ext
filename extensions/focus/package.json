@@ -1,0 +1,52 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "focus",
+  "title": "Focus",
+  "description": "Turn today's calendar events into focus sessions, logged back to a calendar of your choice.",
+  "icon": "focus-icon.png",
+  "author": "c-wenlong",
+  "categories": [
+    "Productivity"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "focusToday",
+      "title": "Focus Today",
+      "description": "Today's events from your startable calendars; start a focus session on one",
+      "mode": "view"
+    },
+    {
+      "name": "focusSettings",
+      "title": "Focus Settings",
+      "description": "Pick the calendars you can start sessions from and the calendar sessions are logged to",
+      "mode": "view"
+    }
+  ],
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix",
+    "test": "npm run test-ts && npm run test-helper",
+    "test-ts": "esbuild test/lib.test.ts --bundle --platform=node --format=cjs --alias:@raycast/api=./test/raycast-stub.js --outfile=dist/test.cjs --log-level=warning && node dist/test.cjs",
+    "test-helper": "bash scripts/test-helper.sh",
+    "build-helper": "bash scripts/build-helper.sh",
+    "fake-daemon": "node test/fake-daemon.js"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.104.8"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.1.1",
+    "@types/node": "^22.14.1",
+    "@types/react": "^19.0.10",
+    "esbuild": "^0.25.12",
+    "eslint": "^9.36.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "platforms": [
+    "macOS"
+  ]
+}
