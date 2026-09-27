@@ -87,7 +87,9 @@ final class AppBlocker: NSObject, AppWorkspace {
 
   func block(_ app: RunningApp, snoozeSeconds: Int) {
     onMain { [weak self] in
-      guard let self, self.engine?.isOn == true else { return }
+      // The decision was made off the main thread's queue: the app may have
+      // been snoozed or unlisted since, and then must not be hidden.
+      guard let self, self.engine?.blocksApp(app.bundleId) == true else { return }
       let running = NSRunningApplication(processIdentifier: app.pid)
       if let running { self.hide(running, bundleId: app.bundleId) }
       self.present(app, icon: running?.icon, snoozeSeconds: snoozeSeconds)

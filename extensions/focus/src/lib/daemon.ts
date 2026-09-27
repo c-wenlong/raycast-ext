@@ -88,6 +88,8 @@ export interface PendingCounts {
 // `allowedApps` and `allowedHosts` (everything else is blocked) and the
 // blocked lists are empty; in blocklist mode it is the other way round.
 export interface BlockingStatus {
+  // The open session this describes, or null when idle.
+  sessionId: number | null;
   active: boolean;
   profile: string | null;
   // The name the session asked for when it was unknown and "default" was used.
@@ -572,6 +574,7 @@ export class FocusDaemon {
     const strings = (key: string) => field<string[]>(reply, key, isArray);
     const mode = reply.mode;
     return {
+      sessionId: typeof reply.sessionId === "number" ? reply.sessionId : null,
       active: reply.active === true,
       profile: typeof reply.profile === "string" ? reply.profile : null,
       profileFallbackFrom:

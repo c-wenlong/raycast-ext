@@ -122,7 +122,9 @@ export default function FocusTodayCommand() {
       setData({
         config,
         session,
-        blocking: session ? blocking : null,
+        // Two requests: only pair them when they saw the same session.
+        blocking:
+          session && blocking?.sessionId === session.id ? blocking : null,
         fetchedAt,
         events,
         waiting,

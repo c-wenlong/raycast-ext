@@ -287,10 +287,14 @@ final class BlockEngine: BlockPolicy {
 
   /// Stores a snooze for the running session, records it, and schedules a
   /// re-check for when it ends. Nil when blocking is off.
-  private func grant(kind: String, target: String) -> Date? {
+  /// With `token`, the grant only happens when it matches the running
+  /// session's token, checked under the same lock as the write, so a token
+  /// from a session that just ended can never snooze the next one.
+  private func grant(kind: String, target: String, token: String? = nil) -> Date? {
     let now = clock()
     let granted = locked { () -> (session: Int, until: Date, seconds: Int)? in
       guard on, let view else { return nil }
+      if let token, currentToken.isEmpty || !BlockEngine.same(token, currentToken) { return nil }
       let until = now.addingTimeInterval(TimeInterval(currentSnoozeSeconds))
       if kind == "app" {
         snoozedApps[target.lowercased()] = (target, until)
@@ -323,7 +327,8 @@ final class BlockEngine: BlockPolicy {
 
   /// `snooze {target, kind?}` from the socket (local and trusted, so no
   /// token). `kind` is "app" or "site"; without it a target is an app when
-  /// the session blocked it or the profile lists it as an app, or when it
+  /// the session blocked it or the profile lists it as an app, a host when
+  /// the profile blocks it as one ("app.example.com"), else an app when it
   /// reads as a bundle id (three or more labels starting "com.", "net.",
   /// ...), and a host otherwise.
   func snooze(target raw: String, kind rawKind: String?) throws -> (kind: String, target: String, until: Date) {
@@ -335,6 +340,7 @@ final class BlockEngine: BlockPolicy {
       ?? locked { () -> String in
         let lower = trimmed.lowercased()
         if blockedApps.contains(lower) || (rules?.apps.contains(lower) ?? false) { return "app" }
+        if let rules, !rules.allowlist, rules.isHostBlocked(lower) { return "site" }
         let labels = lower.split(separator: ".")
         if labels.count >= 3, let first = labels.first, BlockEngine.bundlePrefixes.contains(String(first)) {
           return "app"
@@ -375,16 +381,15 @@ final class BlockEngine: BlockPolicy {
   }
 
   func snooze(host: String, token offered: String) -> Bool {
-    let accepted = locked { on && !currentToken.isEmpty && BlockEngine.same(offered, currentToken) }
-    guard accepted else {
-      log("snooze refused for \(host): wrong token or no running session")
-      return false
-    }
     guard let normalized = Matching.normalizeHost(host), !Matching.isLoopback(normalized) else {
       log("snooze refused: \"\(host)\" is not a host")
       return false
     }
-    return grant(kind: "site", target: normalized) != nil
+    guard grant(kind: "site", target: normalized, token: offered) != nil else {
+      log("snooze refused for \(host): wrong token or no running session")
+      return false
+    }
+    return true
   }
 
   func recordBlocked(host: String) {
@@ -400,7 +405,7 @@ final class BlockEngine: BlockPolicy {
 
   // MARK: Status (the `blocking` command)
 
-  /// `{active, profile, mode, blockedApps, blockedHosts, allowedApps,
+  /// `{sessionId, active, profile, mode, blockedApps, blockedHosts, allowedApps,
   /// allowedHosts, snoozed, snoozeSeconds, profileFallbackFrom}`. Profile and
   /// mode are null only when no session is open; a paused session reports
   /// its profile with `active: false`.
@@ -416,6 +421,7 @@ final class BlockEngine: BlockPolicy {
         snoozedApps.values.map { (kind: "app", target: $0.target, until: $0.until) }
         + snoozedHosts.map { (kind: "site", target: $0.key, until: $0.value) }
       return [
+        "sessionId": .optional(view?.id),
         "active": .bool(on),
         "profile": .optional(profile?.name),
         "profileFallbackFrom": .optional(view == nil ? nil : resolved?.fallbackFrom),

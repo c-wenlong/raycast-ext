@@ -320,7 +320,7 @@ function createFakeDaemon(options) {
     const session = state.session;
     const empty = { blockedApps: [], blockedHosts: [], allowedApps: [], allowedHosts: [] };
     const base = { profileFallbackFrom: null, ...empty, snoozeSeconds: snoozeSeconds(), snoozed: [] };
-    if (!session) return { ...base, active: false, profile: null, mode: null };
+    if (!session) return { ...base, sessionId: null, active: false, profile: null, mode: null };
     const profiles = readConfig(configPath).profiles || {};
     const known = Object.prototype.hasOwnProperty.call(profiles, session.profile);
     const name = known ? session.profile : "default";
@@ -330,6 +330,7 @@ function createFakeDaemon(options) {
     const hosts = Array.isArray(spec.hosts) ? [...spec.hosts].sort() : [];
     return {
       ...base,
+      sessionId: session.id,
       active: session.state === "running" || session.state === "ending",
       profile: name,
       profileFallbackFrom: known ? null : session.profile,

@@ -603,6 +603,7 @@ net.createServer((socket) => {
         );
         const idle = await daemon.blocking();
         assert.equal(idle.active, false);
+        assert.equal(idle.sessionId, null);
         assert.equal(idle.profile, null);
         assert.equal(idle.mode, null);
         await rejectsWith(
@@ -620,6 +621,7 @@ net.createServer((socket) => {
         });
         const deep = await daemon.blocking();
         assert.equal(deep.active, true);
+        assert.equal(deep.sessionId, (await daemon.status())?.id);
         assert.equal(deep.profile, "deep");
         assert.equal(deep.mode, "allowlist");
         assert.deepEqual(deep.allowedHosts, ["github.com"]);

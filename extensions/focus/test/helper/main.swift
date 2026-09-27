@@ -1305,6 +1305,10 @@ do {
   let badDefault = FocusConfig(json: try! JSONValue.parse(#"{"profiles": {"default": "all"}}"#))
   check("a malformed default keeps the built-in one", badDefault.profiles["default"] == .builtInDefault)
   check("an empty profiles object keeps the built-in default", FocusConfig(json: ["profiles": [:]]).profiles == FocusConfig().profiles)
+  let mistyped = FocusConfig(json: try! JSONValue.parse(#"{"profiles": {"default": {"categories": "social"}, "work": {"apps": "com.apple.Music"}}}"#))
+  check("a default with a mistyped list keeps the built-in one", mistyped.profiles["default"] == .builtInDefault)
+  check("another profile with a mistyped list is dropped", mistyped.profiles["work"] == nil)
+  check("mistyped lists are reported", mistyped.profileProblems.contains { $0.contains("\"default\": categories is not a list") } && mistyped.profileProblems.contains { $0.contains("\"work\": apps is not a list") }, "\(mistyped.profileProblems)")
 }
 
 // MARK: - Blocking: the engine
@@ -1431,7 +1435,7 @@ do {
   check("snoozeApp is recorded", recorded.last?.1 == BlockedAttempt(at: at(10, 4), kind: "app", target: "com.apple.Music", outcome: "snoozed"))
 
   let status = engine.statusFields()
-  check("status: active, profile and mode", status["active"] == true && status["profile"] == "default" && status["mode"] == "blocklist" && status["profileFallbackFrom"] == .null)
+  check("status: active, profile and mode", status["sessionId"] == 1 && status["active"] == true && status["profile"] == "default" && status["mode"] == "blocklist" && status["profileFallbackFrom"] == .null)
   check("status: blocked lists", status["blockedApps"] == ["com.apple.Music", "com.apple.TV"] && status["blockedHosts"]?.arrayValue?.contains("youtube.com") == true && status["allowedApps"] == [])
   check(
     "status: live snoozes only", status["snoozed"] == [["kind": "app", "target": "com.apple.Music", "until": .string(ISO.local(at(10, 6)))]],
@@ -1445,6 +1449,8 @@ do {
   check("socket snooze: a host snooze polls the tabs", sites.calls.last == "poll")
   let bundle = try? engine.snooze(target: "com.example.Unlisted", kind: nil)
   check("socket snooze: a reverse-DNS name is an app", bundle?.kind == "app")
+  let blockedHost = try? engine.snooze(target: "app.example.com", kind: nil)
+  check("socket snooze: a host the profile blocks is a site even if it reads like a bundle id", blockedHost?.kind == "site" && !engine.isBlocked(host: "app.example.com"))
   check("socket snooze: kind wins", (try? engine.snooze(target: "com.example.io", kind: "site"))?.kind == "site")
   check("socket snooze: a bad kind", (try? engine.snooze(target: "x.com", kind: "tab")) == nil)
   check("socket snooze: a blank target", (try? engine.snooze(target: " ", kind: nil)) == nil)
@@ -1475,6 +1481,8 @@ do {
   workspace.front = RunningApp(pid: 50, bundleId: "com.apple.Safari", name: "Safari")
   engine.sessionChanged(blockView(2, "running"), profileName: "deep")
   check("a new session gets a new token", engine.token.count == 64 && engine.token != token)
+  check("the last session's token cannot snooze this one", !engine.snooze(host: "snoozed.org", token: token))
+  check("the new token can", engine.snooze(host: "snoozed.org", token: engine.token))
   check("allowlist: the frontmost unlisted app is blocked", workspace.calls.contains("block com.apple.Safari 120"), "\(workspace.calls)")
   check("allowlist: listed apps and browsers pass", !engine.appCameForward(RunningApp(pid: 51, bundleId: "com.microsoft.VSCode", name: "Code")) && !engine.appCameForward(RunningApp(pid: 52, bundleId: "com.google.Chrome", name: "Chrome")))
   check("allowlist: Raycast passes", !engine.appCameForward(RunningApp(pid: 53, bundleId: "com.raycast.macos", name: "Raycast")))
@@ -1510,7 +1518,7 @@ do {
   h.core.blocker.workspace = workspace
   h.core.blocker.siteBlocker = sites
   h.core.blocker.schedule = { _, _ in }
-  check("blocking: idle status", h.send("blocking") == ["ok": true, "active": false, "profile": nil, "profileFallbackFrom": nil, "mode": nil, "blockedApps": [], "blockedHosts": [], "allowedApps": [], "allowedHosts": [], "snoozeSeconds": 180, "snoozed": []], h.send("blocking").serialized())
+  check("blocking: idle status", h.send("blocking") == ["ok": true, "sessionId": nil, "active": false, "profile": nil, "profileFallbackFrom": nil, "mode": nil, "blockedApps": [], "blockedHosts": [], "allowedApps": [], "allowedHosts": [], "snoozeSeconds": 180, "snoozed": []], h.send("blocking").serialized())
   check("snooze: refused when idle", h.send("snooze", ["target": "x.com"])["error"] == "blocking is off: no session is running")
   check("snooze: needs a target", h.send("snooze")["error"] == "target is required")
 

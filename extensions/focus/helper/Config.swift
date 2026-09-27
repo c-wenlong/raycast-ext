@@ -83,7 +83,8 @@ struct FocusConfig: Equatable {
 /// (Categories.swift) whose apps and hosts are added to the lists. Every key
 /// is optional: a missing mode is blocklist, missing lists are empty. Hosts
 /// are normalized (scheme, "www.", port and path dropped); unknown keys are
-/// ignored here and kept in the file.
+/// ignored here and kept in the file. A list of another type (a string, say)
+/// makes the entry malformed.
 struct ProfileSpec: Equatable {
   var mode: String = "blocklist"
   var categories: [String] = []
@@ -105,6 +106,13 @@ struct ProfileSpec: Equatable {
         spec.mode = text
       } else {
         spec.problems.append("mode \(mode.serialized()) is not \"blocklist\" or \"allowlist\"; using blocklist")
+      }
+    }
+    // A list given as anything but an array makes the whole entry malformed,
+    // so a mistyped "default" keeps the built-in one instead of blocking nothing.
+    for key in ["categories", "apps", "hosts"] {
+      if let list = fields[key], !list.isNull, list.arrayValue == nil {
+        return .failure(FocusError("\(key) is not a list"))
       }
     }
     func strings(_ key: String) -> [String] {
