@@ -99,7 +99,8 @@ sheet too if the session is ending). Presenter calls always arrive on the main
 thread; delegate calls (`presenterPause`, `presenterFinish(rating:note:)`, ...)
 queue behind socket requests, and a refused one is logged and answered with a
 fresh `update`. `SessionView.calendarTitle` is "" until the calendar can be
-looked up. Without a UI the core uses `NullPresenter`.
+looked up. Without a UI the core uses a presenter that discards every call
+(`NullPresenter`, which records them, is for tests).
 
 Launch recovery (in `FocusCore.init`): an open row whose `last_heartbeat` is
 more than 90 s old is closed with `end_reason = abandoned`, `ended_at =

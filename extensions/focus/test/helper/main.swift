@@ -1094,6 +1094,8 @@ do {
   let last = try! h.db.session(id: 1)!
   check("finish from the UI closes the row", last.endedAt == at(12, 4) && last.rating == 4 && last.note == "Done" && last.endReason == "manual", "\(last)")
   check("finish from the UI writes the log event and idles", h.fake.saved.count == 1 && !h.core.ticking && h.lastView == nil)
+  let headless = FocusCore(config: ConfigFile(path: h.dir + "/other.json"), db: h.db, calendar: h.fake, secondTimer: false)
+  check("a core without a UI does not record views", !(headless.presenter is NullPresenter))
   let replacement = NullPresenter()
   h.core.presenter = replacement
   check("a new presenter is told the state at once", replacement.views.count == 1 && replacement.views[0] == nil && replacement.delegate === h.core)

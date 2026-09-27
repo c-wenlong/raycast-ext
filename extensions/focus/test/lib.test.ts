@@ -25,6 +25,7 @@ import {
   sendRequest,
 } from "../src/lib/daemon";
 import {
+  effectiveSession,
   pausedSecondsNow,
   pausedText,
   sessionActions,
@@ -683,6 +684,18 @@ net.createServer((socket) => {
       assert.equal(pausedText(0.5), null);
       assert.equal(pausedText(120), "paused 2 min");
       assert.equal(pausedText(61), "paused 2 min");
+      // A reply from before the deadline is read as the end sheet after it.
+      const past = { state: "paused" as const, plannedEnd: at(now, -1), endReason: null };
+      assert.deepEqual(effectiveSession(past, now), { ...past, state: "ending", endReason: "timer" });
+      assert.deepEqual(sessionActions(effectiveSession(past, now)).pause, false);
+      const exact = { state: "running" as const, plannedEnd: at(now, 0), endReason: null };
+      assert.equal(effectiveSession(exact, now).state, "ending");
+      const ahead = { state: "running" as const, plannedEnd: at(now, 1), endReason: null };
+      assert.equal(effectiveSession(ahead, now), ahead);
+      const stopped = { state: "ending" as const, plannedEnd: at(now, 600), endReason: "manual" };
+      assert.equal(effectiveSession(stopped, now), stopped);
+      const unknown = { state: "running" as const, plannedEnd: null, endReason: null };
+      assert.equal(effectiveSession(unknown, now), unknown);
     },
   ],
   [

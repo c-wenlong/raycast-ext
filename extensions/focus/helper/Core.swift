@@ -38,6 +38,16 @@ protocol CalendarBackend: LogCalendarStore {
   func events(from start: Date, to end: Date, calendarIds: [String]?) -> [CalendarEvent]
 }
 
+/// The presenter until a UI attaches (and in a headless daemon). Unlike
+/// NullPresenter, which records every call for tests, it keeps nothing, so a
+/// long-running daemon does not collect a view a second.
+private final class DiscardingPresenter: SessionPresenter {
+  weak var delegate: SessionPresenterDelegate?
+  func update(_ view: SessionView?) {}
+  func showEndSheet(_ view: SessionView) {}
+  func dismissEndSheet() {}
+}
+
 final class FocusCore: SessionPresenterDelegate {
   static let version = "0.2.0"
   /// At launch, an open session whose heartbeat is older than this is
@@ -75,7 +85,7 @@ final class FocusCore: SessionPresenterDelegate {
   /// True while the 1 Hz session tick is scheduled, which is exactly while a
   /// session exists.
   private(set) var ticking = false
-  private var storedPresenter: SessionPresenter = NullPresenter()
+  private var storedPresenter: SessionPresenter = DiscardingPresenter()
 
   /// The UI. Setting it makes the core its delegate and shows the current
   /// session at once (the end sheet too, if the session is waiting at it).

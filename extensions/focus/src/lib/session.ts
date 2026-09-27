@@ -4,6 +4,21 @@ import { durationText } from "./time";
 // Pure helpers for the Running section of Focus Today. Everything takes
 // `now` (and when the session was fetched) so tests can pin the clock.
 
+// The session as the helper has it now: a running or paused session whose
+// planned end has passed is at the end sheet (the helper checks every
+// second), even if the reply predates that. Keeps the row from offering
+// actions the helper would refuse until the next refresh.
+export function effectiveSession<
+  T extends Pick<Session, "state" | "plannedEnd" | "endReason">,
+>(session: T, now: Date): T {
+  if (session.state !== "running" && session.state !== "paused") {
+    return session;
+  }
+  const end = session.plannedEnd ? Date.parse(session.plannedEnd) : Number.NaN;
+  if (!Number.isFinite(end) || now.getTime() < end) return session;
+  return { ...session, state: "ending", endReason: "timer" };
+}
+
 export interface SessionActions {
   pause: boolean;
   resume: boolean;

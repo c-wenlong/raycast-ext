@@ -23,6 +23,7 @@ import {
   getDaemon,
 } from "./lib/daemon";
 import {
+  effectiveSession,
   pausedSecondsNow,
   pausedText,
   sessionActions,
@@ -93,15 +94,20 @@ export default function FocusTodayCommand() {
     try {
       const config = await readConfig();
       const daemon = getDaemon();
-      const [session, waiting, events, calendars] = await Promise.all([
-        daemon.status(),
-        daemon.pending(),
-        config.startableCalendars.length > 0
-          ? daemon.today()
-          : Promise.resolve([]),
-        // Only for row colours; the list works without them.
-        daemon.calendars().catch((): Calendar[] => []),
-      ]);
+      const [{ session, fetchedAt }, waiting, events, calendars] =
+        await Promise.all([
+          // The paused time is counted from when this reply came back, not
+          // from when the slowest of the four did.
+          daemon
+            .status()
+            .then((session) => ({ session, fetchedAt: new Date() })),
+          daemon.pending(),
+          config.startableCalendars.length > 0
+            ? daemon.today()
+            : Promise.resolve([]),
+          // Only for row colours; the list works without them.
+          daemon.calendars().catch((): Calendar[] => []),
+        ]);
       if (id !== latest.current) return;
       const colors = new Map<string, string>();
       for (const calendar of calendars) {
@@ -110,7 +116,7 @@ export default function FocusTodayCommand() {
       setData({
         config,
         session,
-        fetchedAt: new Date(),
+        fetchedAt,
         events,
         waiting,
         colors,
@@ -138,6 +144,25 @@ export default function FocusTodayCommand() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // The helper sends a session to the end sheet at its planned end; refetch
+  // then so the row shows it (the view already treats it as ending).
+  const deadline = data?.session?.plannedEnd;
+  const deadlineOpen =
+    data?.session?.state === "running" || data?.session?.state === "paused";
+  useEffect(() => {
+    if (!deadline || !deadlineOpen) return;
+    const wait = Date.parse(deadline) - Date.now();
+    if (!Number.isFinite(wait) || wait > 2 ** 31 - 1) return;
+    const timer = setTimeout(
+      () => {
+        setNow(new Date());
+        reload({ quiet: true });
+      },
+      Math.max(0, wait) + 1_000,
+    );
+    return () => clearTimeout(timer);
+  }, [deadline, deadlineOpen, reload]);
 
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 30_000);
@@ -512,7 +537,11 @@ export default function FocusTodayCommand() {
       />
       {session && config ? (
         <List.Section title="Running">
-          {renderSession(session, config, data?.fetchedAt ?? now)}
+          {renderSession(
+            effectiveSession(session, now),
+            config,
+            data?.fetchedAt ?? now,
+          )}
         </List.Section>
       ) : null}
       {groups.now.length > 0 ? (
