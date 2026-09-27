@@ -497,6 +497,63 @@ const cases: Case[] = [
       await rejectsWith(daemon.status(), "launch-failed", /exited \(code 3\)/);
     },
   ],
+  [
+    "daemon: a launcher that backgrounds the helper and exits 0 is not a failure",
+    async () => {
+      // The real focus-daemon with no arguments spawns the daemon in its own
+      // session and exits 0 once it listens; the client must keep pinging.
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const binary = path.join(dir, "focus-daemon");
+      const fake = path.resolve(__dirname, "..", "test", "fake-daemon.js");
+      writeFileSync(
+        binary,
+        `#!/bin/sh\n(sleep 0.3; exec "${process.execPath}" "${fake}" --socket "${socketPath}" --no-waiting) >/dev/null 2>&1 &\nexit 0\n`,
+      );
+      chmodSync(binary, 0o755);
+      const daemon = new FocusDaemon({ socketPath, binaryPath: binary, launchTimeoutMs: 10_000 });
+      try {
+        assert.equal(await daemon.status(), null);
+      } finally {
+        await daemon.quit();
+      }
+    },
+  ],
+  [
+    "daemon: a helper that is slow to answer its first ping still counts as up",
+    async () => {
+      // Startup recovery can hold the queue past the 1 s ping timeout; the
+      // client retries within the launch window instead of giving up.
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const binary = path.join(dir, "focus-daemon");
+      const server = path.join(dir, "slow.js");
+      writeFileSync(
+        server,
+        `const net = require("net");
+const started = Date.now();
+net.createServer((socket) => {
+  socket.setEncoding("utf8");
+  socket.on("data", (raw) => {
+    const request = JSON.parse(raw);
+    const reply = request.cmd === "ping" ? { ok: true, version: "slow", pid: process.pid } : { ok: true, session: null };
+    if (request.cmd === "quit") { socket.end('{"ok":true}\\n'); setTimeout(() => process.exit(0), 50); return; }
+    const delay = Date.now() - started < 1_800 ? 1_500 : 0;
+    setTimeout(() => socket.end(JSON.stringify(reply) + "\\n"), delay);
+  });
+}).listen(${JSON.stringify(socketPath)});
+`,
+      );
+      writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
+      chmodSync(binary, 0o755);
+      const daemon = new FocusDaemon({ socketPath, binaryPath: binary, launchTimeoutMs: 10_000 });
+      try {
+        assert.equal(await daemon.status(), null);
+      } finally {
+        await daemon.quit();
+      }
+    },
+  ],
 
   // ---- daemon client: typed commands against the fake daemon ----
   [

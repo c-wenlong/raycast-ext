@@ -370,27 +370,37 @@ export class FocusDaemon {
     });
     child.unref();
 
+    // `focus-daemon` with no arguments spawns the real daemon in its own
+    // session and exits 0 once that daemon listens, so a clean exit is good
+    // news, not a failure. Only a non-zero code or a signal means it gave up.
+    // A ping that times out (the daemon is up but busy with its startup
+    // recovery) is retried as well, until the launch window closes.
     const deadline = Date.now() + this.launchTimeoutMs;
     for (;;) {
       try {
         await sendRequest(this.socketPath, { cmd: "ping" }, 1_000);
         return;
       } catch (error) {
-        if (!(error instanceof DaemonError) || error.code !== "not-running") {
+        if (
+          !(error instanceof DaemonError) ||
+          (error.code !== "not-running" && error.code !== "timeout")
+        ) {
           throw error;
         }
       }
       if (exited.length > 0) {
         const { code, signal } = exited[0];
-        throw new DaemonError(
-          "launch-failed",
-          `The Focus helper exited (${signal ?? `code ${code}`}) before it opened ${this.socketPath}.`,
-        );
+        if (signal !== null || (code !== null && code !== 0)) {
+          throw new DaemonError(
+            "launch-failed",
+            `The Focus helper exited (${signal ?? `code ${code}`}) before it opened ${this.socketPath}.`,
+          );
+        }
       }
       if (Date.now() >= deadline) {
         throw new DaemonError(
           "launch-failed",
-          `The Focus helper started but did not open ${this.socketPath} within ${Math.round(this.launchTimeoutMs / 1000)} s.`,
+          `The Focus helper started but did not answer at ${this.socketPath} within ${Math.round(this.launchTimeoutMs / 1000)} s.`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
