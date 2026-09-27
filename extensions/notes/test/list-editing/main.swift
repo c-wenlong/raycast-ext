@@ -188,7 +188,14 @@ do {
   let edit = ListEditing.toggleWrap(in: "**bold** x", selection: NSRange(location: 8, length: 0), marker: "**")
   check("⌘B right after a closing pair changes nothing", edit.range == NSRange(location: 8, length: 0) && edit.replacement == "" && edit.cursor == 8, "\(edit)")
   let front = ListEditing.toggleWrap(in: "x **bold**", selection: NSRange(location: 2, length: 0), marker: "**")
-  check("⌘B right before an opening pair changes nothing", front.replacement == "" && front.range.length == 0, "\(front)")
+  check("⌘B right before an opening pair changes nothing", front.replacement == "" && front.range == NSRange(location: 2, length: 0) && front.cursor == 2, "\(front)")
+  let between = ListEditing.toggleWrap(in: "**a****b**", selection: NSRange(location: 5, length: 0), marker: "**")
+  let merged = ("**a****b**" as NSString).replacingCharacters(in: between.range, with: between.replacement)
+  check("a caret between two pairs still merges them", merged == "**ab**", merged)
+  let fenced = "**a**\n```\n**b**\n```"
+  let acrossFence = ListEditing.toggleWrap(in: fenced, selection: NSRange(location: 0, length: (fenced as NSString).length), marker: "**")
+  let fencedOut = (fenced as NSString).replacingCharacters(in: acrossFence.range, with: acrossFence.replacement)
+  check("a selection across lines and a fence leaves the fenced pair alone", fencedOut.contains("```\n**b**\n```"), fencedOut.debugDescription)
 }
 do {
   let src = "**a** and **b**"

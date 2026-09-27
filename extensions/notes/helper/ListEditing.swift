@@ -557,17 +557,28 @@ enum ListEditing {
       let start = shifted(selection.location)
       return Edit(range: span, replacement: inner, cursor: start, selectionLength: shifted(NSMaxRange(selection)) - start)
     }
+    let before = selection.location >= width ? ns.substring(with: NSRange(location: selection.location - width, length: width)) : ""
+    let afterStart = selection.location + selection.length
+    let after = afterStart + width <= ns.length ? ns.substring(with: NSRange(location: afterStart, length: width)) : ""
     let spans = wrapSpans(in: text, on: selection, marker: marker)
     // A caret right against a pair's outer edge: typing there is already
     // plain, so there is nothing to toggle, and an empty pair added here
-    // would only show as stray marker characters.
-    if selection.length == 0, spans.contains(where: { $0.location == selection.location || NSMaxRange($0) == selection.location }) {
+    // would only show as stray marker characters. A caret between two
+    // pairs is the merge case handled below instead.
+    if selection.length == 0, !(before == marker && after == marker),
+      spans.contains(where: { $0.location == selection.location || NSMaxRange($0) == selection.location })
+    {
       return Edit(range: selection, replacement: "", cursor: selection.location)
     }
-    // A selection reaching into one or more pairs but not held by one is
-    // mixed: it all becomes one styled run (the pairs it touches are
-    // folded in, whole), as the format keys do elsewhere.
-    let touched = spans.filter { $0.location < NSMaxRange(selection) && NSMaxRange($0) > selection.location }
+    // A one-line selection reaching into one or more pairs but not held
+    // by one is mixed: it all becomes one styled run (the pairs it touches
+    // are folded in, whole), as the format keys do elsewhere. Pairs never
+    // span lines, so a selection across lines is left to wrap as a whole;
+    // pairs inside fenced code are text, not style.
+    let oneLine = ns.substring(with: selection).rangeOfCharacter(from: .newlines) == nil
+    let touched = oneLine
+      ? spans.filter { $0.location < NSMaxRange(selection) && NSMaxRange($0) > selection.location && !insideFence(text, cursor: $0.location) }
+      : []
     if !touched.isEmpty {
       var range = selection
       for span in touched { range = NSUnionRange(range, span) }
@@ -583,9 +594,6 @@ enum ListEditing {
       let inner = (selected as NSString).substring(with: NSRange(location: width, length: (selected as NSString).length - width * 2))
       return Edit(range: selection, replacement: inner, cursor: selection.location, selectionLength: (inner as NSString).length)
     }
-    let before = selection.location >= width ? ns.substring(with: NSRange(location: selection.location - width, length: width)) : ""
-    let afterStart = selection.location + selection.length
-    let after = afterStart + width <= ns.length ? ns.substring(with: NSRange(location: afterStart, length: width)) : ""
     if before == marker, after == marker {
       return Edit(range: NSRange(location: selection.location - width, length: selection.length + width * 2), replacement: selected, cursor: selection.location - width, selectionLength: selection.length)
     }
