@@ -547,6 +547,9 @@ enum ListEditing {
     let ns = text as NSString
     let selected = ns.substring(with: selection)
     let width = (marker as NSString).length
+    if selected.rangeOfCharacter(from: .newlines) != nil {
+      return toggleWrapLines(in: text, selection: selection, marker: marker)
+    }
     if let span = wrapSpan(in: text, around: selection, marker: marker) {
       let inner = ns.substring(with: NSRange(location: span.location + width, length: span.length - width * 2))
       // Each position moves left by the marker characters before it, so
@@ -598,6 +601,55 @@ enum ListEditing {
       return Edit(range: NSRange(location: selection.location - width, length: selection.length + width * 2), replacement: selected, cursor: selection.location - width, selectionLength: selection.length)
     }
     return Edit(range: selection, replacement: marker + selected + marker, cursor: selection.location + width, selectionLength: selection.length)
+  }
+
+  /// A selection across lines, line by line (pairs never span lines):
+  /// when every line's part is already styled, each is unwrapped;
+  /// otherwise each unstyled part is wrapped (folding in the pairs it
+  /// touches) and the styled ones are left as they are, so the whole
+  /// selection ends up styled. Blank parts and fenced code are skipped.
+  private static func toggleWrapLines(in text: String, selection: NSRange, marker: String) -> Edit {
+    let ns = text as NSString
+    var segments: [NSRange] = []
+    var location = selection.location
+    while location < NSMaxRange(selection) {
+      var lineEnd = 0
+      var contentsEnd = 0
+      ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
+      let segment = NSRange(location: location, length: min(contentsEnd, NSMaxRange(selection)) - location)
+      var lineStart = 0
+      ns.getLineStart(&lineStart, end: nil, contentsEnd: nil, for: NSRange(location: location, length: 0))
+      let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
+      let isFenceLine = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) != nil
+      if segment.length > 0, !ns.substring(with: segment).trimmingCharacters(in: .whitespaces).isEmpty,
+        !isFenceLine, !insideFence(text, cursor: segment.location)
+      {
+        segments.append(segment)
+      }
+      if lineEnd == location { break }
+      location = lineEnd
+    }
+    guard !segments.isEmpty else {
+      return Edit(range: selection, replacement: ns.substring(with: selection), cursor: selection.location, selectionLength: selection.length)
+    }
+    let allStyled = segments.allSatisfy { wrapSpan(in: text, around: $0, marker: marker) != nil }
+    var edits: [Edit] = []
+    for segment in segments {
+      let styled = wrapSpan(in: text, around: segment, marker: marker) != nil
+      if allStyled || !styled { edits.append(toggleWrap(in: text, selection: segment, marker: marker)) }
+    }
+    guard let first = edits.first, let last = edits.last else {
+      return Edit(range: selection, replacement: ns.substring(with: selection), cursor: selection.location, selectionLength: selection.length)
+    }
+    let whole = NSRange(location: min(first.range.location, selection.location), length: max(NSMaxRange(last.range), NSMaxRange(selection)) - min(first.range.location, selection.location))
+    var composed = ""
+    var cursor = whole.location
+    for edit in edits {
+      composed += ns.substring(with: NSRange(location: cursor, length: edit.range.location - cursor)) + edit.replacement
+      cursor = NSMaxRange(edit.range)
+    }
+    composed += ns.substring(with: NSRange(location: cursor, length: NSMaxRange(whole) - cursor))
+    return Edit(range: whole, replacement: composed, cursor: whole.location, selectionLength: (composed as NSString).length)
   }
 
   /// `[selection](url)` for ⌘L and for pasting a URL over a selection.

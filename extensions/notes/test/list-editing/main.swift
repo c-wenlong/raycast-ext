@@ -196,6 +196,14 @@ do {
   let acrossFence = ListEditing.toggleWrap(in: fenced, selection: NSRange(location: 0, length: (fenced as NSString).length), marker: "**")
   let fencedOut = (fenced as NSString).replacingCharacters(in: acrossFence.range, with: acrossFence.replacement)
   check("a selection across lines and a fence leaves the fenced pair alone", fencedOut.contains("```\n**b**\n```"), fencedOut.debugDescription)
+  func toggledAll(_ src: String, _ marker: String) -> String {
+    let edit = ListEditing.toggleWrap(in: src, selection: NSRange(location: 0, length: (src as NSString).length), marker: marker)
+    return (src as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+  }
+  check("styled lines unwrap line by line", toggledAll("**a**\n**b**", "**") == "a\nb", toggledAll("**a**\n**b**", "**").debugDescription)
+  check("plain lines wrap line by line", toggledAll("a\nb", "**") == "**a**\n**b**", toggledAll("a\nb", "**").debugDescription)
+  check("mixed lines all end up styled", toggledAll("**a**\nb\n\nc **d** e", "**") == "**a**\n**b**\n\n**c d e**", toggledAll("**a**\nb\n\nc **d** e", "**").debugDescription)
+  check("the fenced line is skipped when wrapping across lines", toggledAll("a\n```\nb\n```\nc", "**") == "**a**\n```\nb\n```\n**c**", toggledAll("a\n```\nb\n```\nc", "**").debugDescription)
 }
 do {
   let src = "**a** and **b**"
