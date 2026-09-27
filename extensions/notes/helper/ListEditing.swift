@@ -493,26 +493,41 @@ enum ListEditing {
 
   // MARK: Formatting shortcuts
 
-  /// The styler's patterns (Markdown.bold, .italic, .strike, .code) for a
-  /// pair of one wrap marker: `**` without `__`, `_` without `*`.
-  private static let spanPatterns: [String: NSRegularExpression] = [
-    "**": try! NSRegularExpression(pattern: #"(\*\*)(?=\S)(.+?)(?<=\S)\1"#),
-    "_": try! NSRegularExpression(pattern: #"(?<![_\w])(_)(?!_)(?=\S)(.+?)(?<=\S)(?<!_)\1(?![_\w])"#),
-    "~~": try! NSRegularExpression(pattern: #"(~~)(?=\S)(.+?)(?<=\S)\1"#),
-    "`": try! NSRegularExpression(pattern: #"(`)([^`\n]+)\1"#),
-  ]
+  /// Inline pair patterns, shared with the styler (Markdown.bold, .italic,
+  /// .strike, .code) so the formatting keys see exactly the pairs that are
+  /// drawn styled.
+  static let boldPattern = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
+  // Groups 1/2 for `*`, 3/4 for `_`. Each marker is a lone character (so
+  // a bold marker is never half an italic one) and only refuses its own
+  // character next to it, so `_b_` nests inside `**...**` and `**b**`
+  // inside `*...*`.
+  static let italicPattern = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*)(?!\*)(?=\S)(.+?)(?<=\S)(?<!\*)\1(?![\*\w])|(?<![_\w])(_)(?!_)(?=\S)(.+?)(?<=\S)(?<!_)\3(?![_\w])"#)
+  static let strikePattern = try! NSRegularExpression(pattern: #"(~~)(?=\S)(.+?)(?<=\S)\1"#)
+  static let codePattern = try! NSRegularExpression(pattern: #"(`)([^`\n]+)\1"#)
 
   /// The styled `marker` pair (markers included) that holds the selection:
   /// a caret between its outer edges, or a selection that starts and ends
   /// anywhere from the opening marker to the closing one. Markers are
   /// hidden on screen, so all of those show as the caret or selection
-  /// sitting in the styled text. Pairs never span lines, and fenced code
-  /// is not styled.
+  /// sitting in the styled text. The whole pattern runs (not just the
+  /// marker's alternative) so a pair swallowed by another one, like `_y_`
+  /// in `*x _y_ z*`, is not taken for a styled pair. Pairs never span
+  /// lines, and fenced code is not styled.
   private static func wrapSpan(in text: String, around selection: NSRange, marker: String) -> NSRange? {
-    guard let pattern = spanPatterns[marker], !insideFence(text, cursor: selection.location) else { return nil }
-    let line = (text as NSString).lineRange(for: selection)
-    return pattern.matches(in: text, range: line).map(\.range).first { span in
-      selection.length == 0
+    let pattern: NSRegularExpression
+    switch marker {
+    case "**": pattern = boldPattern
+    case "_": pattern = italicPattern
+    case "~~": pattern = strikePattern
+    case "`": pattern = codePattern
+    default: return nil
+    }
+    guard !insideFence(text, cursor: selection.location) else { return nil }
+    let ns = text as NSString
+    let width = (marker as NSString).length
+    return pattern.matches(in: text, range: ns.lineRange(for: selection)).map(\.range).first { span in
+      guard ns.substring(with: NSRange(location: span.location, length: width)) == marker else { return false }
+      return selection.length == 0
         ? span.location < selection.location && selection.location < NSMaxRange(span)
         : span.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(span)
     }

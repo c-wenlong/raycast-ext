@@ -241,6 +241,10 @@ do {
   check("another marker inside bold adds its own pair", text == "a **b__old** c", text)
   let (fenced, _) = toggled("```\n**b**\n```", 6, 0, "**")
   check("bold markers in a code block are not a pair", fenced != "```\nb\n```", fenced)
+  let (swallowed, _) = toggled("*x _y_ z*", 4, 0, "_")
+  check("underscores inside a star italic are not a pair", swallowed != "*x y z*", swallowed)
+  let (underscored, _) = toggled("__a **b** c__", 6, 0, "**")
+  check("stars inside an underscore bold are not a pair", underscored != "__a b c__", underscored)
 }
 do {
   let edit = ListEditing.link(in: "see docs", selection: NSRange(location: 4, length: 4), url: "https://x.y")

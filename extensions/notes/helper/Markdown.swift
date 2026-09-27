@@ -445,14 +445,11 @@ enum Markdown {
   // rather than swallowing the rest of the note.
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?^ {0,3}(?:\1`*|\2~*)[ \t]*$"#, options: .anchorsMatchLines)
   static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
-  static let bold = try! NSRegularExpression(pattern: #"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
-  // Groups 1/2 for `*`, 3/4 for `_`. Each marker is a lone character (so
-  // a bold marker is never half an italic one) and only refuses its own
-  // character next to it, so `_b_` nests inside `**...**` and `**b**`
-  // inside `*...*`.
-  static let italic = try! NSRegularExpression(pattern: #"(?<![\*\w])(\*)(?!\*)(?=\S)(.+?)(?<=\S)(?<!\*)\1(?![\*\w])|(?<![_\w])(_)(?!_)(?=\S)(.+?)(?<=\S)(?<!_)\3(?![_\w])"#)
-  static let strike = try! NSRegularExpression(pattern: #"(~~)(?=\S)(.+?)(?<=\S)\1"#)
-  static let code = try! NSRegularExpression(pattern: #"(`)([^`\n]+)\1"#)
+  // Shared with the formatting keys (ListEditing.toggleWrap).
+  static let bold = ListEditing.boldPattern
+  static let italic = ListEditing.italicPattern
+  static let strike = ListEditing.strikePattern
+  static let code = ListEditing.codePattern
   static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
   static let bareURL = try! NSRegularExpression(pattern: #"(?<![\(\w])https?://[^\s<>\)\]]+"#)
 
