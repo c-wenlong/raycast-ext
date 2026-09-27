@@ -215,8 +215,8 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     }
   }
 
-  /// Draws the code cards behind `rect` (text view coordinates), reaching
-  /// `Markdown.codeCardOutset` into the inset margin. NoteTextView calls it
+  /// Draws the code cards behind `rect` (text view coordinates), spanning
+  /// the text column like a callout box. NoteTextView calls it
   /// from `drawBackground(in:)`, which (unlike this class's own background
   /// drawing) is not clipped to the text container, and which runs before
   /// the selection and the text are drawn.
@@ -249,8 +249,8 @@ final class TaskBoxLayoutManager: NSLayoutManager {
   /// The card behind the code block spanning `characters` (opening fence
   /// line through closing fence line), in text container coordinates; add
   /// the text view's `textContainerOrigin` for view coordinates. Top is the
-  /// top of the opening line fragment, sides are the container edges pushed
-  /// out by `Markdown.codeCardOutset`, bottom is the closing line's fixed
+  /// top of the opening line fragment, sides are the text column's edges
+  /// (the container less its line fragment padding), bottom is the closing line's fixed
   /// height (or the last line of an unclosed block).
   func codeCardRect(forCharacterRange characters: NSRange) -> NSRect? {
     guard let storage = textStorage, characters.length > 0, NSMaxRange(characters) <= storage.length else { return nil }
@@ -278,10 +278,10 @@ final class TaskBoxLayoutManager: NSLayoutManager {
         bottom = max(bottom, extraLineFragmentRect.maxY)
       }
     }
-    let outset = Markdown.codeCardOutset
+    let edge = container.lineFragmentPadding
     return NSRect(
-      x: -outset, y: first.minY,
-      width: container.size.width + outset * 2, height: max(0, bottom - first.minY))
+      x: edge, y: first.minY,
+      width: container.size.width - edge * 2, height: max(0, bottom - first.minY))
   }
 
   /// A filled accent circle centred on the (clear) list marker, at the
@@ -387,9 +387,11 @@ enum Markdown {
   /// manager); `calloutPlaceholder` marks one with no text.
   static let calloutBox = NSAttributedString.Key("calloutBox")
   static let calloutPlaceholder = NSAttributedString.Key("calloutPlaceholder")
-  /// Space between a callout's text and its box, on every side, and the
-  /// air kept above and below the box.
-  static var calloutPad: CGFloat { 14 * zoom }
+  /// Space between a boxed block's text and its box (callouts and code
+  /// blocks), on every side. Boxes span the text column edge to edge, so
+  /// every block lines up with the text around it.
+  static var blockPad: CGFloat { 14 * zoom }
+  static var calloutPad: CGFloat { blockPad }
   static var calloutGap: CGFloat { 10 * zoom }
   static let calloutRadius: CGFloat = 10
   static let calloutBorder = NSColor(name: nil) { appearance in
@@ -419,8 +421,6 @@ enum Markdown {
   static var codeHeaderHeight: CGFloat { (34 * max(zoom, 1)).rounded() }
   /// Height of the (hidden) closing fence line: the card's bottom padding.
   static var codeFooterHeight: CGFloat { (18 * zoom).rounded() }
-  /// How far the card reaches past the text container on each side.
-  static let codeCardOutset: CGFloat = 12
   static let codeCardRadius: CGFloat = 10
   /// A shade lighter than the editor in dark mode, darker in light mode.
   static let codeCardColor = NSColor(name: nil) { appearance in
@@ -570,6 +570,10 @@ enum Markdown {
       codeBody.lineHeightMultiple = codeLineHeight
       codeBody.defaultTabInterval = monoAdvance * 4
       codeBody.tabStops = []
+      // The code sits `blockPad` in from the card's edges, like a callout.
+      codeBody.firstLineHeadIndent = blockPad
+      codeBody.headIndent = blockPad
+      codeBody.tailIndent = -blockPad
       let header = NSMutableParagraphStyle()
       header.minimumLineHeight = codeHeaderHeight
       header.maximumLineHeight = codeHeaderHeight

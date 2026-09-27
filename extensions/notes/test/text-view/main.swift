@@ -328,6 +328,34 @@ check("a bare > is an empty quote", tv.textStorage!.attribute(Markdown.quotePlac
 check("a bare >> is an empty callout", tv.textStorage!.attribute(Markdown.calloutPlaceholder, at: 18, effectiveRange: nil) != nil)
 check("slash finds the callout", SlashMenu.matches("call").map(\.id) == ["callout"] && SlashMenu.matches("box").map(\.id) == ["callout"])
 
+// 14c. boxed blocks share one padding and line up with the text column
+load("text\n```\ncode\n```\n>> box")
+let cardLM = tv.layoutManager as! TaskBoxLayoutManager
+let blocks = Markdown.codeBlocks(in: tv.string)
+let card = cardLM.codeCardRect(forCharacterRange: blocks[0].range)!
+let edge = tv.textContainer!.lineFragmentPadding
+check("the code card starts at the text column's left edge", abs(card.minX - edge) < 0.5, "\(card)")
+check("the code card ends at the text column's right edge", abs(card.maxX - (tv.textContainer!.size.width - edge)) < 0.5, "\(card)")
+let codeStyle = tv.textStorage!.attribute(.paragraphStyle, at: 9, effectiveRange: nil) as! NSParagraphStyle
+let boxStyle = tv.textStorage!.attribute(.paragraphStyle, at: 21, effectiveRange: nil) as! NSParagraphStyle
+check("code and callout text share the block padding", codeStyle.firstLineHeadIndent == Markdown.blockPad && codeStyle.headIndent == Markdown.blockPad && codeStyle.tailIndent == -Markdown.blockPad && boxStyle.headIndent == Markdown.blockPad)
+// The language and copy controls stay inside the card at every width.
+let overlay = CodeBlockOverlay(textView: tv)
+tv.textContainer!.widthTracksTextView = true  // as in the panel: the column follows the view
+var cardWidths: [CGFloat] = []
+for width in [420, 560, 900] as [CGFloat] {
+  tv.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+  tv.layoutManager?.ensureLayout(for: tv.textContainer!)
+  overlay.update()
+  cardWidths.append(cardLM.codeCardRect(forCharacterRange: Markdown.codeBlocks(in: tv.string)[0].range)!.width)
+  let cardNow = cardLM.codeCardRect(forCharacterRange: Markdown.codeBlocks(in: tv.string)[0].range)!
+    .offsetBy(dx: tv.textContainerOrigin.x, dy: tv.textContainerOrigin.y)
+  let frames = overlay.visibleControlFrames
+  check("code controls sit inside the card at \(Int(width))pt", frames.count == 1 && frames[0].maxX <= cardNow.maxX && frames[0].minX >= cardNow.minX && frames[0].minY >= cardNow.minY, "\(frames) in \(cardNow)")
+}
+check("each width lays the card out afresh", cardWidths[0] < cardWidths[1] && cardWidths[1] < cardWidths[2], "\(cardWidths)")
+tv.frame = NSRect(x: 0, y: 0, width: 420, height: 400)
+
 // 15. slash menu
 check("slash entries match by title word prefix", SlashMenu.matches("head").map(\.id) == ["h1", "h2", "h3", "h4"])
 check("slash entries match aliases", SlashMenu.matches("todo").map(\.id) == ["task"])

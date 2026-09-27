@@ -208,9 +208,6 @@ final class CodeBlockOverlay: NSObject {
   /// The block whose picker is (or was last) open.
   private var pickerLocation: Int?
 
-  /// How far the card drawn behind a block reaches past the text
-  /// container on each side (drawn by the Markdown styling).
-  static let cardOutset: CGFloat = 12
   /// Gap between the controls and the card's right edge.
   static let edgeMargin: CGFloat = 6
   /// Gap between the card top and the controls.
@@ -248,12 +245,17 @@ final class CodeBlockOverlay: NSObject {
     picker.hide(restoreFocus: false)
   }
 
+  /// Frames of the visible control strips, in text view coordinates
+  /// (for the view tests).
+  var visibleControlFrames: [NSRect] { controls.filter { !$0.isHidden }.map(\.frame) }
+
   func update() {
     guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer
     else { return }
     let blocks = Markdown.codeBlocks(in: textView.string)
     let origin = textView.textContainerOrigin
-    let right = origin.x + container.size.width + Self.cardOutset - Self.edgeMargin
+    // The card spans the text column (the container less its padding).
+    let right = origin.x + container.size.width - container.lineFragmentPadding - Self.edgeMargin
 
     var used = 0
     for block in blocks {
@@ -280,7 +282,7 @@ final class CodeBlockOverlay: NSObject {
       let top = line.minY + max(Self.topMargin, (line.height - height) / 2)
       // Never wider than the card: a long fence word truncates instead of
       // pushing the controls past the visible edge.
-      let cardLeft = origin.x - Self.cardOutset + Self.edgeMargin
+      let cardLeft = origin.x + container.lineFragmentPadding + Self.edgeMargin
       let maxWidth = max(CodeBlockControls.copyWidth + CodeBlockControls.spacing + 40, right - cardLeft)
       view.maxLanguageWidth = maxWidth - CodeBlockControls.copyWidth - CodeBlockControls.spacing
       let width = min(view.preferredWidth, maxWidth)
