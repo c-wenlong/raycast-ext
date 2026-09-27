@@ -602,19 +602,30 @@ final class NoteTextView: NSTextView {
     let typed = NSRange(location: slash, length: max(0, caret - slash))
     guard NSMaxRange(typed) <= storage.length else { return }
     // The "/" began its own typing group (insertText breaks coalescing
-    // just before it), so one undo takes the whole "/query" back out and
-    // leaves the text as it was before the slash. The format then goes on
-    // as the only step above that: one ⌘Z after a pick lands before the
-    // slash, ⇧⌘Z brings the pick back.
+    // just before it), so undoing takes the "/query" back out and leaves
+    // the text as it was before the slash: usually one group, a few when
+    // the query was edited (a deletion coalesces apart from typing). The
+    // format then goes on as the only step above that: one ⌘Z after a
+    // pick lands before the slash, ⇧⌘Z brings the pick back.
     let withoutQuery = (string as NSString).replacingCharacters(in: typed, with: "")
     if let undoManager, undoManager.canUndo {
-      undoManager.undo()
+      var steps = 0
+      while string != withoutQuery, undoManager.canUndo, steps < 8,
+        (string as NSString).length > (withoutQuery as NSString).length
+      {
+        undoManager.undo()
+        steps += 1
+      }
       if string == withoutQuery {
         setSelectedRange(NSRange(location: slash, length: 0))
         apply(edit(for: entry.format))
         return
       }
-      undoManager.redo()  // not the group we expected; take the plain route
+      // Not the groups we expected: put them back and take the plain route.
+      while steps > 0, undoManager.canRedo {
+        undoManager.redo()
+        steps -= 1
+      }
     }
     breakUndoCoalescing()
     undoManager?.beginUndoGrouping()
