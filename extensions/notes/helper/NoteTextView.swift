@@ -544,8 +544,12 @@ final class NoteTextView: NSTextView {
 
   /// Keeps the menu in step with the text: filters on what follows the
   /// "/", closes when the caret leaves it or nothing matches.
+  /// Set while Backspace edits the query, so its transient selection
+  /// does not close the menu.
+  private var slashEditing = false
+
   private func syncSlashMenu(caretMoved: Bool = false) {
-    guard let slash = slashStart else { return }
+    guard let slash = slashStart, !slashEditing else { return }
     let ns = string as NSString
     let caret = selectedRange().location
     // The query is everything typed after the "/"; a caret that moves
@@ -701,6 +705,15 @@ final class NoteTextView: NSTextView {
 
   override func deleteBackward(_ sender: Any?) {
     let selection = selectedRange()
+    // Backspace inside the slash query: the text view selects the
+    // character first, which would read as the caret leaving the query.
+    if slashMenuIsOpen, selection.length == 0, let slash = slashStart, selection.location > slash + 1 {
+      slashEditing = true
+      super.deleteBackward(sender)
+      slashEditing = false
+      syncSlashMenu()
+      return
+    }
     if selection.length == 0, !hasMarkedText() {
       if deleteEmptyCodeBlock(at: selection.location) { return }
       if let block = codeBlock(containing: selection.location), selection.location == block.body.location {
