@@ -84,7 +84,7 @@ enum Rules {
       matches = matches.filter { abs($0.start.timeIntervalSince(requestedStart)) < 1 }
     }
     guard !matches.isEmpty else {
-      return .failure(FocusError("event \(eventId) is not on today's calendar"))
+      return .failure(FocusError("event \(eventId) is not on today's calendar in a startable calendar"))
     }
     if let pick = matches.filter({ isStartable($0, now: now) }).min(by: { $0.start < $1.start }) {
       return .success(pick)

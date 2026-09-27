@@ -106,14 +106,15 @@ final class EventKitBackend: CalendarBackend {
     return calendar.allowsContentModifications ? .writable : .readOnly
   }
 
-  func findEvent(marker: String, in calendarId: String, span: DateInterval) throws -> String? {
+  func loggedEvents(in calendarId: String, span: DateInterval) throws -> [LoggedEvent] {
     guard let calendar = store.calendar(withIdentifier: calendarId) else {
       throw FocusError("calendar \(calendarId) disappeared")
     }
     let predicate = store.predicateForEvents(withStart: span.start, end: span.end, calendars: [calendar])
-    return store.events(matching: predicate)
-      .first { LogText.notes($0.notes, containMarker: marker) }?
-      .eventIdentifier
+    return store.events(matching: predicate).compactMap { event in
+      guard let id = event.eventIdentifier, let start = event.startDate, let end = event.endDate else { return nil }
+      return LoggedEvent(id: id, start: start, end: end, notes: event.notes)
+    }
   }
 
   func createEvent(_ draft: LogEventDraft, in calendarId: String) throws -> String {

@@ -52,7 +52,7 @@ A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sour
 Details the client should know:
 
 - `id` in `today` is EventKit's `eventIdentifier`, which every occurrence of a recurring event shares. Key list rows on `id` plus `start`, and pass `start` back in `start` to name the occurrence; without it the earliest startable occurrence today is used.
-- `start` refuses: an event not on today's calendar, an all-day event, an ended event, one with 60 s or less left, and any start while a session is open. That last error also carries `session` (the open one).
+- `start` refuses: an event not on today's calendar in one of `startableCalendars`, an all-day event, an ended event, one with 60 s or less left, and any start while a session is open. That last error also carries `session` (the open one).
 - Calendar commands (`calendars`, `today`, `start`, `movePending`) fail without full access; the reply carries `calendarAccess` ("notDetermined", "denied", "restricted", "writeOnly") and the error says what to do. `startAdhoc`, `finish`, `status` and `pending` work without access; the log event waits.
 - `movePending` refuses a missing or read-only calendar, and stores `"<title> (<account>)"` as the name.
 - `finish` stores `logCalendarId` and `logCalendarName` from config at that moment; when config has an id but no name, the name is looked up in EventKit.
@@ -79,12 +79,13 @@ Every field is squashed onto one line, so only the last line can be a marker.
 At launch, when access is granted, on every request after a grant made in System
 Settings, and every 30 seconds (with the running session's heartbeat), each
 finished, non-abandoned row with no `log_event_id` goes through `Recovery.resolve`:
-a missing calendar keeps waiting; an event in that calendar within a day of the
-session whose notes carry the marker line is adopted; a failed search keeps
+a missing calendar keeps waiting; an event in that calendar whose notes carry the
+marker line and whose start and end match the session's (within a minute) is
+adopted, so a recreated `focus.db` reusing an id cannot adopt an old event; a failed search keeps
 waiting; a read-only calendar keeps waiting; otherwise the event is created.
 Rows are never re-pointed except by `movePending`.
 
 ## Build and test
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon` (ad-hoc unless `FOCUS_SIGN_IDENTITY` is set).
-- `scripts/test-helper.sh` (`npm run test-helper`): compiles every helper file except `main.swift` and `EventKitBackend.swift` with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and all commands over a fake calendar. Prints "all passed".
+- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles every helper file except `main.swift` and `EventKitBackend.swift` with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and all commands over a fake calendar. Prints "all passed".

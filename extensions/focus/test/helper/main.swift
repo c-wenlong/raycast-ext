@@ -75,13 +75,11 @@ final class FakeCalendar: CalendarBackend {
     return info.writable ? .writable : .readOnly
   }
 
-  func findEvent(marker: String, in calendarId: String, span: DateInterval) throws -> String? {
+  func loggedEvents(in calendarId: String, span: DateInterval) throws -> [LoggedEvent] {
     searches.append(span)
     if failSearch { throw Boom() }
-    return saved.first {
-      $0.calendarId == calendarId && $0.draft.end >= span.start && $0.draft.start <= span.end
-        && LogText.notes($0.draft.notes, containMarker: marker)
-    }?.id
+    return saved.filter { $0.calendarId == calendarId && $0.draft.end >= span.start && $0.draft.start <= span.end }
+      .map { LoggedEvent(id: $0.id, start: $0.draft.start, end: $0.draft.end, notes: $0.draft.notes) }
   }
 
   func createEvent(_ draft: LogEventDraft, in calendarId: String) throws -> String {
@@ -268,8 +266,8 @@ do {
   check("creates when no marked event exists", created == .created("log-1"), "\(created)")
   check("searches before creating", store.searches.count == 1)
   check(
-    "search spans a day either side",
-    store.searches.first == DateInterval(start: at(14, 0).addingTimeInterval(-86_400), end: at(14, 30).addingTimeInterval(86_400)))
+    "search spans the session plus a minute either side",
+    store.searches.first == DateInterval(start: at(13, 59), end: at(14, 31)))
 
   let again = Recovery.resolve(WaitingSession(sessionId: 1, logCalendarId: "log", draft: draft(1)), store: store)
   check("adopts the event saved before", again == .adopted("log-1"), "\(again)")
@@ -277,6 +275,19 @@ do {
 
   let other = Recovery.resolve(WaitingSession(sessionId: 2, logCalendarId: "log", draft: draft(2)), store: store)
   check("another session's marker is not adopted", other == .created("log-2"), "\(other)")
+
+  // A recreated focus.db reuses id 1 for a later session in the same window.
+  var reused = draft(1)
+  reused.start = at(14, 5)
+  reused.end = at(14, 25)
+  let collision = Recovery.resolve(WaitingSession(sessionId: 1, logCalendarId: "log", draft: reused), store: store)
+  check("a reused id with different times is not adopted", collision == .created("log-3"), "\(collision)")
+
+  let rounded = LoggedEvent(id: "r", start: at(14, 0, 30), end: at(14, 30, 30), notes: "focus-session: 7")
+  var seven = draft(7)
+  seven.notes = ""
+  check("times within a minute still match", Recovery.match([rounded], sessionId: 7, draft: seven)?.id == "r")
+  check("the marker must match too", Recovery.match([rounded], sessionId: 8, draft: seven) == nil)
 }
 
 do {
@@ -515,6 +526,9 @@ do {
   let tomorrow = send(core, "start", ["eventId": "E5"])
   check("start refuses an event that is not today", tomorrow["error"]?.stringValue?.contains("not on today's calendar") == true, tomorrow.serialized())
   check("start needs an eventId", send(core, "start")["error"] == "eventId is required")
+  fake.eventList.append(event("E6", "Other calendar", at(14, 0), at(15, 0), calendar: "personal"))
+  let excluded = send(core, "start", ["eventId": "E6"])
+  check("start refuses an event from a calendar not picked in Settings", excluded["error"]?.stringValue?.contains("startable calendar") == true, excluded.serialized())
 
   let started = send(core, "start", ["eventId": "E1"])
   let session = started["session"]

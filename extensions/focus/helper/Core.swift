@@ -184,9 +184,11 @@ final class FocusCore {
     try requireAccess()
     let now = self.now
     let day = Rules.day(containing: now)
-    let candidates = calendar.events(from: day.start, to: day.end, calendarIds: nil)
-    let event = try Rules.pickOccurrence(candidates, eventId: eventId, requestedStart: requestedStart, now: now).get()
+    // Only the calendars picked in Settings are startable (PLAN.md).
     let settings = config.load()
+    let startable = settings.startableCalendars
+    let candidates = startable.isEmpty ? [] : calendar.events(from: day.start, to: day.end, calendarIds: startable)
+    let event = try Rules.pickOccurrence(candidates, eventId: eventId, requestedStart: requestedStart, now: now).get()
     let id = try db.insertSession(
       NewSession(
         sourceEventId: event.id, calendarId: event.calendarId,
