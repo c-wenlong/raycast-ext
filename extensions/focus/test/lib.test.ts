@@ -685,17 +685,22 @@ net.createServer((socket) => {
       assert.equal(pausedText(120), "paused 2 min");
       assert.equal(pausedText(61), "paused 2 min");
       // A reply from before the deadline is read as the end sheet after it.
-      const past = { state: "paused" as const, plannedEnd: at(now, -1), endReason: null };
-      assert.deepEqual(effectiveSession(past, now), { ...past, state: "ending", endReason: "timer" });
-      assert.deepEqual(sessionActions(effectiveSession(past, now)).pause, false);
+      // Paused since before the reply: the paused time runs on to the deadline.
+      const past = { state: "paused" as const, plannedEnd: at(now, -1), endReason: null, pausedSeconds: 30 };
+      const fetched = new Date(now.getTime() - 120_000);
+      assert.deepEqual(effectiveSession(past, fetched, now), { ...past, state: "ending", endReason: "timer", pausedSeconds: 149 });
+      assert.equal(pausedSecondsNow(effectiveSession(past, fetched, now), fetched, now), 149);
+      assert.deepEqual(sessionActions(effectiveSession(past, fetched, now)).pause, false);
+      const runningPast = { state: "running" as const, plannedEnd: at(now, -1), endReason: null, pausedSeconds: 30 };
+      assert.equal(effectiveSession(runningPast, fetched, now).pausedSeconds, 30);
       const exact = { state: "running" as const, plannedEnd: at(now, 0), endReason: null };
-      assert.equal(effectiveSession(exact, now).state, "ending");
+      assert.equal(effectiveSession(exact, now, now).state, "ending");
       const ahead = { state: "running" as const, plannedEnd: at(now, 1), endReason: null };
-      assert.equal(effectiveSession(ahead, now), ahead);
+      assert.equal(effectiveSession(ahead, now, now), ahead);
       const stopped = { state: "ending" as const, plannedEnd: at(now, 600), endReason: "manual" };
-      assert.equal(effectiveSession(stopped, now), stopped);
+      assert.equal(effectiveSession(stopped, now, now), stopped);
       const unknown = { state: "running" as const, plannedEnd: null, endReason: null };
-      assert.equal(effectiveSession(unknown, now), unknown);
+      assert.equal(effectiveSession(unknown, now, now), unknown);
     },
   ],
   [

@@ -538,7 +538,7 @@ export default function FocusTodayCommand() {
       {session && config ? (
         <List.Section title="Running">
           {renderSession(
-            effectiveSession(session, now),
+            effectiveSession(session, data?.fetchedAt ?? now, now),
             config,
             data?.fetchedAt ?? now,
           )}

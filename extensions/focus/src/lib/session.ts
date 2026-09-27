@@ -7,16 +7,26 @@ import { durationText } from "./time";
 // The session as the helper has it now: a running or paused session whose
 // planned end has passed is at the end sheet (the helper checks every
 // second), even if the reply predates that. Keeps the row from offering
-// actions the helper would refuse until the next refresh.
+// actions the helper would refuse until the next refresh. A paused one
+// stayed paused until the deadline (where the helper closes the pause), so
+// its paused time runs on from `fetchedAt` to the deadline.
 export function effectiveSession<
-  T extends Pick<Session, "state" | "plannedEnd" | "endReason">,
->(session: T, now: Date): T {
+  T extends Pick<
+    Session,
+    "state" | "plannedEnd" | "endReason" | "pausedSeconds"
+  >,
+>(session: T, fetchedAt: Date, now: Date): T {
   if (session.state !== "running" && session.state !== "paused") {
     return session;
   }
   const end = session.plannedEnd ? Date.parse(session.plannedEnd) : Number.NaN;
   if (!Number.isFinite(end) || now.getTime() < end) return session;
-  return { ...session, state: "ending", endReason: "timer" };
+  const ending = { ...session, state: "ending", endReason: "timer" };
+  if (session.state === "paused") {
+    const since = Math.max(0, (end - fetchedAt.getTime()) / 1000);
+    ending.pausedSeconds = (session.pausedSeconds ?? 0) + since;
+  }
+  return ending;
 }
 
 export interface SessionActions {
