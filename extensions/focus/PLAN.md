@@ -140,7 +140,8 @@ Order and recovery, so a session is never lost and never logged twice:
    session on its own, because a calendar that vanished from EventKit (account
    removed from Calendar.app) may still hold the saved event on Google and
    come back later. The stats view shows "N sessions waiting for <calendar
-   name>" and offers one action, "Move waiting sessions to <current log
+   name>" using the `log_calendar_name` stored on the row at Finish, since
+   the calendar itself may no longer be there to ask, and offers one action, "Move waiting sessions to <current log
    calendar>", which sets their `log_calendar_id` and lets step 3 run there.
    Kai takes that step knowingly; if the old calendar returns afterwards, the
    `focus-session: <id>` line in both descriptions makes the duplicate easy to
@@ -167,6 +168,7 @@ create table sessions (
   rating integer,              -- 1 to 5
   note text,
   log_calendar_id text,        -- EKCalendar the log event was (or will be) written to, fixed at Finish
+  log_calendar_name text,      -- its title and account at Finish, for messages once the calendar is gone
   log_event_id text,           -- EKEvent identifier of the written log event
   last_heartbeat text not null
 );
