@@ -76,13 +76,43 @@ export function formatTimeHHmm(date = new Date()): string {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
+const TITLE_MAX_LENGTH = 80;
+
+/**
+ * The note's title: its first line with any words once the markdown is
+ * stripped (heading marks, list and quote markers, inline markers, link
+ * targets). Fence lines are skipped. Mirrors Titles.firstLine in
+ * helper/Titles.swift.
+ */
+export function firstLineTitle(content: string): string | undefined {
+  for (const line of content.split(/\r\n|\r|\n/)) {
+    if (/^\s*(`{3,}|~{3,})/.test(line)) {
+      continue;
+    }
+    const stripped = line
+      .replace(
+        /^\s*(?:#{1,6}\s+|>+\s*|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)*/,
+        "",
+      )
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/(\*\*|__|~~|`|(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w))/g, "")
+      .trim();
+    if (stripped) {
+      return stripped.length > TITLE_MAX_LENGTH
+        ? stripped.slice(0, TITLE_MAX_LENGTH).trim()
+        : stripped;
+    }
+  }
+  return undefined;
+}
+
 export function parseTitleFromContentOrFilename(
   filePath: string,
   content: string,
 ): string {
-  const headingMatch = content.match(/^#\s+(.+)\s*$/m);
-  if (headingMatch?.[1]) {
-    return headingMatch[1].trim();
+  const firstLine = firstLineTitle(content);
+  if (firstLine) {
+    return firstLine;
   }
 
   const filename = path.basename(filePath, ".md");

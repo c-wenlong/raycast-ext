@@ -5,7 +5,9 @@ import path from "node:path";
 import {
   appendDailyEntry,
   createNewNoteFile,
+  firstLineTitle,
   getDailyFilename,
+  parseTitleFromContentOrFilename,
   renameNoteFromTitleIfNeeded,
 } from "../src/lib/notes";
 import { getPinnedPaths, movePin, removePin, togglePin } from "../src/lib/pins";
@@ -23,6 +25,22 @@ function freshDir(): string {
 }
 
 const cases: Case[] = [
+  [
+    "the title is the first line with its markdown stripped",
+    async () => {
+      assert.equal(firstLineTitle("## Hello **world**\nmore"), "Hello world");
+      assert.equal(firstLineTitle("hello\n"), "hello");
+      assert.equal(firstLineTitle("- [ ] buy milk"), "buy milk");
+      assert.equal(firstLineTitle("1. first"), "first");
+      assert.equal(firstLineTitle("> quoted _words_"), "quoted words");
+      assert.equal(firstLineTitle("\n```\ncode\n```\nafter"), "code");
+      assert.equal(firstLineTitle("see [the manual](https://x.y)"), "see the manual");
+      assert.equal(firstLineTitle("\n\n"), undefined);
+      assert.equal(firstLineTitle("a".repeat(100))?.length, 80);
+      assert.equal(parseTitleFromContentOrFilename("/n/2026-01-01 0900 - x.md", "plain first line"), "plain first line");
+      assert.equal(parseTitleFromContentOrFilename("/n/2026-01-01 0900 - my-note.md", ""), "My Note");
+    },
+  ],
   [
     "parses tasks with any bullet, nesting and case",
     async () => {

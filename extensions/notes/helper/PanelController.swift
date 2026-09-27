@@ -505,17 +505,17 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     }
   }
 
-  /// Generated filenames follow the heading, as the Raycast extension does.
+  /// Generated filenames follow the note's first line (its title), as
+  /// the Raycast extension does.
   private func renameToMatchTitleIfNeeded() {
     guard let path = currentPath else { return }
     let filename = (path as NSString).lastPathComponent
     guard let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)),
-      let heading = headingPattern.firstMatch(in: loadedText, range: fullRange(loadedText))
+      let titleText = Titles.firstLine(of: loadedText)
     else { return }
-    let headingText = (loadedText as NSString).substring(with: heading.range(at: 1))
     let currentSlug = (filename as NSString).substring(with: match.range(at: 2))
-    let nextSlug = slugify(headingText)
-    guard !headingText.trimmingCharacters(in: .whitespaces).isEmpty, nextSlug != currentSlug else { return }
+    let nextSlug = slugify(titleText)
+    guard nextSlug != currentSlug else { return }
     let prefix = (filename as NSString).substring(with: match.range(at: 1))
     let nextPath = uniquePath(for: "\(prefix) - \(nextSlug).md", in: (path as NSString).deletingLastPathComponent)
     guard (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }

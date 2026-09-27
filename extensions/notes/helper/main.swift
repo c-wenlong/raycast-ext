@@ -158,9 +158,7 @@ func humanize(_ slug: String) -> String {
 }
 
 func title(of text: String, filename: String) -> String {
-  if let match = headingPattern.firstMatch(in: text, range: fullRange(text)) {
-    return (text as NSString).substring(with: match.range(at: 1))
-  }
+  if let first = Titles.firstLine(of: text) { return first }
   let base = (filename as NSString).deletingPathExtension
   if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)) {
     return humanize((filename as NSString).substring(with: match.range(at: 2)))
