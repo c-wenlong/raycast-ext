@@ -534,12 +534,16 @@ final class NoteTextView: NSTextView {
 
   var slashMenuIsOpen: Bool { slashStart != nil }
 
-  private func openSlashMenu(at slash: Int) {
+  /// `preText`/`preSelection` are the text and selection from just before
+  /// this "/" was inserted, captured by the caller before it edited
+  /// anything: when "/" replaced a selection, that selection's text has to
+  /// be part of the recording too, not just the "/" character itself.
+  private func openSlashMenu(at slash: Int, preText: String, preSelection: NSRange) {
     slashStart = slash
     slashEnd = slash + 1
     slashTextLength = (string as NSString).length
-    preSlashText = (string as NSString).replacingCharacters(in: NSRange(location: slash, length: 1), with: "")
-    preSlashSelection = NSRange(location: slash, length: 0)
+    preSlashText = preText
+    preSlashSelection = preSelection
     if slashMenu.superview == nil { addSubview(slashMenu, positioned: .above, relativeTo: nil) }
     slashMenu.filter("")
     positionSlashMenu()
@@ -616,13 +620,10 @@ final class NoteTextView: NSTextView {
     // Fold the typed query out of the undo history first, however many
     // separate typing groups it landed in, so the format below becomes the
     // one and only step between the current text and the state before "/".
-    if let undoManager, undoManager.canUndo, let target, let targetSelection {
-      var attempts = 0
-      while string != target, undoManager.canUndo, attempts < 64 {
-        undoManager.undo()
-        attempts += 1
-      }
-      if string == target { setSelectedRange(targetSelection) }
+    if let undoManager, undoManager.canUndo, let target, let targetSelection,
+      foldQueryOutOfHistory(undoManager, target: target)
+    {
+      setSelectedRange(targetSelection)
       undoManager.beginUndoGrouping()
       apply(edit(for: entry.format))
       undoManager.endUndoGrouping()
@@ -643,6 +644,27 @@ final class NoteTextView: NSTextView {
     }
     apply(edit(for: entry.format))
     undoManager?.endUndoGrouping()
+  }
+
+  /// Undoes repeatedly until the text matches `target`, since the query may
+  /// have landed in more than one separate typing-undo group. If a group
+  /// turns out to cover more than the query alone (typed in one unbroken
+  /// run together with text before the "/"), undoing it overshoots past
+  /// `target`: this puts the text back exactly as it was (redoing the same
+  /// number of steps) and reports failure, so picking an entry can never
+  /// discard text that came before the "/".
+  private func foldQueryOutOfHistory(_ undoManager: UndoManager, target: String) -> Bool {
+    var steps = 0
+    while string != target, undoManager.canUndo, steps < 64 {
+      undoManager.undo()
+      steps += 1
+    }
+    if string == target { return true }
+    while steps > 0, undoManager.canRedo {
+      undoManager.redo()
+      steps -= 1
+    }
+    return false
   }
 
   /// Keys the open menu takes before the text view sees them.
@@ -764,6 +786,10 @@ final class NoteTextView: NSTextView {
     if replacementRange.location == NSNotFound, selectedRange().length > 0, !hasMarkedText() {
       setSelectedRange(selectionCoveringPairs(selectedRange()))
     }
+    // Captured before the edit below, so a "/" that replaces a selection
+    // records that selection's text too, not just the "/" itself.
+    let beforeText = self.string
+    let beforeSelection = selectedRange()
     super.insertText(string, replacementRange: replacementRange)
     let typed = (string as? String) ?? (string as? NSAttributedString)?.string
     // Programmatic replacements (the task box toggle) pass a non-empty range.
@@ -776,7 +802,7 @@ final class NoteTextView: NSTextView {
       let lineStart = ns.lineRange(for: NSRange(location: before, length: 0)).location
       let previous = before > lineStart ? ns.character(at: before - 1) : 0x20
       if previous == 0x20 || previous == 0x09, !ListEditing.insideFence(self.string, cursor: before) {
-        openSlashMenu(at: before)
+        openSlashMenu(at: before, preText: beforeText, preSelection: beforeSelection)
       }
       return
     }
