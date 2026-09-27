@@ -14,5 +14,8 @@ compiled_raycast_rust
 # local notes, not code (root only; extensions/notes is the extension)
 /notes/
 
+# focus sessions database and config, not code (extensions/focus is the extension)
+/focus/
+
 # ray build output
 dist/
