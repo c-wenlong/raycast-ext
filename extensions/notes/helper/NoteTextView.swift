@@ -524,6 +524,13 @@ final class NoteTextView: NSTextView {
   private lazy var slashMenu = SlashMenu { [weak self] entry in self?.pickSlashEntry(entry) }
   /// Offset of the "/" that opened the menu, while it is open.
   private var slashStart: Int?
+  /// The text and caret from just before the "/" was typed, recorded when
+  /// the menu opens. A pick unwinds the query back to this exact state
+  /// (however many separate typing-undo groups it landed in) before
+  /// applying the format, so the two fold into one step: one ⌘Z after a
+  /// pick lands here, not on the typed "/query".
+  private var preSlashText: String?
+  private var preSlashSelection: NSRange?
 
   var slashMenuIsOpen: Bool { slashStart != nil }
 
@@ -531,6 +538,8 @@ final class NoteTextView: NSTextView {
     slashStart = slash
     slashEnd = slash + 1
     slashTextLength = (string as NSString).length
+    preSlashText = (string as NSString).replacingCharacters(in: NSRange(location: slash, length: 1), with: "")
+    preSlashSelection = NSRange(location: slash, length: 0)
     if slashMenu.superview == nil { addSubview(slashMenu, positioned: .above, relativeTo: nil) }
     slashMenu.filter("")
     positionSlashMenu()
@@ -539,6 +548,8 @@ final class NoteTextView: NSTextView {
 
   func closeSlashMenu() {
     slashStart = nil
+    preSlashText = nil
+    preSlashSelection = nil
     slashMenu.isHidden = true
   }
 
@@ -596,9 +607,31 @@ final class NoteTextView: NSTextView {
   }
 
   private func pickSlashEntry(_ entry: SlashMenu.Entry) {
-    guard let slash = slashStart, let storage = textStorage else { return }
+    guard let slash = slashStart else { return }
     let caret = selectedRange().location
+    let target = preSlashText
+    let targetSelection = preSlashSelection
     closeSlashMenu()
+
+    // Fold the typed query out of the undo history first, however many
+    // separate typing groups it landed in, so the format below becomes the
+    // one and only step between the current text and the state before "/".
+    if let undoManager, undoManager.canUndo, let target, let targetSelection {
+      var attempts = 0
+      while string != target, undoManager.canUndo, attempts < 64 {
+        undoManager.undo()
+        attempts += 1
+      }
+      if string == target { setSelectedRange(targetSelection) }
+      undoManager.beginUndoGrouping()
+      apply(edit(for: entry.format))
+      undoManager.endUndoGrouping()
+      return
+    }
+
+    // No undo history to fold into (undo disabled): remove the query and
+    // apply the format as one step, the old way.
+    guard let storage = textStorage else { return }
     let typed = NSRange(location: slash, length: max(0, caret - slash))
     guard NSMaxRange(typed) <= storage.length else { return }
     breakUndoCoalescing()
