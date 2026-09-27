@@ -135,6 +135,13 @@ Order and recovery, so a session is never lost and never logged twice:
    id was never stored); otherwise it creates the event there. Failures are
    logged and retried on the next tick, so a calendar outage delays the log
    event but cannot duplicate it.
+4. If EventKit no longer has a calendar with that `log_calendar_id` (Kai
+   deleted it or removed the account), the row is re-pointed to the current
+   log calendar and step 3 runs there. A deleted calendar takes its events
+   with it, so nothing can be duplicated. If the calendar still exists but
+   cannot be written to, the row keeps waiting on it, and the stats view shows
+   "N sessions waiting for the log calendar" with the calendar's name so the
+   problem is visible rather than silent.
 
 Duplicate calendars (the same Google calendar reachable through two accounts
 shows twice in Calendar.app) are listed with their account name in Settings so
