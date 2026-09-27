@@ -406,17 +406,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     load(copyPath)
   }
 
-  /// Moves the open note to the Trash after confirming, then shows the
-  /// newest remaining note.
+  /// Moves the open note to the Trash (no confirmation: the Trash keeps
+  /// it), then shows the newest remaining note.
   private func deleteNote() {
     guard let path = currentPath else { return }
-    let alert = NSAlert()
-    alert.messageText = "Move note to Trash?"
-    alert.informativeText = (path as NSString).lastPathComponent
-    alert.addButton(withTitle: "Move to Trash")
-    alert.addButton(withTitle: "Cancel")
-    alert.alertStyle = .warning
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
     saveNow()
     watcher?.cancel()
     watcher = nil

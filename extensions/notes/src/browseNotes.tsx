@@ -1,14 +1,12 @@
 import {
   Action,
   ActionPanel,
-  Alert,
   Clipboard,
   Color,
   Icon,
   List,
   Toast,
   closeMainWindow,
-  confirmAlert,
   showInFinder,
   showToast,
   useNavigation,
@@ -138,20 +136,8 @@ export default function BrowseNotesCommand() {
     }
   }
 
+  // No confirmation: the note goes to the Trash, where it can be restored.
   async function handleDelete(note: NoteFile) {
-    const confirmed = await confirmAlert({
-      title: "Move note to Trash?",
-      message: note.filename,
-      primaryAction: {
-        title: "Move to Trash",
-        style: Alert.ActionStyle.Destructive,
-      },
-    });
-
-    if (!confirmed) {
-      return;
-    }
-
     try {
       await moveToTrash(note.path);
       await removePin(note.path);

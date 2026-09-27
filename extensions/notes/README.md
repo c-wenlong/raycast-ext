@@ -35,7 +35,7 @@ Inside the window:
 | `⌘↩` | toggle the task on the current line, or click the `[ ]` box |
 | `⌘F` | find in note |
 | `⇧⌘C` | copy the note's markdown |
-| `⌃X` | move the note to the Trash |
+| `⌃X` | move the note to the Trash (no confirmation; restore it from the Trash) |
 | `⌘P` | jump to Browse Notes in Raycast |
 | `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (shown in a "Zoomed to 120%" bubble, remembered) |
 | `⌘M` | minimise the window |
