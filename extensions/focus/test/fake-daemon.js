@@ -16,6 +16,8 @@
 // request) or on stop; pause, resume, extend and stop refuse the states they
 // do not apply to with the helper's messages; extend from ending counts from
 // now once the deadline is behind and returns to running.
+// `blocking` and `snooze` follow the helper too, simplified: the profile's
+// own apps and hosts only (no category expansion), snoozes kept per session.
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -62,6 +64,7 @@ function createFakeDaemon(options) {
     session: null,
     nextId: 1,
     requests: [],
+    snoozes: [],
     waiting: options.seedWaiting
       ? [
           {
@@ -257,6 +260,7 @@ function createFakeDaemon(options) {
         };
         delete session.remainingSeconds;
         state.session = null;
+        state.snoozes = [];
         const config = readConfig(configPath);
         const logCalendar = CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
         if (!logCalendar) {
@@ -269,6 +273,20 @@ function createFakeDaemon(options) {
           return { ok: true, session, logEventId: null, logPending: true };
         }
         return { ok: true, session, logEventId: `log-${session.id}`, logPending: false };
+      }
+      case "blocking":
+        return { ok: true, ...blockingStatus(now) };
+      case "snooze": {
+        const target = typeof request.target === "string" ? request.target.trim() : "";
+        if (!target) return { ok: false, error: "target is required" };
+        const session = state.session;
+        if (!session || session.state === "paused") {
+          return { ok: false, error: "blocking is off: no session is running" };
+        }
+        const kind = request.kind || (/^(com|net|org|io|app|ru)\.[^.]+\./.test(target) ? "app" : "site");
+        const until = new Date(now.getTime() + snoozeSeconds() * 1000).toISOString();
+        state.snoozes.push({ kind, target, until });
+        return { ok: true, kind, target, until };
       }
       case "pending":
         return { ok: true, waiting: state.waiting };
@@ -291,6 +309,35 @@ function createFakeDaemon(options) {
       default:
         return { ok: false, error: `Unknown command: ${request.cmd}` };
     }
+  }
+
+  function snoozeSeconds() {
+    const value = readConfig(configPath).snoozeSeconds;
+    return typeof value === "number" && value > 0 ? value : 180;
+  }
+
+  function blockingStatus(now) {
+    const session = state.session;
+    const empty = { blockedApps: [], blockedHosts: [], allowedApps: [], allowedHosts: [] };
+    const base = { profileFallbackFrom: null, ...empty, snoozeSeconds: snoozeSeconds(), snoozed: [] };
+    if (!session) return { ...base, sessionId: null, active: false, profile: null, mode: null };
+    const profiles = readConfig(configPath).profiles || {};
+    const known = Object.prototype.hasOwnProperty.call(profiles, session.profile);
+    const name = known ? session.profile : "default";
+    const spec = profiles[name] || {};
+    const mode = spec.mode === "allowlist" ? "allowlist" : "blocklist";
+    const apps = Array.isArray(spec.apps) ? [...spec.apps].sort() : [];
+    const hosts = Array.isArray(spec.hosts) ? [...spec.hosts].sort() : [];
+    return {
+      ...base,
+      sessionId: session.id,
+      active: session.state === "running" || session.state === "ending",
+      profile: name,
+      profileFallbackFrom: known ? null : session.profile,
+      mode,
+      ...(mode === "allowlist" ? { allowedApps: apps, allowedHosts: hosts } : { blockedApps: apps, blockedHosts: hosts }),
+      snoozed: state.snoozes.filter((snooze) => Date.parse(snooze.until) > now.getTime()),
+    };
   }
 
   // PLAN: starting while a session is open sends that one to the end sheet.

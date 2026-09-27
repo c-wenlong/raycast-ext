@@ -363,6 +363,12 @@ do {
       "snoozeSeconds", "raycastDeeplink",
     ], "\(written.keys.sorted())")
   check("created config has explicit nulls", written["logCalendarId"] == .null && written["logCalendarName"] == .null)
+  check(
+    "created config spells out the default profile",
+    written["profiles"]?["default"]?["mode"] == "blocklist"
+      && written["profiles"]?["default"]?["categories"] == ["social", "messaging", "gaming", "entertainment", "news", "shopping"],
+    written["profiles"]?.serialized() ?? "")
+  check("the written default reads back the same", FocusConfig(json: .object(written)) == FocusConfig())
 
   let custom = """
     {"startableCalendars": ["a", 5, "b", ""], "logCalendarId": "log", "logCalendarName": "Log (iCloud)",
@@ -375,7 +381,8 @@ do {
   check("config reads the log calendar", loaded.logCalendarId == "log" && loaded.logCalendarName == "Log (iCloud)")
   check("config reads calendar profiles", loaded.calendarProfiles == ["a": "deep"])
   check("profile falls back to default", loaded.profile(for: "a") == "deep" && loaded.profile(for: "b") == "default")
-  check("profiles are kept verbatim", loaded.profiles["deep"]?["categories"] == ["social"])
+  check("profiles are read", loaded.profiles["deep"]?.categories == ["social"] && loaded.profiles["deep"]?.mode == "blocklist")
+  check("the built-in default stays when config has none", loaded.profiles["default"] == .builtInDefault)
   check("a mistyped key falls back to its default", loaded.snoozeSeconds == 180)
   check("missing keys keep defaults", loaded.browsers == FocusConfig().browsers)
   check("unknown keys are ignored", loaded.raycastDeeplink)
@@ -779,7 +786,7 @@ do {
   ]
 
   let ping = send(core, "ping")
-  check("ping", ping["ok"] == true && ping["version"] == "0.2.0" && ping["pid"]?.intValue != nil && ping["calendarAccess"] == "fullAccess", ping.serialized())
+  check("ping", ping["ok"] == true && ping["version"] == "0.3.0" && ping["pid"]?.intValue != nil && ping["calendarAccess"] == "fullAccess", ping.serialized())
 
   let calendars = send(core, "calendars")["calendars"]?.arrayValue ?? []
   check("calendars lists every calendar with its account", calendars.count == 3 && calendars.contains { $0["title"] == "Work" && $0["account"] == "Google" && $0["color"] == "#FF0000" && $0["writable"] == true })
@@ -1182,6 +1189,381 @@ do {
   _ = boundary.send("startAdhoc", ["goal": "Boundary", "durationSeconds": 3600, "calendarId": "work"])
   let stale = boundary.relaunch(at: at(9, 31, 31))
   check("91 s without a heartbeat is abandoned", stale.send("status")["session"] == .null && (try! stale.db.session(id: 1))?.endReason == "abandoned")
+}
+
+// MARK: - Blocking: matching
+
+do {
+  let normalized: [(String, String?)] = [
+    ("YouTube.com", "youtube.com"), ("https://www.youtube.com/watch?v=1", "youtube.com"),
+    ("m.youtube.com:443", "m.youtube.com"), ("http://user:pw@Host.com:80/x#y", "host.com"), ("[::1]:8080", "[::1]"),
+    ("::1", "[::1]"), ("example.com.", "example.com"), ("www.example.com", "example.com"),
+    ("wwwexample.com", "wwwexample.com"), ("  ", nil), ("https://", nil), ("127.0.0.1:5000", "127.0.0.1"),
+  ]
+  for (raw, expected) in normalized {
+    check("normalize \(raw)", Matching.normalizeHost(raw) == expected, "\(String(describing: Matching.normalizeHost(raw)))")
+  }
+  check("a subdomain matches its suffix", Matching.host("m.youtube.com", matches: "youtube.com"))
+  check("the suffix matches itself", Matching.host("youtube.com", matches: "youtube.com"))
+  check("suffixes match on label boundaries only", !Matching.host("notyoutube.com", matches: "youtube.com"))
+  check("a lookalike parent does not match", !Matching.host("youtube.com.evil.net", matches: "youtube.com"))
+  check("a parent does not match a longer suffix", !Matching.host("youtube.com", matches: "m.youtube.com"))
+
+  let block = BlockRules(
+    profile: BlockProfile(name: "default", mode: "blocklist", apps: ["com.apple.Music", "com.raycast.macos"], hosts: ["youtube.com", "WWW.X.com"]),
+    browsers: ["com.google.Chrome"])
+  check("blocklist: a listed host", block.isHostBlocked("youtube.com"))
+  check("blocklist: its subdomain", block.isHostBlocked("m.youtube.com"))
+  check("blocklist: case, www and port", block.isHostBlocked("WWW.YOUTUBE.COM:443"))
+  check("blocklist: a full URL", block.isHostBlocked("https://youtube.com/watch"))
+  check("blocklist: a listed host is normalized too", block.isHostBlocked("x.com"))
+  check("blocklist: a lookalike is not blocked", !block.isHostBlocked("notyoutube.com"))
+  check("blocklist: other hosts pass", !block.isHostBlocked("github.com"))
+  check("blocklist: a listed app, any case", block.isAppBlocked("com.apple.music") && block.isAppBlocked("com.apple.Music"))
+  check("blocklist: other apps pass", !block.isAppBlocked("com.apple.Safari") && !block.isAppBlocked(nil) && !block.isAppBlocked(""))
+  check("blocklist: the browsers are not blocked unless listed", !block.isAppBlocked("com.google.Chrome"))
+  check("always allowed beats a listing", !block.isAppBlocked("com.raycast.macos"))
+
+  let allow = BlockRules(
+    profile: BlockProfile(name: "deep", mode: "allowlist", apps: ["com.microsoft.VSCode"], hosts: ["github.com"]),
+    browsers: ["com.google.Chrome", "company.thebrowser.dia"])
+  check("allowlist: a listed app passes", !allow.isAppBlocked("com.microsoft.VSCode"))
+  check("allowlist: an unlisted app is blocked", allow.isAppBlocked("com.apple.Safari") && allow.isAppBlocked("com.apple.Music"))
+  check("allowlist: the watched browsers pass as apps", !allow.isAppBlocked("com.google.Chrome") && !allow.isAppBlocked("company.thebrowser.dia"))
+  for id in [
+    "com.raycast.macos", "com.apple.finder", "com.apple.systempreferences", "com.apple.loginwindow", "com.apple.Spotlight",
+    "com.apple.controlcenter", "com.apple.notificationcenterui", "com.c-wenlong.focus-daemon", "com.apple.SecurityAgent",
+  ] {
+    check("allowlist: \(id) is always allowed", !allow.isAppBlocked(id))
+  }
+  check("allowlist: an app without a bundle id passes", !allow.isAppBlocked(nil))
+  check("allowlist: a listed host and its subdomains pass", !allow.isHostBlocked("github.com") && !allow.isHostBlocked("gist.github.com"))
+  check("allowlist: everything else is blocked", allow.isHostBlocked("youtube.com") && allow.isHostBlocked("example.org"))
+  check("allowlist: a lookalike is blocked", allow.isHostBlocked("notgithub.com"))
+  for host in ["localhost", "127.0.0.1", "[::1]", "127.0.0.1:52811", "http://localhost:3000/x", "::1"] {
+    check("\(host) is never blocked", !allow.isHostBlocked(host) && !block.isHostBlocked(host))
+  }
+  check("snooze label 180 s", Matching.snoozeLabel(seconds: 180) == "Snooze for 3 minutes")
+  check("snooze label 60 s", Matching.snoozeLabel(seconds: 60) == "Snooze for 1 minute")
+  check("snooze label 45 s", Matching.snoozeLabel(seconds: 45) == "Snooze for 45 seconds")
+  check("snooze label 1 s", Matching.snoozeLabel(seconds: 1) == "Snooze for 1 second")
+  check("snooze label 150 s", Matching.snoozeLabel(seconds: 150) == "Snooze for 2 minutes 30 seconds", Matching.snoozeLabel(seconds: 150))
+}
+
+// MARK: - Blocking: categories and profiles
+
+do {
+  check("six categories in PLAN's order", Categories.all.map(\.id) == ["social", "messaging", "gaming", "entertainment", "news", "shopping"])
+  for category in Categories.all {
+    check("\(category.id) hosts are normalized", category.hosts.allSatisfy { Matching.normalizeHost($0) == $0 }, "\(category.hosts)")
+    check("\(category.id) has something to block", !(category.apps.isEmpty && category.hosts.isEmpty))
+  }
+  let builtIn = ProfileSpec.builtInDefault.blockProfile(named: "default")
+  check("the built-in default is a blocklist of every category", builtIn.mode == "blocklist" && ProfileSpec.builtInDefault.categories.count == 6)
+  for host in ["instagram.com", "x.com", "reddit.com", "youtube.com", "netflix.com", "news.ycombinator.com", "amazon.sg", "chess.com", "linkedin.com"] {
+    check("the default blocks \(host)", builtIn.hosts.contains(host))
+  }
+  for app in ["net.whatsapp.WhatsApp", "ru.keepcoder.Telegram", "com.hnc.Discord", "com.apple.MobileSMS", "com.tinyspeck.slackmacgap", "com.valvesoftware.steam", "com.apple.TV"] {
+    check("the default blocks \(app)", builtIn.apps.contains(app))
+  }
+  let union = ProfileSpec(mode: "blocklist", categories: ["social", "news"], apps: ["com.example.App"], hosts: ["example.com"])
+    .blockProfile(named: "mix")
+  check(
+    "a profile is the union of its categories and its own lists",
+    union.hosts == Set(Categories.social.hosts + Categories.news.hosts + ["example.com"])
+      && union.apps == Set(Categories.news.apps + ["com.example.App"]) && union.name == "mix", "\(union)")
+
+  let text = """
+    {"profiles": {
+      "default": {"mode": "blocklist", "categories": ["social", "Gaming", "bogus"], "apps": ["com.apple.Calculator", 4, ""], "hosts": ["https://www.Example.com/path", "  "]},
+      "deep": {"mode": "allowlist", "apps": ["com.microsoft.VSCode"], "hosts": ["github.com"], "future": true},
+      "odd": {"mode": "strict"},
+      "broken": 5,
+      "  ": {}
+    }, "calendarProfiles": {"work": "deep", "home": "nope"}}
+    """
+  let config = FocusConfig(json: try! JSONValue.parse(text))
+  let own = config.profiles["default"]
+  check("config's own default replaces the built-in one", own?.categories == ["social", "gaming"] && own?.apps == ["com.apple.Calculator"], "\(String(describing: own))")
+  check("profile hosts are normalized", own?.hosts == ["example.com"], "\(String(describing: own?.hosts))")
+  check("an allowlist profile reads", config.profiles["deep"] == ProfileSpec(mode: "allowlist", apps: ["com.microsoft.VSCode"], hosts: ["github.com"]))
+  check("an unknown mode falls back to blocklist", config.profiles["odd"]?.mode == "blocklist")
+  check("a malformed profile is dropped", config.profiles["broken"] == nil && config.profiles.count == 3, "\(config.profiles.keys.sorted())")
+  check(
+    "profile problems are reported", config.profileProblems.contains { $0.contains("unknown category \"bogus\"") }
+      && config.profileProblems.contains { $0.contains("\"broken\": is not an object") }
+      && config.profileProblems.contains { $0.contains("\"odd\"") }, "\(config.profileProblems)")
+  let deep = config.resolveProfile(named: config.profile(for: "work"))
+  check("a calendar's profile resolves", deep.profile.name == "deep" && deep.profile.mode == "allowlist" && deep.fallbackFrom == nil)
+  let unknown = config.resolveProfile(named: config.profile(for: "home"))
+  check("an unknown profile name falls back to default", unknown.profile.name == "default" && unknown.fallbackFrom == "nope")
+  check("the fallback is config's own default", unknown.profile.apps.contains("com.apple.Calculator") && unknown.profile.hosts.contains("example.com"))
+  let plain = FocusConfig().resolveProfile(named: "default")
+  check("no profiles in config: the built-in default", plain.profile == builtIn && plain.fallbackFrom == nil)
+  let notObject = FocusConfig(json: ["profiles": ["default"]])
+  check("profiles that is not an object: the built-in default", notObject.profiles == ["default": .builtInDefault] && notObject.profileProblems.count == 1)
+  let badDefault = FocusConfig(json: try! JSONValue.parse(#"{"profiles": {"default": "all"}}"#))
+  check("a malformed default keeps the built-in one", badDefault.profiles["default"] == .builtInDefault)
+  check("an empty profiles object keeps the built-in default", FocusConfig(json: ["profiles": [:]]).profiles == FocusConfig().profiles)
+  let mistyped = FocusConfig(json: try! JSONValue.parse(#"{"profiles": {"default": {"categories": "social"}, "work": {"apps": "com.apple.Music"}}}"#))
+  check("a default with a mistyped list keeps the built-in one", mistyped.profiles["default"] == .builtInDefault)
+  check("another profile with a mistyped list is dropped", mistyped.profiles["work"] == nil)
+  check("mistyped lists are reported", mistyped.profileProblems.contains { $0.contains("\"default\": categories is not a list") } && mistyped.profileProblems.contains { $0.contains("\"work\": apps is not a list") }, "\(mistyped.profileProblems)")
+}
+
+// MARK: - Blocking: the engine
+
+final class FakeWorkspace: AppWorkspace {
+  weak var engine: BlockEngine?
+  var front: RunningApp?
+  var calls: [String] = []
+  func checkFrontmost() {
+    calls.append("check")
+    if let front { engine?.appCameForward(front) }
+  }
+  func block(_ app: RunningApp, snoozeSeconds: Int) { calls.append("block \(app.bundleId ?? "?") \(snoozeSeconds)") }
+  func unblock(bundleId: String, activate: Bool) { calls.append("unblock \(bundleId)\(activate ? " activate" : "")") }
+  func closeBlockWindow() { calls.append("close") }
+}
+
+final class FakeSites: SiteBlocker {
+  var calls: [String] = []
+  weak var policy: BlockPolicy?
+  func start(policy: BlockPolicy) {
+    calls.append("start")
+    self.policy = policy
+  }
+  func stop() { calls.append("stop") }
+  func pollNow() { calls.append("poll") }
+}
+
+func blockView(_ id: Int, _ state: String) -> SessionView {
+  SessionView(
+    id: id, goal: "Goal \(id)", state: state, startedAt: at(10, 0), plannedEnd: at(11, 0), remainingSeconds: 60,
+    pausedSeconds: 0, calendarTitle: "Work", extendOptions: [])
+}
+
+do {
+  let clock = Clock(at(10, 0))
+  var configJSON = #"{"snoozeSeconds": 120, "browsers": ["com.google.Chrome"], "profiles": {"default": {"categories": ["entertainment"], "apps": ["com.apple.Music"], "hosts": ["example.com"]}, "deep": {"mode": "allowlist", "apps": ["com.microsoft.VSCode"], "hosts": ["github.com"]}}}"#
+  var loads = 0
+  var logs: [String] = []
+  var recorded: [(Int, BlockedAttempt)] = []
+  var scheduled: [(TimeInterval, () -> Void)] = []
+  let engine = BlockEngine(
+    loadConfig: {
+      loads += 1
+      return FocusConfig(json: try! JSONValue.parse(configJSON))
+    }, log: { logs.append($0) }, clock: { clock.now }, selfPid: 999)
+  engine.schedule = { scheduled.append(($0, $1)) }
+  engine.recorder = { recorded.append(($0, $1)) }
+  let workspace = FakeWorkspace()
+  workspace.engine = engine
+  let sites = FakeSites()
+  engine.workspace = workspace
+  engine.siteBlocker = sites
+  let music = RunningApp(pid: 42, bundleId: "com.apple.Music", name: "Music")
+
+  check("idle: off", !engine.isOn && engine.token == "" && engine.sessionView == nil && !engine.isBlocked(host: "youtube.com"))
+  check("idle: wiring does nothing", workspace.calls.isEmpty && sites.calls.isEmpty)
+  engine.sessionChanged(nil, profileName: "default")
+  check("idle: no config read, no effects", loads == 0 && sites.calls.isEmpty)
+  check("idle: snooze refused", !engine.snooze(host: "youtube.com", token: ""))
+  check("idle: an app is never blocked", !engine.appCameForward(music))
+
+  workspace.front = music
+  engine.sessionChanged(blockView(1, "running"), profileName: "default")
+  check("running: blocking on", engine.isOn && engine.sessionView == blockView(1, "running"))
+  check("running: frontmost checked, sites started then polled", workspace.calls.prefix(1) == ["check"] && sites.calls == ["start", "poll"], "\(workspace.calls) \(sites.calls)")
+  check("running: the site side gets the engine as policy", sites.policy === engine)
+  check("running: the frontmost blocked app is blocked", workspace.calls.contains("block com.apple.Music 120"), "\(workspace.calls)")
+  check("running: the attempt is recorded", recorded.count == 1 && recorded[0].0 == 1 && recorded[0].1 == BlockedAttempt(at: at(10, 0), kind: "app", target: "com.apple.Music", outcome: "blocked"))
+  let token = engine.token
+  check("running: a 32-byte hex token", token.count == 64 && token.allSatisfy { $0.isHexDigit }, token)
+  check("running: config settings reach the policy", engine.snoozeSeconds == 120 && engine.browsers == ["com.google.Chrome"])
+  check("running: profile hosts and categories", engine.isBlocked(host: "m.youtube.com") && engine.isBlocked(host: "example.com") && !engine.isBlocked(host: "github.com"))
+  check("running: never loopback", !engine.isBlocked(host: "127.0.0.1"))
+  check("running: an allowed app passes", !engine.appCameForward(RunningApp(pid: 43, bundleId: "com.apple.Safari", name: "Safari")))
+  check("running: the daemon's own pid passes", !engine.appCameForward(RunningApp(pid: 999, bundleId: "com.apple.Music", name: "Music")))
+  check("running: an app without a bundle id passes", !engine.appCameForward(RunningApp(pid: 44, bundleId: nil, name: "Tool")))
+  let loadsBefore = loads
+  clock.now = at(10, 0, 1)
+  engine.sessionChanged(blockView(1, "running"), profileName: "default")
+  check("a tick does not re-read config or repeat effects", loads == loadsBefore && sites.calls == ["start", "poll"])
+
+  engine.recordBlocked(host: "https://www.YouTube.com/watch")
+  check("recordBlocked stores the normalized host", recorded.last?.1 == BlockedAttempt(at: at(10, 0, 1), kind: "site", target: "youtube.com", outcome: "blocked"))
+
+  clock.now = at(10, 1)
+  engine.sessionChanged(blockView(1, "paused"), profileName: "default")
+  check("paused: blocking off", !engine.isOn && sites.calls.suffix(1) == ["stop"] && workspace.calls.last == "close")
+  check("paused: nothing is blocked", !engine.isBlocked(host: "youtube.com") && !engine.appCameForward(music) && engine.sessionView == nil)
+  check("paused: the token is kept", engine.token == token)
+  check("paused: snooze refused", !engine.snooze(host: "youtube.com", token: token))
+  check("paused: nothing recorded", recorded.count == 2)
+
+  clock.now = at(10, 2)
+  workspace.front = nil
+  engine.sessionChanged(blockView(1, "running"), profileName: "default")
+  check("resumed: on again, same token", engine.isOn && engine.token == token && sites.calls.suffix(2) == ["start", "poll"])
+  check("resumed: frontmost checked again", workspace.calls.last == "check")
+  let effects = sites.calls.count
+  engine.sessionChanged(blockView(1, "ending"), profileName: "default")
+  check("ending: still on, no new effects", engine.isOn && sites.calls.count == effects && engine.isBlocked(host: "youtube.com"))
+  check("ending: the block page sees the ending session", engine.sessionView?.state == "ending")
+
+  check("a wrong token is refused", !engine.snooze(host: "youtube.com", token: String(repeating: "0", count: 64)))
+  check("a missing token is refused", !engine.snooze(host: "youtube.com", token: ""))
+  check("a refusal is logged", logs.contains { $0.contains("snooze refused for youtube.com") })
+  check("a refusal records nothing", recorded.count == 2)
+  check("the right token snoozes", engine.snooze(host: "www.youtube.com", token: token))
+  check("the snooze is recorded", recorded.last?.1 == BlockedAttempt(at: at(10, 2), kind: "site", target: "youtube.com", outcome: "snoozed"))
+  check("the snoozed host and its subdomains pass", !engine.isBlocked(host: "youtube.com") && !engine.isBlocked(host: "m.youtube.com"))
+  check("other hosts stay blocked", engine.isBlocked(host: "netflix.com"))
+  check("the snooze schedules a re-check", scheduled.count == 1 && scheduled[0].0 == 120.5)
+  clock.now = at(10, 3, 59)
+  check("still snoozed just before the end", !engine.isBlocked(host: "youtube.com"))
+  clock.now = at(10, 4)
+  check("blocked again when the snooze ends", engine.isBlocked(host: "youtube.com"))
+  let checks = workspace.calls.count
+  scheduled[0].1()
+  check("the re-check looks at the frontmost app and the tabs", workspace.calls.count == checks + 1 && sites.calls.last == "poll")
+
+  check("snoozeApp from the window", engine.snoozeApp(bundleId: "com.apple.Music", activate: true) == at(10, 6))
+  check("snoozeApp unhides and activates", workspace.calls.last == "unblock com.apple.Music activate")
+  check("a snoozed app passes", !engine.appCameForward(music) && !engine.blocksApp("com.apple.Music"))
+  check("snoozeApp is recorded", recorded.last?.1 == BlockedAttempt(at: at(10, 4), kind: "app", target: "com.apple.Music", outcome: "snoozed"))
+
+  let status = engine.statusFields()
+  check("status: active, profile and mode", status["sessionId"] == 1 && status["active"] == true && status["profile"] == "default" && status["mode"] == "blocklist" && status["profileFallbackFrom"] == .null)
+  check("status: blocked lists", status["blockedApps"] == ["com.apple.Music", "com.apple.TV"] && status["blockedHosts"]?.arrayValue?.contains("youtube.com") == true && status["allowedApps"] == [])
+  check(
+    "status: live snoozes only", status["snoozed"] == [["kind": "app", "target": "com.apple.Music", "until": .string(ISO.local(at(10, 6)))]],
+    status["snoozed"]?.serialized() ?? "")
+
+  // The socket's snooze: no token, app or host guessed.
+  let listed = try? engine.snooze(target: "com.apple.TV", kind: nil)
+  check("socket snooze: a listed bundle id is an app", listed?.kind == "app" && listed?.until == at(10, 6))
+  let host = try? engine.snooze(target: "https://Netflix.com/browse", kind: nil)
+  check("socket snooze: anything else is a normalized host", host?.kind == "site" && host?.target == "netflix.com" && !engine.isBlocked(host: "www.netflix.com"))
+  check("socket snooze: a host snooze polls the tabs", sites.calls.last == "poll")
+  let bundle = try? engine.snooze(target: "com.example.Unlisted", kind: nil)
+  check("socket snooze: a reverse-DNS name is an app", bundle?.kind == "app")
+  let blockedHost = try? engine.snooze(target: "app.example.com", kind: nil)
+  check("socket snooze: a host the profile blocks is a site even if it reads like a bundle id", blockedHost?.kind == "site" && !engine.isBlocked(host: "app.example.com"))
+  check("socket snooze: kind wins", (try? engine.snooze(target: "com.example.io", kind: "site"))?.kind == "site")
+  check("socket snooze: a bad kind", (try? engine.snooze(target: "x.com", kind: "tab")) == nil)
+  check("socket snooze: a blank target", (try? engine.snooze(target: " ", kind: nil)) == nil)
+
+  // Profile edits reach a running session within configRefresh.
+  engine.sessionChanged(blockView(1, "ending"), profileName: "default")
+  configJSON = configJSON.replacingOccurrences(of: #""hosts": ["example.com"]"#, with: #""hosts": ["example.com", "github.com"]"#)
+  clock.now = at(10, 4, 2)
+  engine.sessionChanged(blockView(1, "ending"), profileName: "default")
+  check("an edit is not read before the refresh interval", !engine.isBlocked(host: "github.com"))
+  clock.now = at(10, 4, 6)
+  let polls = sites.calls.count
+  engine.sessionChanged(blockView(1, "ending"), profileName: "default")
+  check("an edit is applied after it", engine.isBlocked(host: "github.com") && sites.calls.count == polls + 1 && sites.calls.last == "poll")
+  check("the edit is logged", logs.contains { $0.contains("changed in config") })
+
+  // Finish: off, snoozes and token gone.
+  engine.sessionChanged(nil, profileName: "default")
+  check("finished: off", !engine.isOn && engine.token == "" && engine.sessionView == nil && sites.calls.last == "stop" && workspace.calls.last == "close")
+  check("finished: status is null", engine.statusFields()["profile"] == .null && engine.statusFields()["snoozed"] == [] && engine.statusFields()["active"] == false)
+  check("finished: socket snooze refused", (try? engine.snooze(target: "x.com", kind: nil)) == nil)
+  let stale = scheduled.count
+  scheduled.last?.1()
+  check("a snooze ending after the session does nothing", workspace.calls.last == "close" && scheduled.count == stale)
+
+  // The next session: a new token, no snoozes carried over.
+  clock.now = at(11, 0)
+  workspace.front = RunningApp(pid: 50, bundleId: "com.apple.Safari", name: "Safari")
+  engine.sessionChanged(blockView(2, "running"), profileName: "deep")
+  check("a new session gets a new token", engine.token.count == 64 && engine.token != token)
+  check("the last session's token cannot snooze this one", !engine.snooze(host: "snoozed.org", token: token))
+  check("the new token can", engine.snooze(host: "snoozed.org", token: engine.token))
+  check("allowlist: the frontmost unlisted app is blocked", workspace.calls.contains("block com.apple.Safari 120"), "\(workspace.calls)")
+  check("allowlist: listed apps and browsers pass", !engine.appCameForward(RunningApp(pid: 51, bundleId: "com.microsoft.VSCode", name: "Code")) && !engine.appCameForward(RunningApp(pid: 52, bundleId: "com.google.Chrome", name: "Chrome")))
+  check("allowlist: Raycast passes", !engine.appCameForward(RunningApp(pid: 53, bundleId: "com.raycast.macos", name: "Raycast")))
+  check("allowlist: hosts", !engine.isBlocked(host: "github.com") && engine.isBlocked(host: "example.com") && !engine.isBlocked(host: "localhost"))
+  check("allowlist: status lists what is allowed", engine.statusFields()["allowedHosts"] == ["github.com"] && engine.statusFields()["blockedHosts"] == [] && engine.statusFields()["mode"] == "allowlist")
+  check("recorded attempts carry the new session id", recorded.last?.0 == 2)
+
+  // A session going straight from one id to another turns the old one's state over.
+  engine.sessionChanged(blockView(3, "running"), profileName: "nope")
+  check("an unknown profile falls back to default", engine.statusFields()["profile"] == "default" && engine.statusFields()["profileFallbackFrom"] == "nope")
+  check("the fallback is logged once", logs.filter { $0.contains("no profile named \"nope\"") }.count == 1)
+  clock.now = at(11, 0, 10)
+  engine.sessionChanged(blockView(3, "running"), profileName: "nope")
+  check("the fallback is not logged again", logs.filter { $0.contains("no profile named \"nope\"") }.count == 1)
+
+  // Wiring a site blocker while on starts it at once (the lead's one line in main.swift).
+  let late = FakeSites()
+  engine.siteBlocker = late
+  check("a site blocker set while on is started and polled", late.calls == ["start", "poll"])
+  let lateWorkspace = FakeWorkspace()
+  engine.workspace = lateWorkspace
+  check("a workspace set while on checks the frontmost app", lateWorkspace.calls == ["check"])
+  check("tokens compare exactly", BlockEngine.same("abc", "abc") && !BlockEngine.same("abc", "abd") && !BlockEngine.same("abc", "abcd"))
+}
+
+do {
+  // The engine inside the core: session transitions drive it, attempts land in sqlite, and the socket commands.
+  let clock = Clock(at(15, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "snoozeSeconds": 45, "profiles": {"default": {"categories": ["social"], "apps": ["com.apple.Calculator"]}}}"#, clock: clock)
+  let workspace = FakeWorkspace()
+  let sites = FakeSites()
+  workspace.engine = h.core.blocker
+  h.core.blocker.workspace = workspace
+  h.core.blocker.siteBlocker = sites
+  h.core.blocker.schedule = { _, _ in }
+  check("blocking: idle status", h.send("blocking") == ["ok": true, "sessionId": nil, "active": false, "profile": nil, "profileFallbackFrom": nil, "mode": nil, "blockedApps": [], "blockedHosts": [], "allowedApps": [], "allowedHosts": [], "snoozeSeconds": 180, "snoozed": []], h.send("blocking").serialized())
+  check("snooze: refused when idle", h.send("snooze", ["target": "x.com"])["error"] == "blocking is off: no session is running")
+  check("snooze: needs a target", h.send("snooze")["error"] == "target is required")
+
+  workspace.front = RunningApp(pid: 77, bundleId: "com.apple.Calculator", name: "Calculator")
+  let started = h.send("startAdhoc", ["goal": "Blocked", "durationSeconds": 600, "calendarId": "work"])
+  let id = started["session"]?["id"]?.intValue ?? 0
+  check("start turns blocking on", h.core.blocker.isOn && sites.calls == ["start", "poll"])
+  check("start blocks the frontmost app", workspace.calls.contains("block com.apple.Calculator 45"), "\(workspace.calls)")
+  let status = h.send("blocking")
+  check(
+    "blocking: running status", status["active"] == true && status["profile"] == "default" && status["mode"] == "blocklist"
+      && status["blockedApps"] == ["com.apple.Calculator"] && status["blockedHosts"]?.arrayValue?.contains("instagram.com") == true
+      && status["snoozeSeconds"] == 45, status.serialized())
+  h.core.blocker.recordBlocked(host: "instagram.com")
+  clock.now = at(15, 1)
+  let snoozed = h.send("snooze", ["target": "com.apple.Calculator"])
+  check("snooze over the socket", snoozed["ok"] == true && snoozed["kind"] == "app" && snoozed["until"]?.stringValue.flatMap(ISO.parse) == at(15, 1, 45), snoozed.serialized())
+  check("snooze over the socket unhides without activating", workspace.calls.last == "unblock com.apple.Calculator")
+  check("blocking lists the snooze", h.send("blocking")["snoozed"]?[0]?["target"] == "com.apple.Calculator")
+  h.core.drain()
+  let attempts = (try! h.db.attempts(Int64(id))).map { "\($0.kind) \($0.target) \($0.outcome)" }
+  check("attempts land in sqlite", attempts == ["app com.apple.Calculator blocked", "site instagram.com blocked", "app com.apple.Calculator snoozed"], "\(attempts)")
+
+  _ = h.send("pause")
+  check("pause turns blocking off", !h.core.blocker.isOn && sites.calls.last == "stop" && workspace.calls.last == "close")
+  check("blocking while paused: profile kept, inactive", h.send("blocking")["active"] == false && h.send("blocking")["profile"] == "default")
+  check("paused: the snooze survives", h.send("blocking")["snoozed"]?.arrayValue?.count == 1)
+  _ = h.send("resume")
+  check("resume turns it back on", h.core.blocker.isOn && sites.calls.suffix(2) == ["start", "poll"])
+  _ = h.send("stop")
+  check("the end sheet keeps blocking on", h.core.blocker.isOn && h.core.blocker.sessionView?.state == "ending")
+  clock.now = at(15, 3)
+  let finished = h.send("finish", ["rating": 3])
+  check("finish turns blocking off", !h.core.blocker.isOn && h.core.blocker.token == "" && sites.calls.last == "stop")
+  check("the log event counts the attempts", h.fake.saved.last?.draft.notes.contains("Blocked attempts: 3 (com.apple.Calculator 2, instagram.com 1), 1 snoozed") == true, h.fake.saved.last?.draft.notes ?? "")
+  check("finish succeeded", finished["ok"] == true)
+
+  // A session recovered at launch turns blocking on in the new core's engine.
+  _ = h.send("startAdhoc", ["goal": "Again", "durationSeconds": 600, "calendarId": "work"])
+  h.core.tick()
+  let second = h.relaunch(at: at(15, 3, 30))
+  check("a session recovered at launch is blocked", second.core.blocker.isOn && second.core.blocker.token.count == 64)
+  _ = second.send("pause")
+  let third = second.relaunch(at: at(15, 3, 40))
+  check("a session recovered paused is not", !third.core.blocker.isOn && third.send("blocking")["profile"] == "default")
 }
 
 extension JSONValue {

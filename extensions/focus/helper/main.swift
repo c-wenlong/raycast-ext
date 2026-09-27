@@ -1,6 +1,6 @@
 // focus-daemon: the long-running half of the Focus extension. Owns EventKit,
-// the sqlite log and (from step 2) the session timer, the menu bar countdown
-// and the end sheet (UIPresenter.swift).
+// the sqlite log, the session timer, the menu bar countdown and the end sheet
+// (UIPresenter.swift), and blocking (BlockEngine.swift, AppBlocker.swift).
 //
 //   focus-daemon [serve]              start the daemon if it is not running
 //   focus-daemon <cmd>                send {"cmd": "<cmd>"}, print the reply
@@ -207,27 +207,78 @@ func runServer() -> Never {
   guard bound == 0, listen(server, 16) == 0 else { fail("could not listen on \(socketPath): errno \(errno)") }
   signal(SIGPIPE, SIG_IGN)
 
+  // The menu bar countdown, the end sheet and the block window need a
+  // running NSApplication. Accessory: no Dock icon, no app switcher entry.
+  // The socket and timers below run on GCD and a thread of their own, so
+  // app.run() serves them too.
+  let app = NSApplication.shared
+  app.setActivationPolicy(.accessory)
+
   let work = DispatchQueue(label: "focus-daemon.work")
   let backend = EventKitBackend(queue: work, log: log)
+  let configFile = ConfigFile(path: focusDir + "/config.json", log: log)
+
+  // Blocking (BlockEngine.swift). The app side is wired here; the site side
+  // (tab watcher and block page) is `engine.siteBlocker`. Both are set before
+  // the core exists, so a session recovered at launch is blocked at once.
+  let engine = BlockEngine(config: configFile, log: log)
+  let appBlocker = AppBlocker(engine: engine, log: log)
+  engine.workspace = appBlocker
+  keepAlive.append(appBlocker)
+
   let core: FocusCore
   do {
     core = FocusCore(
-      config: ConfigFile(path: focusDir + "/config.json", log: log),
-      db: try Database(path: focusDir + "/focus.db"), calendar: backend, log: log, queue: work)
+      config: configFile, db: try Database(path: focusDir + "/focus.db"), calendar: backend, log: log, queue: work,
+      blocker: engine)
   } catch {
     unlink(socketPath)
     fail(error.localizedDescription)
   }
   if environment["FOCUS_DEBUG"] == "1" {
-    core.extraHandler = { try backend.debug($0) }
+    core.extraHandler = { request in
+      // As if the app had just come forward: macOS refuses to activate
+      // another app from a background shell, so the live check uses this.
+      if request.cmd == "debugBlockApp" {
+        let bundleId = try request.requiredString("bundleId")
+        let blocked = DispatchQueue.main.sync { () -> Bool? in
+          guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else {
+            return nil
+          }
+          return appBlocker.activated(running)
+        }
+        guard let blocked else { throw FocusError("\(bundleId) is not running") }
+        return .ok(["blocked": .bool(blocked)])
+      }
+      // The block window as the daemon draws it right now, as a PNG, plus
+      // its state (screencapture needs Screen Recording, which a shell may lack).
+      if request.cmd == "debugBlockWindow" {
+        let path = try request.requiredString("path")
+        let state = DispatchQueue.main.sync { () -> [String: JSONValue] in
+          let window = appBlocker.window
+          let view = window.backdrop
+          if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+          }
+          return [
+            "visible": .bool(window.isVisible), "key": .bool(window.panel.isKeyWindow),
+            "appActive": .bool(NSApp.isActive), "title": .string(window.titleLabel.stringValue),
+            "button": .string(window.snoozeButton.title), "frame": .string(NSStringFromRect(window.panel.frame)),
+          ]
+        }
+        return .ok(state)
+      }
+      // Presses the block window's Snooze button, as a click would.
+      if request.cmd == "debugPressSnooze" {
+        DispatchQueue.main.sync { appBlocker.window.snoozeButton.performClick(nil) }
+        return .ok()
+      }
+      return try backend.debug(request)
+    }
     log("debug commands enabled")
   }
 
-  // The menu bar countdown and the end sheet need a running NSApplication.
-  // Accessory: no Dock icon, no app switcher entry. The socket and timers
-  // below run on GCD and a thread of their own, so app.run() serves them too.
-  let app = NSApplication.shared
-  app.setActivationPolicy(.accessory)
   installEditMenu()
   attachPresenter(to: core)
   log("serving \(socketPath) (version \(FocusCore.version))")

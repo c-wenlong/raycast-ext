@@ -1,6 +1,7 @@
-// Headless checks of the menu bar countdown and the end sheet, with a fake
-// delegate in place of the session logic. Run with scripts/test-ui.sh.
-// Pass a folder to also write sheet.png and menubar.png renders there.
+// Headless checks of the menu bar countdown, the end sheet and the block
+// window, with a fake delegate in place of the session logic and a real
+// BlockEngine behind the app blocker. Run with scripts/test-ui.sh.
+// Pass a folder to also write sheet.png, menubar-*.png and block.png there.
 //
 // Nothing shows on screen: the status item lives in a private NSStatusBar
 // and the sheet is ordered in far off screen without becoming key.
@@ -313,6 +314,83 @@ check("attachPresenter makes the host the delegate", host.presenter.delegate ===
 attachPresenter(to: NSObject())
 check("attachPresenter ignores other objects", true)
 
+// MARK: Block window
+
+let blockWindow = BlockWindow()
+blockWindow.headless = true
+check("block title", BlockWindow.title(appName: "Calculator") == "Calculator has been blocked")
+check("block title without a name", BlockWindow.title(appName: "  ") == "This app has been blocked")
+check("block window hidden at first", !blockWindow.isVisible)
+blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: nil, snoozeSeconds: 180)
+check("show shows it", blockWindow.isVisible && blockWindow.bundleId == "com.apple.Calculator")
+check("title text", blockWindow.titleLabel.stringValue == "Calculator has been blocked", blockWindow.titleLabel.stringValue)
+check("snooze label for 180 s", blockWindow.snoozeButton.title == "Snooze for 3 minutes", blockWindow.snoozeButton.title)
+check("footer text", blockWindow.footerLabel.stringValue == "End your focus session to access this page")
+check("a placeholder icon without the app's", blockWindow.iconView.image != nil)
+check("the panel floats below the menu bar", blockWindow.panel.level == .floating && blockWindow.panel.styleMask.contains(.nonactivatingPanel))
+blockWindow.show(appName: "Messages", bundleId: "com.apple.MobileSMS", icon: nil, snoozeSeconds: 45)
+check("snooze label for 45 s", blockWindow.snoozeButton.title == "Snooze for 45 seconds", blockWindow.snoozeButton.title)
+check("showing again retargets", blockWindow.titleLabel.stringValue == "Messages has been blocked" && blockWindow.bundleId == "com.apple.MobileSMS")
+blockWindow.backdrop.layoutSubtreeIfNeeded()
+check("the button fits its label", blockWindow.snoozeButton.frame.width >= blockWindow.snoozeButton.intrinsicContentSize.width - 0.5, "\(blockWindow.snoozeButton.frame)")
+let buttonFrame = blockWindow.snoozeButton.convert(blockWindow.snoozeButton.bounds, to: blockWindow.backdrop)
+check("the button sits in the middle", abs(buttonFrame.midX - blockWindow.backdrop.bounds.midX) < 1, "\(buttonFrame)")
+check("the title sits above the button", blockWindow.titleLabel.convert(blockWindow.titleLabel.bounds, to: blockWindow.backdrop).minY > buttonFrame.maxY)
+blockWindow.show(appName: "<b>Evil</b> & co", bundleId: "x", icon: nil, snoozeSeconds: 180)
+check("a name is shown as plain text", blockWindow.titleLabel.stringValue == "<b>Evil</b> & co has been blocked")
+
+var windowSnoozes = 0
+blockWindow.onSnooze = { windowSnoozes += 1 }
+blockWindow.snoozeButton.performClick(nil)
+check("Snooze calls back once and closes", windowSnoozes == 1 && !blockWindow.isVisible)
+blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: nil, snoozeSeconds: 180)
+blockWindow.panel.cancelOperation(nil)
+check("Escape closes without snoozing", !blockWindow.isVisible && windowSnoozes == 1 && blockWindow.bundleId == nil)
+blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: nil, snoozeSeconds: 180)
+if let up = NSEvent.mouseEvent(
+  with: .leftMouseUp, location: NSPoint(x: 40, y: 40), modifierFlags: [], timestamp: 0,
+  windowNumber: blockWindow.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)
+{
+  blockWindow.backdrop.mouseUp(with: up)
+}
+check("a click off the button closes without snoozing", !blockWindow.isVisible && windowSnoozes == 1)
+
+// The app blocker with a real engine: the window's Snooze reaches the engine.
+let blockedView = SessionView(
+  id: 5, goal: "Deep Work", state: "running", startedAt: now, plannedEnd: now.addingTimeInterval(1500),
+  remainingSeconds: 1500, pausedSeconds: 0, calendarTitle: "Work", extendOptions: [])
+let engine = BlockEngine(
+  loadConfig: { FocusConfig(json: ["snoozeSeconds": 120, "profiles": ["default": ["apps": ["com.example.Blocked"]]]]) },
+  clock: { now })
+engine.schedule = { _, _ in }
+let appBlocker = AppBlocker(engine: engine, window: blockWindow, observe: false)
+var hiddenPids: [Int32] = []
+appBlocker.hideApp = {
+  hiddenPids.append($0.processIdentifier)
+  return true
+}
+engine.workspace = appBlocker
+engine.sessionChanged(blockedView, profileName: "default")
+check("the engine is on", engine.isOn)
+let blockedApp = RunningApp(pid: 999_999, bundleId: "com.example.Blocked", name: "Blocked")
+check("a blocked app coming forward is blocked", engine.appCameForward(blockedApp))
+check("the page shows for it", blockWindow.isVisible && blockWindow.titleLabel.stringValue == "Blocked has been blocked" && blockWindow.snoozeButton.title == "Snooze for 2 minutes")
+blockWindow.snoozeButton.performClick(nil)
+let snoozedList = engine.statusFields()["snoozed"]?.arrayValue ?? []
+check("Snooze on the page snoozes the app in the engine", snoozedList.count == 1 && snoozedList.first?["target"] == "com.example.Blocked", "\(snoozedList)")
+check("the page is closed after Snooze", !blockWindow.isVisible)
+check("the snoozed app now passes", !engine.appCameForward(blockedApp) && !blockWindow.isVisible)
+check("an app that is gone is not hidden", hiddenPids.isEmpty)
+check("our own process is never hidden", !engine.appCameForward(RunningApp(pid: getpid(), bundleId: "com.example.Blocked", name: "Self")))
+appBlocker.block(blockedApp, snoozeSeconds: 120)
+check("a decision made before a snooze does not hide the snoozed app", !blockWindow.isVisible && hiddenPids.isEmpty)
+blockWindow.show(appName: "Blocked", bundleId: "com.example.Blocked", icon: nil, snoozeSeconds: 120)
+engine.sessionChanged(nil, profileName: "default")
+check("blocking off closes the page", !blockWindow.isVisible)
+engine.sessionChanged(SessionView(id: 6, goal: "Next", state: "paused", startedAt: now, plannedEnd: now, remainingSeconds: 0, pausedSeconds: 0, calendarTitle: "", extendOptions: []), profileName: "default")
+appBlocker.block(blockedApp, snoozeSeconds: 120)
+check("block does nothing once blocking is off", !blockWindow.isVisible)
+
 // MARK: Renders (optional)
 
 if CommandLine.arguments.count > 1 {
@@ -356,6 +434,11 @@ if CommandLine.arguments.count > 1 {
     }
   }
   ui.dismissEndSheet()
+  // The block window at a laptop size, with Calculator's icon.
+  let calculator = NSWorkspace.shared.icon(forFile: "/System/Applications/Calculator.app")
+  blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: calculator, snoozeSeconds: 180)
+  write(blockWindow.backdrop, "block.png")
+  blockWindow.close()
 }
 
 print(failures == 0 ? "all passed" : "\(failures) failed")

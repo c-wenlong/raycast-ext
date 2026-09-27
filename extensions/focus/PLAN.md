@@ -3,8 +3,10 @@
 Status: steps 1 and 2 of the build order are merged: the helper, Focus Today,
 the calendar half of Focus Settings, the session logic (state machine, timer,
 pause, resume, extend, stop, heartbeat recovery, deeplink, socket commands and
-Focus Today actions) and the native menu bar countdown and end sheet. Steps 3
-and 4 are still to do. Written 2026-09-27 from an interview with Kai.
+Focus Today actions) and the native menu bar countdown and end sheet. Step 3
+is in two PRs: the blocking engine (profiles, categories, matching, app
+blocking and the block window) and the site half (loopback block page, Chrome
+and Dia tab watcher). Step 4 is still to do. Written 2026-09-27 from an interview with Kai.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
 
@@ -143,6 +145,22 @@ Rules:
   Raycast, Finder, the helper itself and System Settings always allowed.
 - Not in scope: DNS or hosts-file blocking (needs sudo), Screen Time APIs
   (Apple only grants the entitlement to App Store apps), other browsers.
+
+- Decided while building step 3 (2026-09-28):
+  - The profile shape in `config.json` is `{mode, categories, apps, hosts}`
+    per name (HELPER.md "Blocking"); a missing or malformed `profiles`, or an
+    unknown profile name, gives `default`, and without a `default` of its own
+    config gets the built-in one (every category, blocklist).
+  - The always-allowed set also holds the password prompt
+    (`com.apple.SecurityAgent`), notification alerts, the Dock and the menu
+    extras, so an allowlist never hides a system prompt.
+  - "Clicking outside" the native page means clicking anywhere off its
+    button, since the page covers the screen; switching to another app
+    closes it too. The page sits below the menu bar and the Dock.
+  - A snooze that runs out re-checks the frontmost app, so a snoozed app
+    that is still in front is hidden again.
+  - Categories are fixed in code for now (`Categories.swift`); editing them
+    in Settings is step 4.
 
 Built-in categories, each a list of bundle ids and hosts that Kai can edit in
 Settings. All on by default in the default profile:
