@@ -10,7 +10,7 @@ to this repo.
 | Path | What |
 |---|---|
 | `extensions/notes/` | The Notes extension: local markdown notes, tasks and the floating notes window. Almost all work happens here. |
-| `extensions/notes/src/` | Raycast commands (TypeScript, `@raycast/api`) and `src/lib/` (notes, tasks, pins, panel launcher). |
+| `extensions/notes/src/` | The three Raycast commands (Toggle Notes Window, Browse Notes, Tasks; TypeScript, `@raycast/api`), `src/components/` (forms Browse Notes and Tasks open) and `src/lib/` (notes, tasks, pins, panel launcher). Quick Capture, New Note and Open Today's Note were removed as commands on 2026-09-27; the window and Browse Notes cover them. |
 | `extensions/notes/helper/` | The native floating window: a Swift AppKit `NSPanel` compiled into `assets/notes-panel`. |
 | `extensions/notes/test/` | `lib.test.ts` (TS, stubbed `@raycast/api`), `list-editing/` (pure text rules), `text-view/` (headless `NSTextView` harness), `panel-render/` (offscreen render tool, unreliable for chrome on macOS 26). |
 | `extensions/color-filter/`, `extensions/lid-control/` | Small script extensions. |
@@ -34,7 +34,7 @@ Run from `extensions/notes`:
 - Blocks: code blocks are one component (fence lines hidden, caret never rests on them, `CodeBlocks.swift` overlays language and copy controls); quotes draw a bar, callouts (`>> `) an outlined box, both by `TaskBoxLayoutManager` from `drawBackground`. Boxed blocks span the text column and inset their text by `Markdown.blockPad`.
 - Layout matches Raycast Notes at 15pt: 28pt line pitch, a 22pt column per list level, `#1A1A1A` canvas, translucent header and footer with a fade, selection hugging the text in the accent colour.
 - Titles: `Titles.firstLine` (Swift) and `firstLineTitle` (TS) must stay mirrors. A generated filename (`YYYY-MM-DD HHmm - slug.md`) is renamed on save to follow the title; Browse Notes reconciles pins to the new path.
-- Single instance over a unix socket; later launches forward their command. Commands: `toggle`, `show`, `hide`, `new`, `open <path>`, `format`, `--dir <folder>`.
+- Single instance over a unix socket; later launches forward their command. Commands: `toggle`, `show`, `hide`, `new`, `today`, `open <path>`, `format`, `--dir <folder>`.
 
 ## Verifying changes
 

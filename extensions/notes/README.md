@@ -6,15 +6,16 @@ Local markdown notes and tasks in Raycast, with no note limit. Forked from
 
 ## Commands
 
+- **Toggle Notes Window**: the floating editor below; where writing happens.
 - **Browse Notes**: search titles and contents, pinned section on top, open task
   count per note. `⌘⇧P` pin, `⌘E` edit, `⌘O` open with another app, `⌃X` trash.
-- **Quick Capture**: append to today's daily note, add a task to today's note,
-  create a new note, or append to an existing one.
+  Its action panel also has New Note, Quick Capture (append to today's note,
+  add a task, create or append to a note) and Open Today's Note.
 - **Tasks**: every `- [ ]` line across all notes, grouped by note. Enter toggles
   done, `⌘O` opens the note, `⌘N` adds a task to today's note. Filter open,
   done or all from the dropdown.
-- **New Note**: title plus body.
-- **Open Today's Note**: `YYYY-MM-DD.md`.
+
+Today's note is `YYYY-MM-DD.md`; the window's ⌘K palette opens it too.
 
 ## Floating window
 
@@ -27,7 +28,7 @@ Inside the window:
 
 | Keys | Action |
 |---|---|
-| `⌘K` | action palette: type to filter, `↑` `↓` to move, `↩` to run |
+| `⌘K` | action palette (New Note, Open Today's Note, Duplicate, Browse, zoom…): type to filter, `↑` `↓` to move, `↩` to run |
 | `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (its first line, markdown stripped, becomes the title and filename) |

@@ -226,6 +226,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
     palette = ActionPalette(actions: [
       PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
+      PaletteAction(title: "Open Today's Note", keys: "", symbol: "calendar", command: "today"),
       PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
       PaletteAction(title: "Browse Notes", keys: "⌘P", symbol: "square.grid.2x2", command: "browse"),
       PaletteAction(title: "Previous Note", keys: "⌘[", symbol: "arrow.left.circle", command: "prev"),
@@ -261,6 +262,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       hide()
     case "new":
       newNote()
+      show()
+    case "today":
+      openToday()
       show()
     case "prev":
       move(by: 1)
@@ -444,6 +448,28 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     refreshList()
     load(path)
     textView.setSelectedRange(NSRange(location: 2, length: 0))
+  }
+
+  /// Today's daily note, `YYYY-MM-DD.md`, created on first use (the
+  /// same file the Tasks command and Browse Notes use).
+  private func openToday() {
+    saveNow()
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    let path = (notesDir as NSString).appendingPathComponent(formatter.string(from: Date()) + ".md")
+    if !diskFiles.fileExists(atPath: path) {
+      do {
+        try diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
+        try "".write(toFile: path, atomically: false, encoding: .utf8)
+      } catch {
+        NSSound.beep()
+        panel.title = "Cannot write to \(notesDir)"
+        return
+      }
+      refreshList()
+    }
+    load(path)
   }
 
   // MARK: Loading and saving
