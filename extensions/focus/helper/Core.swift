@@ -49,7 +49,7 @@ private final class DiscardingPresenter: SessionPresenter {
 }
 
 final class FocusCore: SessionPresenterDelegate {
-  static let version = "0.2.0"
+  static let version = "0.3.0"
   /// At launch, an open session whose heartbeat is older than this is
   /// abandoned; a fresher one (the helper restarted quickly) carries on.
   static let abandonAfter: TimeInterval = 90
@@ -58,6 +58,9 @@ final class FocusCore: SessionPresenterDelegate {
   let db: Database
   let calendar: CalendarBackend
   let queue: DispatchQueue
+  /// App and site blocking for the open session (BlockEngine.swift). Told
+  /// about every change from `publish`; its attempts are stored here.
+  let blocker: BlockEngine
   private let queueKey = DispatchSpecificKey<Bool>()
   private let clock: () -> Date
   private let log: (String) -> Void
@@ -108,7 +111,7 @@ final class FocusCore: SessionPresenterDelegate {
     config: ConfigFile, db: Database, calendar: CalendarBackend, clock: @escaping () -> Date = Date.init,
     log: @escaping (String) -> Void = { _ in }, queue: DispatchQueue? = nil, secondTimer: Bool = true,
     presenter: SessionPresenter? = nil, runOnMain: ((@escaping () -> Void) -> Void)? = nil,
-    openURL: ((URL) -> Void)? = nil
+    openURL: ((URL) -> Void)? = nil, blocker: BlockEngine? = nil
   ) {
     self.config = config
     self.db = db
@@ -116,12 +119,25 @@ final class FocusCore: SessionPresenterDelegate {
     self.clock = clock
     self.log = log
     self.queue = queue ?? DispatchQueue(label: "focus-core")
+    self.blocker = blocker ?? BlockEngine(config: config, log: log, clock: clock)
     self.usesTimer = secondTimer
     self.openURL = openURL ?? { FocusCore.open($0, log: log) }
     if let runOnMain { self.runOnMain = runOnMain }
     if let presenter { storedPresenter = presenter }
     storedPresenter.delegate = self
     self.queue.setSpecific(key: queueKey, value: true)
+    // Attempts arrive from any thread (the app observer on main, the site
+    // watcher on its own); sqlite is only touched on the core's queue.
+    self.blocker.recorder = { [weak self] sessionId, attempt in
+      guard let self else { return }
+      self.queue.async {
+        do {
+          try self.db.addAttempt(Int64(sessionId), attempt)
+        } catch {
+          self.log("could not record the \(attempt.kind) attempt on \(attempt.target): \(error.localizedDescription)")
+        }
+      }
+    }
     onQueue {
       do {
         _ = try current()
@@ -185,6 +201,14 @@ final class FocusCore: SessionPresenterDelegate {
       case "pending": return .ok(["waiting": try pendingJSON()])
       case "retryPending": return .ok(countsJSON(try runRecovery()))
       case "movePending": return try movePending(request)
+      case "blocking":
+        _ = try current()
+        return .ok(blocker.statusFields())
+      case "snooze":
+        let granted = try blocker.snooze(target: try request.requiredString("target"), kind: try request.string("kind"))
+        return .ok([
+          "kind": .string(granted.kind), "target": .string(granted.target), "until": .string(ISO.local(granted.until)),
+        ])
       case "quit":
         var reply = Reply.ok()
         reply.quit = true
@@ -392,10 +416,11 @@ final class FocusCore: SessionPresenterDelegate {
     }
   }
 
-  /// Sends the current view to the presenter on the main thread, then shows
-  /// or hides the end sheet.
+  /// Tells the blocker, then sends the current view to the presenter on the
+  /// main thread and shows or hides the end sheet.
   private func publish(_ sheet: Sheet) {
     let view = sessionView()
+    blocker.sessionChanged(view, profileName: active?.row.profile ?? "default")
     let presenter = storedPresenter
     runOnMain {
       presenter.update(view)

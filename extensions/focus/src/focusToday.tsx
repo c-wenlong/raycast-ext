@@ -14,6 +14,7 @@ import { FinishSessionForm } from "./components/FinishSessionForm";
 import { FocusConfig, readConfig } from "./lib/config";
 import { moveTarget } from "./lib/settings";
 import {
+  BlockingStatus,
   Calendar,
   EXTEND_MINUTES,
   Session,
@@ -23,6 +24,7 @@ import {
   getDaemon,
 } from "./lib/daemon";
 import {
+  blockingText,
   effectiveSession,
   pausedSecondsNow,
   pausedText,
@@ -41,6 +43,8 @@ import {
 interface Data {
   config: FocusConfig;
   session: Session | null;
+  // What the open session blocks; null when idle or the helper is older.
+  blocking: BlockingStatus | null;
   // When `session` was read, for the paused time shown since.
   fetchedAt: Date;
   events: TodayEvent[];
@@ -94,7 +98,7 @@ export default function FocusTodayCommand() {
     try {
       const config = await readConfig();
       const daemon = getDaemon();
-      const [{ session, fetchedAt }, waiting, events, calendars] =
+      const [{ session, fetchedAt }, waiting, events, calendars, blocking] =
         await Promise.all([
           // The paused time is counted from when this reply came back, not
           // from when the slowest of the four did.
@@ -107,6 +111,8 @@ export default function FocusTodayCommand() {
             : Promise.resolve([]),
           // Only for row colours; the list works without them.
           daemon.calendars().catch((): Calendar[] => []),
+          // Only for the Running row's profile line.
+          daemon.blocking().catch((): BlockingStatus | null => null),
         ]);
       if (id !== latest.current) return;
       const colors = new Map<string, string>();
@@ -116,6 +122,7 @@ export default function FocusTodayCommand() {
       setData({
         config,
         session,
+        blocking: session ? blocking : null,
         fetchedAt,
         events,
         waiting,
@@ -286,6 +293,15 @@ export default function FocusTodayCommand() {
     const allowed = sessionActions(session);
     const paused = pausedText(pausedSecondsNow(session, fetchedAt, now));
     const accessories: List.Item.Accessory[] = [];
+    const blocking = data?.blocking ?? null;
+    accessories.push({
+      text: blockingText(session, blocking),
+      icon: Icon.Shield,
+      tooltip:
+        blocking?.mode === "allowlist"
+          ? "Blocking profile: everything but the listed apps and sites is blocked"
+          : "Blocking profile: the listed apps and sites are blocked",
+    });
     if (paused) accessories.push({ text: paused, icon: Icon.Pause });
     accessories.push({
       text: sessionStatusText(session, now),

@@ -25,6 +25,7 @@ import {
   sendRequest,
 } from "../src/lib/daemon";
 import {
+  blockingText,
   effectiveSession,
   pausedSecondsNow,
   pausedText,
@@ -560,6 +561,142 @@ net.createServer((socket) => {
       } finally {
         await daemon.quit();
       }
+    },
+  ],
+
+  // ---- blocking: status and snooze against the fake daemon ----
+  [
+    "daemon: blocking status and snooze",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      const clock = new Date(2026, 8, 28, 10, 0, 0);
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
+      await fake.listen();
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      try {
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            snoozeSeconds: 45,
+            profiles: {
+              default: {
+                mode: "blocklist",
+                apps: ["com.apple.Calculator"],
+                hosts: ["youtube.com"],
+              },
+              deep: {
+                mode: "allowlist",
+                apps: ["com.microsoft.VSCode"],
+                hosts: ["github.com"],
+              },
+            },
+          }),
+        );
+        const idle = await daemon.blocking();
+        assert.equal(idle.active, false);
+        assert.equal(idle.profile, null);
+        assert.equal(idle.mode, null);
+        await rejectsWith(
+          daemon.snooze("youtube.com"),
+          "daemon",
+          /blocking is off/,
+        );
+        await assert.rejects(daemon.snooze("  "), RangeError);
+
+        await daemon.startAdhoc({
+          goal: "Deep",
+          durationSeconds: 1500,
+          calendarId: "cal-work",
+          profile: "deep",
+        });
+        const deep = await daemon.blocking();
+        assert.equal(deep.active, true);
+        assert.equal(deep.profile, "deep");
+        assert.equal(deep.mode, "allowlist");
+        assert.deepEqual(deep.allowedHosts, ["github.com"]);
+        assert.deepEqual(deep.blockedHosts, []);
+        assert.equal(deep.snoozeSeconds, 45);
+
+        const snoozed = await daemon.snooze("com.apple.Calculator");
+        assert.equal(snoozed.kind, "app");
+        assert.equal(
+          snoozed.until,
+          new Date(clock.getTime() + 45_000).toISOString(),
+        );
+        assert.deepEqual(fake.state.requests.at(-1), {
+          target: "com.apple.Calculator",
+          cmd: "snooze",
+        });
+        await daemon.snooze("x.com", "site");
+        assert.deepEqual(fake.state.requests.at(-1), {
+          target: "x.com",
+          kind: "site",
+          cmd: "snooze",
+        });
+        assert.deepEqual(
+          (await daemon.blocking()).snoozed.map((s) => `${s.kind} ${s.target}`),
+          ["app com.apple.Calculator", "site x.com"],
+        );
+
+        await daemon.pause();
+        const paused = await daemon.blocking();
+        assert.equal(paused.active, false);
+        assert.equal(paused.profile, "deep");
+        await daemon.finish({});
+        assert.equal((await daemon.blocking()).profile, null);
+
+        await daemon.startAdhoc({
+          goal: "Other",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+          profile: "nope",
+        });
+        const fallback = await daemon.blocking();
+        assert.equal(fallback.profile, "default");
+        assert.equal(fallback.profileFallbackFrom, "nope");
+        assert.deepEqual(fallback.blockedApps, ["com.apple.Calculator"]);
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  [
+    "session: blocking text for the Running row",
+    () => {
+      assert.equal(
+        blockingText(
+          { state: "running", profile: "default" },
+          { profile: "default", mode: "blocklist" },
+        ),
+        "default · blocklist",
+      );
+      assert.equal(
+        blockingText(
+          { state: "paused", profile: "deep" },
+          { profile: "deep", mode: "allowlist" },
+        ),
+        "deep · allowlist, off while paused",
+      );
+      assert.equal(
+        blockingText({ state: "ending", profile: "light" }, null),
+        "light",
+      );
+      assert.equal(
+        blockingText(
+          { state: "running", profile: "nope" },
+          { profile: "default", mode: "blocklist" },
+        ),
+        "default · blocklist",
+      );
     },
   ],
 

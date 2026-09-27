@@ -1,4 +1,4 @@
-import type { Session } from "./daemon";
+import type { BlockingStatus, Session } from "./daemon";
 import { durationText } from "./time";
 
 // Pure helpers for the Running section of Focus Today. Everything takes
@@ -88,4 +88,16 @@ export function sessionStatusText(
 export function pausedText(seconds: number): string | null {
   if (!Number.isFinite(seconds) || seconds < 1) return null;
   return `paused ${durationText(seconds)}`;
+}
+
+// The blocking line on the Running row: "default · blocklist", "deep ·
+// allowlist, off while paused". Falls back to the session's profile name
+// when the helper's blocking status is not available.
+export function blockingText(
+  session: Pick<Session, "state" | "profile">,
+  blocking: Pick<BlockingStatus, "profile" | "mode"> | null,
+): string {
+  const profile = blocking?.profile ?? session.profile;
+  const label = blocking?.mode ? `${profile} · ${blocking.mode}` : profile;
+  return session.state === "paused" ? `${label}, off while paused` : label;
 }

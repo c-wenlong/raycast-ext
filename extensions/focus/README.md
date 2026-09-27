@@ -21,6 +21,8 @@ end-of-session sheet, app and site blocking, stats), is
   the time paused, and actions Pause or Resume (`⌘⇧P`), Extend by 5, 10, 15
   or 25 minutes (`⌘E`), Stop (`⌘⇧S`, goes to the end sheet), and "Finish
   (Rating and Note)" (`⌘⇧F`), the fallback for the helper's native end sheet.
+  The row also shows the session's blocking profile and its mode ("default ·
+  blocklist"; blocking is off while paused).
   Starting another event while a session is open sends that one to the end
   sheet first. Sessions whose log event could
   not be written yet are listed under **Waiting for log calendar**, with Retry
@@ -43,6 +45,14 @@ Everything is in `~/.raycast/focus/` (gitignored at the repo root as `/focus/`):
 
 The commands launch the helper (`assets/focus-daemon`) on first use if nothing
 answers on the socket.
+
+## Status: step 3 (engine)
+
+While a session runs (and while its end sheet waits) the helper blocks apps
+from the session's profile: a blocked app is hidden and a native block page
+with one Snooze button takes its place. Profiles and the six built-in
+categories are in `config.json` (see [HELPER.md](HELPER.md) "Blocking"); the
+site half (block page for Chrome and Dia tabs) arrives in its own PR.
 
 ## Status: step 2
 

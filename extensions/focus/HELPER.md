@@ -1,6 +1,6 @@
 # focus-daemon
 
-The Swift half of Focus ([PLAN.md](PLAN.md), build steps 1 and 2). Sources in `helper/`,
+The Swift half of Focus ([PLAN.md](PLAN.md), build steps 1, 2 and the engine half of 3). Sources in `helper/`,
 compiled to `assets/focus-daemon` (committed). No Dock icon. The session logic
 (timer, pause, extend, end sheet state, recovery) is in `Session.swift` and
 `Core.swift`; the menu bar countdown and the end sheet draw it through the
@@ -24,7 +24,7 @@ All in `~/.raycast/focus/` (gitignored as `/focus/`; `FOCUS_DIR` overrides the f
 - `focus-daemon <cmd>` or `focus-daemon '<json>'`: sends one request, starting the daemon first if needed, prints the reply line. Exit 0 when `ok` is true, 1 when false, 2 when the daemon could not be reached.
 - The daemon is spawned in its own session with TCC responsibility disclaimed, so the Calendar prompt and the grant belong to `focus-daemon` (identifier `com.c-wenlong.focus-daemon`), whatever launched it (Raycast, a shell). TCC records the grant by binary path and signature: an ad-hoc build asks again after every rebuild and at every new path (Raycast's copy of the extension is a new path). `FOCUS_SIGN_IDENTITY` makes the signature stable across rebuilds.
 - `FOCUS_FOREGROUND=1 focus-daemon serve` runs the server in the terminal (no disclaim; debugging only).
-- `FOCUS_DEBUG=1` at launch enables `debug*` fixture commands used by the live check (create and delete calendars and events whose title starts with "Focus test"). Never set it in the extension.
+- `FOCUS_DEBUG=1` at launch enables `debug*` commands used by the live checks: calendar fixtures (create and delete calendars and events whose title starts with "Focus test"), `debugBlockApp {bundleId}` (hands a running app to the blocker as if it had just come forward: macOS refuses to activate another app from a background shell), `debugBlockWindow {path}` (writes the block window as the daemon draws it to a PNG and returns `visible`, `key`, `appActive`, `title`, `button`, `frame`; `screencapture` needs Screen Recording, which a shell may lack) and `debugPressSnooze` (presses the window's Snooze). Never set it in the extension.
 - Kill with `pkill -x focus-daemon`, never `pkill -f`. A killed daemon leaves a stale socket; the next launch removes it.
 
 ## Protocol
@@ -36,7 +36,7 @@ sqlite stores UTC.
 
 | Request | Reply fields |
 |---|---|
-| `ping` | `version` ("0.2.0"), `pid`, `calendarAccess` |
+| `ping` | `version` ("0.3.0"), `pid`, `calendarAccess` |
 | `calendars` | `calendars: [{id, title, account, color, writable}]`, every EventKit calendar; `account` is the source title, `color` `#RRGGBB` or null |
 | `today` | `events: [{id, title, calendarId, calendarTitle, start, end, remainingSeconds}]`: today's (local midnight to midnight) non-all-day events from `startableCalendars` ending more than 60 s from now, sorted by start; overlapping events all listed |
 | `status` | `session`: null or the open session (below) |
@@ -50,6 +50,8 @@ sqlite stores UTC.
 | `pending` | `waiting: [{sessionId, goal, endedAt, logCalendarId, logCalendarName, reason}]` |
 | `retryPending` | `written`, `adopted`, `stillWaiting` |
 | `movePending {calendarId}` | `moved`, `written`, `adopted`, `stillWaiting` |
+| `blocking` | `active` (bool: running or at the end sheet), `profile` (name, null when idle), `profileFallbackFrom` (the unknown name asked for, else null), `mode` ("blocklist", "allowlist" or null), `blockedApps`, `blockedHosts` (blocklist mode; sorted), `allowedApps`, `allowedHosts` (allowlist mode), `snoozeSeconds`, `snoozed: [{kind, target, until}]` |
+| `snooze {target, kind?}` | `kind` ("app" or "site"), `target` (hosts normalized), `until`. Lets an app (bundle id) or a host (and its subdomains) through for `snoozeSeconds`; no token, the socket is local and already trusted. Refused while blocking is off. |
 | `quit` | `{ok: true}`, then the daemon exits |
 
 A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sourceEventId, extendedSeconds, pausedSeconds}`.
@@ -114,6 +116,33 @@ With `raycastDeeplink` on in config, start also opens
 finish opens `raycast://focus/complete` (`/usr/bin/open`, not waited on). The goal
 is percent-encoded with everything but unreserved characters escaped.
 
+## Blocking
+
+Build step 3, engine half (`Blocking.swift`, `Categories.swift`, `Matching.swift`,
+`BlockEngine.swift`, `AppBlocker.swift`, `BlockWindow.swift`). The site half (the
+loopback block page and the Chrome and Dia tab watcher) plugs in as
+`engine.siteBlocker`, a `SiteBlocker`; `Blocking.swift` is the interface both
+halves share.
+
+Profiles live in `config.json` under `profiles`:
+
+```json
+"profiles": {
+  "default": { "mode": "blocklist", "categories": ["social","messaging","gaming","entertainment","news","shopping"], "apps": [], "hosts": [] },
+  "deep":    { "mode": "allowlist", "apps": ["com.microsoft.VSCode"], "hosts": ["github.com"] }
+}
+```
+
+- Every key of a profile is optional: `mode` defaults to "blocklist", lists to empty. `categories` names the built-in ones in `Categories.swift` (social, messaging, gaming, entertainment, news, shopping); a profile blocks (or, in allowlist mode, allows) the union of its categories' apps and hosts plus its own. Hosts are normalized when read: lowercase, no scheme, `www.`, port or path.
+- A missing or malformed `profiles` gives the built-in `default` (every category, blocklist); so does a malformed `default` entry. A malformed other entry is dropped. A new `config.json` spells out the built-in default. Problems are logged once.
+- `calendarProfiles[calendarId]` names a session's profile (ad hoc: the `profile` field of `startAdhoc`); an unknown name falls back to `default` with a log line.
+- Matching (`Matching.swift`, pure): hosts by suffix on label boundaries (`youtube.com` blocks `m.youtube.com`, not `notyoutube.com`), apps by bundle id, case-insensitive. Allowlist mode inverts both; the watched `browsers` are allowed as apps there (their tabs are filtered by host). Never blocked: `localhost`, `127.0.0.1`, `[::1]`, and the apps in `Matching.alwaysAllowedApps` (Raycast, Finder, System Settings, the login window, Spotlight, Control Center, Notification Center, the daemon, plus the password prompt, notification alerts, the Dock and the menu extras).
+- `FocusCore.publish` calls `blocker.sessionChanged(view, profileName:)` on the core's queue. Blocking is on while running or ending, off while paused or idle. Turning on mints a 32-byte hex token when the session is new, resolves the profile, checks the frontmost app, then `siteBlocker.start(policy:)` and `pollNow()`. Turning off calls `siteBlocker.stop()` and closes the block window; hidden apps stay hidden. While on, config is re-read at most every 5 s, and a changed profile is applied at once (frontmost check and a poll).
+- Snoozes are per target (a bundle id, or a host covering its subdomains) for `snoozeSeconds`, kept through a pause, dropped when the session ends. When one runs out the frontmost app and the tabs are checked again. `snooze(host:token:)` refuses a wrong or missing token and logs it.
+- Every blocked and snoozed app or site becomes a `blocked_attempts` row (kind `app` or `site`, outcome `blocked` or `snoozed`), written on the core's queue.
+- Apps (`AppBlocker.swift`): on `didActivateApplicationNotification` a blocked app is hidden (again after 0.3 s and 1 s while it still shows, since a launching app can ignore the first hide) and the block window appears. Snooze unhides the app and asks LaunchServices to bring it forward; Escape or a click anywhere off the button closes the page and leaves the app hidden; another app coming forward more than 0.75 s after the page appeared closes it too.
+- The block window (`BlockWindow.swift`): a borderless non-activating panel covering the screen with the mouse, at floating level (below the menu bar and the Dock, so the countdown's Stop stays reachable): black with a soft radial glow, the app's icon, "<App> has been blocked" at 28 pt semibold, one bordered button "Snooze for N minutes" (`Matching.snoozeLabel`: seconds under a minute, "2 minutes 30 seconds" for an odd length) and the footer "End your focus session to access this page". The daemon asks to activate when it shows the page so Escape reaches it; macOS can refuse that for a background app, and then a click closes it instead.
+
 ## Log event and recovery
 
 Finish closes the sqlite row first, then writes the event (title = goal, real start
@@ -146,4 +175,5 @@ Rows are never re-pointed except by `movePending`.
 ## Build and test
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon` (ad-hoc unless `FOCUS_SIGN_IDENTITY` is set).
-- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, and all commands over a fake calendar and a recording presenter: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Prints "all passed".
+- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, and all commands over a fake calendar and a recording presenter: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
+- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the end sheet and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `menubar-*.png` and `block.png` there.

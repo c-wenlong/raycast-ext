@@ -82,6 +82,31 @@ export interface PendingCounts {
   stillWaiting: number;
 }
 
+// The `blocking` reply: what the open session blocks. `profile` and `mode`
+// are null only when no session is open; a paused session keeps them with
+// `active: false`. In allowlist mode the listed apps and hosts are in
+// `allowedApps` and `allowedHosts` (everything else is blocked) and the
+// blocked lists are empty; in blocklist mode it is the other way round.
+export interface BlockingStatus {
+  active: boolean;
+  profile: string | null;
+  // The name the session asked for when it was unknown and "default" was used.
+  profileFallbackFrom: string | null;
+  mode: "blocklist" | "allowlist" | null;
+  blockedApps: string[];
+  blockedHosts: string[];
+  allowedApps: string[];
+  allowedHosts: string[];
+  snoozeSeconds: number;
+  snoozed: { kind: "app" | "site"; target: string; until: string }[];
+}
+
+export interface SnoozeResult {
+  kind: "app" | "site";
+  target: string;
+  until: string;
+}
+
 export interface AdhocRequest {
   goal: string;
   durationSeconds: number;
@@ -282,6 +307,7 @@ const isObject = (value: unknown) =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const isNumber = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value);
+const isString = (value: unknown) => typeof value === "string";
 
 function counts(reply: Reply): PendingCounts {
   return {
@@ -538,6 +564,42 @@ export class FocusDaemon {
       logEventId:
         typeof reply.logEventId === "string" ? reply.logEventId : null,
       logPending: reply.logPending === true,
+    };
+  }
+
+  async blocking(): Promise<BlockingStatus> {
+    const reply = await this.request("blocking");
+    const strings = (key: string) => field<string[]>(reply, key, isArray);
+    const mode = reply.mode;
+    return {
+      active: reply.active === true,
+      profile: typeof reply.profile === "string" ? reply.profile : null,
+      profileFallbackFrom:
+        typeof reply.profileFallbackFrom === "string"
+          ? reply.profileFallbackFrom
+          : null,
+      mode: mode === "blocklist" || mode === "allowlist" ? mode : null,
+      blockedApps: strings("blockedApps"),
+      blockedHosts: strings("blockedHosts"),
+      allowedApps: strings("allowedApps"),
+      allowedHosts: strings("allowedHosts"),
+      snoozeSeconds: field<number>(reply, "snoozeSeconds", isNumber),
+      snoozed: field<BlockingStatus["snoozed"]>(reply, "snoozed", isArray),
+    };
+  }
+
+  // Lets an app (bundle id) or a host through for the snooze length. The
+  // helper guesses which it is unless `kind` says.
+  async snooze(target: string, kind?: "app" | "site"): Promise<SnoozeResult> {
+    const trimmed = target.trim();
+    if (!trimmed) throw new RangeError("snooze needs a target.");
+    const payload: Record<string, unknown> = { target: trimmed };
+    if (kind) payload.kind = kind;
+    const reply = await this.request("snooze", payload);
+    return {
+      kind: reply.kind === "app" ? "app" : "site",
+      target: field<string>(reply, "target", isString),
+      until: field<string>(reply, "until", isString),
     };
   }
 
