@@ -42,6 +42,7 @@ Inside the window:
 | `⌘W` or `Esc` | hide |
 | `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again with the caret or selection inside to remove |
 | `⌘L` | link the selection, caret between the `()` |
+| hover or right-click a link | a bubble with the address, Open, Edit and Copy; the menu adds Remove Link. Edit opens a small form for text and address |
 | `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
 | `⇧⌘B` | quote the line; `↩` continues the quote, `↩` on an empty quote line ends it |
 | `>> ` or `/callout` | callout: the lines sit in an outlined box; `↩` continues it, `↩` on an empty line ends it (a nested quote to other markdown viewers) |
@@ -80,7 +81,9 @@ Raycast LocalStorage so the files stay untouched.
 Naming:
 
 - Daily note: `2026-09-26.md`
-- Regular note: `2026-09-26 1400 - project-ideas.md`
+- Regular note: `2026-09-26 1400 - project-ideas.md`; the slug follows the
+  note's first line (markdown stripped) and is renamed on save when that
+  line changes. Pins follow the rename.
 
 ## Development
 
@@ -90,4 +93,9 @@ npm run dev
 ```
 
 `npm run build` type-checks, `npm run lint` runs ESLint and Prettier, and
-`npm test` runs the library tests in `test/` against a stubbed `@raycast/api`.
+`npm test` runs three suites: the library tests in `test/lib.test.ts`
+against a stubbed `@raycast/api`, the pure editing rules in
+`test/list-editing`, and the headless text view harness in
+`test/text-view`. `npm run build-helper` rebuilds the window binary
+(`assets/notes-panel`, committed) after any change under `helper/`.
+See the root `AGENTS.md` for how the window is verified live.
