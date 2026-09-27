@@ -142,7 +142,9 @@ Order and recovery, so a session is never lost and never logged twice:
    come back later. The stats view shows "N sessions waiting for <calendar
    name>" using the `log_calendar_name` stored on the row at Finish, since
    the calendar itself may no longer be there to ask, and offers one action, "Move waiting sessions to <current log
-   calendar>", which sets their `log_calendar_id` and lets step 3 run there.
+   calendar>", which rewrites both `log_calendar_id` and `log_calendar_name`
+   to the new destination and lets step 3 run there, so any later waiting
+   message names the calendar the session is actually bound for.
    Kai takes that step knowingly; if the old calendar returns afterwards, the
    `focus-session: <id>` line in both descriptions makes the duplicate easy to
    find and remove.
