@@ -120,17 +120,21 @@ Written once, at Finish, to the chosen log calendar:
 Order and recovery, so a session is never lost and never logged twice:
 
 1. Finish first closes the sqlite row: `ended_at`, `end_reason`, `rating`,
-   `note`. From here the session is finished even if everything after fails.
-2. The helper then creates the log event. Its description carries the line
-   `focus-session: <sqlite id>` and the row gets `log_event_id` once the save
-   returns.
-3. On launch and on every heartbeat the helper looks for finished rows with a
-   null `log_event_id`. For each one it first searches the log calendar over
-   the session's span for an event whose description carries that session id
-   and adopts it if found (the save succeeded but the id was never stored);
-   otherwise it creates the event. Failures are logged and retried on the
-   next heartbeat, so a calendar outage delays the log event but cannot
-   duplicate it.
+   `note`, and `log_calendar_id` set to the log calendar chosen at that
+   moment. From here the session is finished even if everything after fails,
+   and its destination calendar is fixed: changing the setting later only
+   affects later sessions.
+2. The helper then creates the log event in `log_calendar_id`. Its description
+   carries the line `focus-session: <sqlite id>` and the row gets
+   `log_event_id` once the save returns.
+3. On launch and every 30 seconds (a timer that exists from step 1; the step 2
+   heartbeat rides on the same tick) the helper looks for finished rows with a
+   null `log_event_id`. For each one it first searches that row's
+   `log_calendar_id` over the session's span for an event whose description
+   carries the session id and adopts it if found (the save succeeded but the
+   id was never stored); otherwise it creates the event there. Failures are
+   logged and retried on the next tick, so a calendar outage delays the log
+   event but cannot duplicate it.
 
 Duplicate calendars (the same Google calendar reachable through two accounts
 shows twice in Calendar.app) are listed with their account name in Settings so
@@ -152,6 +156,7 @@ create table sessions (
   extended_seconds integer not null default 0,
   rating integer,              -- 1 to 5
   note text,
+  log_calendar_id text,        -- EKCalendar the log event was (or will be) written to, fixed at Finish
   log_event_id text,           -- EKEvent identifier of the written log event
   last_heartbeat text not null
 );
@@ -184,7 +189,7 @@ Each step is its own PR through the normal loop, with tests before the window.
 
 | Step | Delivers | Tests |
 |---|---|---|
-| 1 | Helper skeleton: socket, EventKit read of today's events for chosen calendars, sqlite schema, log event write with the recovery loop above. Focus Settings with its calendar half (startable calendars, log calendar) so the step can be configured; Focus Today lists and starts a session with no timer UI yet. | Duration rule (until planned end), past-event filter, sqlite round trip, log event description text, adopt-or-create recovery. |
+| 1 | Helper skeleton: socket, EventKit read of today's events for chosen calendars, sqlite schema, log event write with the recovery loop above running on its 30-second tick from day one. Focus Settings with its calendar half (startable calendars, log calendar) so the step can be configured; Focus Today lists and starts a session with no timer UI yet. | Duration rule (until planned end), past-event filter, sqlite round trip, log event description text, adopt-or-create recovery. |
 | 2 | Timer, menu bar countdown, pause and resume, end sheet with rating and note, heartbeat and abandoned recovery, optional Raycast deeplink. | Session state machine as a pure Swift type in `Session.swift`, tested like `ListEditing.swift`. |
 | 3 | Blocker: app hide plus overlay, frontmost check on every blocking start, Chrome and Dia tab polling, categories, profiles, per-calendar defaults, allowlist mode. | Host and bundle matching, allowlist inversion, always-allowed set. |
 | 4 | Focus Settings second half (profiles, categories, browsers, Raycast deeplink toggle), Ad-hoc Session form, Stats view with SVG chart. | Stats aggregation over fixture rows. |
