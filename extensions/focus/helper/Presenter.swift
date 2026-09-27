@@ -43,3 +43,6 @@ final class NullPresenter: SessionPresenter {
   func showEndSheet(_ view: SessionView) { endSheets.append(view) }
   func dismissEndSheet() { dismissals += 1 }
 }
+
+/// Anything that can be handed a presenter; FocusCore conforms so the UI can attach without knowing it.
+protocol PresenterHost: AnyObject { var presenter: SessionPresenter { get set } }

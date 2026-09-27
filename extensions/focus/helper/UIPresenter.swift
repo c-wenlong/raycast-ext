@@ -65,7 +65,6 @@ final class UIPresenter: SessionPresenter {
 }
 
 /// What Core conforms to once the session PR adds `presenter` to it.
-protocol PresenterHost: AnyObject { var presenter: SessionPresenter { get set } }
 
 /// Gives the daemon its UI. Called once from runServer() on the main thread,
 /// before any request is served.

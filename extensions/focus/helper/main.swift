@@ -213,7 +213,7 @@ func runServer() -> Never {
   do {
     core = FocusCore(
       config: ConfigFile(path: focusDir + "/config.json", log: log),
-      db: try Database(path: focusDir + "/focus.db"), calendar: backend, log: log)
+      db: try Database(path: focusDir + "/focus.db"), calendar: backend, log: log, queue: work)
   } catch {
     unlink(socketPath)
     fail(error.localizedDescription)
