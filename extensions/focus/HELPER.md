@@ -73,15 +73,16 @@ Note: Shipped the draft            (line omitted without a note)
 Ended: manually                    (or "when the timer ran out", ", after extending N min")
 
 focus-session: 12
+focus-started: 2026-09-27T06:10:00Z
 ```
 
-Every field is squashed onto one line, so only the last line can be a marker.
+Every field is squashed onto one line, so only the last two lines can be markers.
 At launch, when access is granted, on every request after a grant made in System
 Settings, and every 30 seconds (with the running session's heartbeat), each
 finished, non-abandoned row with no `log_event_id` goes through `Recovery.resolve`:
-a missing calendar keeps waiting; an event in that calendar whose notes carry the
-marker line and whose start and end match the session's (within a minute) is
-adopted, so a recreated `focus.db` reusing an id cannot adopt an old event; a failed search keeps
+a missing calendar keeps waiting; an event in that calendar within a week of the
+session whose notes carry both marker lines (session id and UTC start) is adopted,
+so neither a recreated `focus.db` reusing an id nor an event Kai moved can fool it; a failed search keeps
 waiting; a read-only calendar keeps waiting; otherwise the event is created.
 Rows are never re-pointed except by `movePending`.
 

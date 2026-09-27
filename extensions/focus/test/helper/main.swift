@@ -207,6 +207,7 @@ do {
     Ended: manually
 
     focus-session: 12
+    focus-started: \(ISO.utc(start))
     """
   let text = LogText.description(summary)
   check("event session description", text == expected, "\n\(text)")
@@ -229,6 +230,7 @@ do {
     Ended: when the timer ran out, after extending 10 min
 
     focus-session: 12
+    focus-started: \(ISO.utc(start))
     """
   let adhocText = LogText.description(adhoc)
   check("ad hoc description, no rating, blank note dropped", adhocText == adhocExpected, "\n\(adhocText)")
@@ -257,7 +259,9 @@ do {
 // MARK: - Recovery: adopt, create, keep waiting
 
 func draft(_ id: Int64) -> LogEventDraft {
-  LogEventDraft(title: "Goal", start: at(14, 0), end: at(14, 30), notes: "x\n\n" + LogText.marker(id))
+  LogEventDraft(
+    title: "Goal", start: at(14, 0), end: at(14, 30),
+    notes: "x\n\n" + LogText.marker(id) + "\n" + LogText.startedLine(at(14, 0)))
 }
 
 do {
@@ -266,8 +270,8 @@ do {
   check("creates when no marked event exists", created == .created("log-1"), "\(created)")
   check("searches before creating", store.searches.count == 1)
   check(
-    "search spans the session plus a minute either side",
-    store.searches.first == DateInterval(start: at(13, 59), end: at(14, 31)))
+    "search spans a week either side",
+    store.searches.first == DateInterval(start: at(14, 0).addingTimeInterval(-7 * 86_400), end: at(14, 30).addingTimeInterval(7 * 86_400)))
 
   let again = Recovery.resolve(WaitingSession(sessionId: 1, logCalendarId: "log", draft: draft(1)), store: store)
   check("adopts the event saved before", again == .adopted("log-1"), "\(again)")
@@ -280,14 +284,17 @@ do {
   var reused = draft(1)
   reused.start = at(14, 5)
   reused.end = at(14, 25)
+  reused.notes = "x\n\n" + LogText.marker(1) + "\n" + LogText.startedLine(at(14, 5))
   let collision = Recovery.resolve(WaitingSession(sessionId: 1, logCalendarId: "log", draft: reused), store: store)
-  check("a reused id with different times is not adopted", collision == .created("log-3"), "\(collision)")
+  check("a reused id with another start time is not adopted", collision == .created("log-3"), "\(collision)")
 
-  let rounded = LoggedEvent(id: "r", start: at(14, 0, 30), end: at(14, 30, 30), notes: "focus-session: 7")
+  // Kai moved the saved event by hours before its id was stored.
   var seven = draft(7)
-  seven.notes = ""
-  check("times within a minute still match", Recovery.match([rounded], sessionId: 7, draft: seven)?.id == "r")
-  check("the marker must match too", Recovery.match([rounded], sessionId: 8, draft: seven) == nil)
+  seven.notes = "x\n\n" + LogText.marker(7) + "\n" + LogText.startedLine(at(14, 0))
+  let movedEvent = LoggedEvent(id: "m", start: at(17, 0), end: at(17, 30), notes: seven.notes)
+  check("a moved event is still adopted", Recovery.match([movedEvent], sessionId: 7, draft: seven)?.id == "m")
+  check("the session id must match", Recovery.match([movedEvent], sessionId: 8, draft: seven) == nil)
+  check("the start line must match", Recovery.match([LoggedEvent(id: "n", start: at(14, 0), end: at(14, 30), notes: LogText.marker(7))], sessionId: 7, draft: seven) == nil)
 }
 
 do {

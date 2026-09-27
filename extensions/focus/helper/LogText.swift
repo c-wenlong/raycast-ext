@@ -1,7 +1,10 @@
 // The description of the log event written at Finish. Pure, so the exact
-// text is tested. The last line, "focus-session: <id>", is the marker the
-// recovery loop searches for; every other field is squashed onto one line so
-// nothing (a note, a calendar title) can forge a second marker line.
+// text is tested. The last two lines, "focus-session: <id>" (PLAN.md's
+// marker) and "focus-started: <UTC start>", identify the session for the
+// recovery loop: the id alone repeats if focus.db is recreated, the start
+// time tells those sessions apart, and neither changes when Kai moves the
+// event. Every other field is squashed onto one line so nothing (a note, a
+// calendar title) can forge a marker line.
 
 import Foundation
 
@@ -34,6 +37,13 @@ struct LogSummary: Equatable {
 
 enum LogText {
   static func marker(_ sessionId: Int64) -> String { "focus-session: \(sessionId)" }
+
+  static func startedLine(_ startedAt: Date) -> String { "focus-started: \(ISO.utc(startedAt))" }
+
+  /// True when `notes` carry both identity lines of this session.
+  static func notes(_ notes: String?, identify sessionId: Int64, startedAt: Date) -> Bool {
+    self.notes(notes, containMarker: marker(sessionId)) && self.notes(notes, containMarker: startedLine(startedAt))
+  }
 
   /// ★ for each point, ☆ for the rest: 4 → "★★★★☆".
   static func stars(_ rating: Int) -> String {
@@ -104,6 +114,7 @@ enum LogText {
 
     lines.append("")
     lines.append(marker(summary.sessionId))
+    lines.append(startedLine(summary.startedAt))
     return lines.joined(separator: "\n")
   }
 
