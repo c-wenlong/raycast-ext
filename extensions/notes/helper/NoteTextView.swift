@@ -654,12 +654,13 @@ final class NoteTextView: NSTextView {
   /// rewrite): undoing that group removes both at once and overshoots past
   /// `target`. Typing only ever grows text forward, so the overshot text is
   /// still a prefix of `target` unless something else unexpected also
-  /// happened; when it is, the missing tail is typed back in directly, with
-  /// no undo registration of its own, so it folds invisibly into the
-  /// baseline rather than surfacing as a second, separate undo step. When
-  /// it is not a clean prefix, this puts the text back exactly as it was
-  /// (redoing the same number of steps) and reports failure, so picking an
-  /// entry can never discard text that came before the "/".
+  /// happened; when it is, the missing tail is typed back in as its own
+  /// ordinary, undo-registered edit, sealed off with an immediate undo/redo
+  /// round trip (below) so it stays reachable by undoing further rather
+  /// than folding into whatever the caller registers next. When it is not
+  /// a clean prefix, this puts the text back exactly as it was (redoing the
+  /// same number of steps) and reports failure, so picking an entry can
+  /// never discard text that came before the "/".
   private func foldQueryOutOfHistory(_ undoManager: UndoManager, target: String) -> Bool {
     var steps = 0
     while string != target, undoManager.canUndo, steps < 64 {
@@ -673,9 +674,23 @@ final class NoteTextView: NSTextView {
       let currentLength = (string as NSString).length
       if currentLength <= targetNS.length, targetNS.substring(to: currentLength) == string {
         let missing = targetNS.substring(from: currentLength)
-        storage.replaceCharacters(in: NSRange(location: currentLength, length: 0), with: missing)
-        didChangeText()
-        if string == target { return true }
+        let insertAt = NSRange(location: currentLength, length: 0)
+        breakUndoCoalescing()
+        if shouldChangeText(in: insertAt, replacementString: missing) {
+          storage.replaceCharacters(in: insertAt, with: missing)
+          didChangeText()
+          breakUndoCoalescing()
+          // Without a real turn of the run loop, AppKit still treats this
+          // registration as part of the same pending undo step as whatever
+          // the caller registers next (explicit begin/endUndoGrouping calls
+          // and breakUndoCoalescing do not seal that on their own here). An
+          // immediate undo followed by a redo forces AppKit to settle this
+          // edit as its own, separately reachable step before the caller's
+          // format edit registers.
+          undoManager.undo()
+          undoManager.redo()
+          if string == target { return true }
+        }
       }
     }
 
