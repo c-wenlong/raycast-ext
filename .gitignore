@@ -1,5 +1,5 @@
-# dependencies
-node_modules/
+# dependencies (a symlink too, so no trailing slash)
+node_modules
 
 # Raycast generated files
 raycast-env.d.ts
