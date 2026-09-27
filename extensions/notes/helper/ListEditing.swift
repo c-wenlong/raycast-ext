@@ -514,22 +514,28 @@ enum ListEditing {
   /// in `*x _y_ z*`, is not taken for a styled pair. Pairs never span
   /// lines, and fenced code is not styled.
   private static func wrapSpan(in text: String, around selection: NSRange, marker: String) -> NSRange? {
+    wrapSpans(in: text, on: selection, marker: marker).first { span in
+      selection.length == 0
+        ? span.location < selection.location && selection.location < NSMaxRange(span)
+        : span.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(span)
+    }
+  }
+
+  /// Every styled pair of `marker` on the line of `selection`, in order.
+  private static func wrapSpans(in text: String, on selection: NSRange, marker: String) -> [NSRange] {
     let pattern: NSRegularExpression
     switch marker {
     case "**": pattern = boldPattern
     case "_": pattern = italicPattern
     case "~~": pattern = strikePattern
     case "`": pattern = codePattern
-    default: return nil
+    default: return []
     }
-    guard !insideFence(text, cursor: selection.location) else { return nil }
+    guard !insideFence(text, cursor: selection.location) else { return [] }
     let ns = text as NSString
     let width = (marker as NSString).length
-    return pattern.matches(in: text, range: ns.lineRange(for: selection)).map(\.range).first { span in
-      guard ns.substring(with: NSRange(location: span.location, length: width)) == marker else { return false }
-      return selection.length == 0
-        ? span.location < selection.location && selection.location < NSMaxRange(span)
-        : span.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(span)
+    return pattern.matches(in: text, range: ns.lineRange(for: selection)).map(\.range).filter { span in
+      ns.substring(with: NSRange(location: span.location, length: width)) == marker
     }
   }
 
@@ -541,6 +547,9 @@ enum ListEditing {
     let ns = text as NSString
     let selected = ns.substring(with: selection)
     let width = (marker as NSString).length
+    if selected.rangeOfCharacter(from: .newlines) != nil {
+      return toggleWrapLines(in: text, selection: selection, marker: marker)
+    }
     if let span = wrapSpan(in: text, around: selection, marker: marker) {
       let inner = ns.substring(with: NSRange(location: span.location + width, length: span.length - width * 2))
       // Each position moves left by the marker characters before it, so
@@ -551,17 +560,122 @@ enum ListEditing {
       let start = shifted(selection.location)
       return Edit(range: span, replacement: inner, cursor: start, selectionLength: shifted(NSMaxRange(selection)) - start)
     }
+    let before = selection.location >= width ? ns.substring(with: NSRange(location: selection.location - width, length: width)) : ""
+    let afterStart = selection.location + selection.length
+    let after = afterStart + width <= ns.length ? ns.substring(with: NSRange(location: afterStart, length: width)) : ""
+    let spans = wrapSpans(in: text, on: selection, marker: marker)
+    // A caret right against a pair's outer edge: typing there is already
+    // plain, so there is nothing to toggle, and an empty pair added here
+    // would only show as stray marker characters. A caret between two
+    // pairs is the merge case handled below instead.
+    if selection.length == 0, !(before == marker && after == marker),
+      spans.contains(where: { $0.location == selection.location || NSMaxRange($0) == selection.location })
+    {
+      return Edit(range: selection, replacement: "", cursor: selection.location)
+    }
+    // A one-line selection reaching into one or more pairs but not held
+    // by one is mixed: it all becomes one styled run (the pairs it touches
+    // are folded in, whole), as the format keys do elsewhere. Pairs never
+    // span lines, so a selection across lines is left to wrap as a whole;
+    // pairs inside fenced code are text, not style.
+    let oneLine = ns.substring(with: selection).rangeOfCharacter(from: .newlines) == nil
+    let touched = oneLine
+      ? spans.filter { $0.location < NSMaxRange(selection) && NSMaxRange($0) > selection.location && !insideFence(text, cursor: $0.location) }
+      : []
+    if !touched.isEmpty {
+      var range = selection
+      for span in touched { range = NSUnionRange(range, span) }
+      var inner = ns.substring(with: range)
+      for span in touched.reversed() {
+        let local = NSRange(location: span.location - range.location, length: span.length)
+        let content = (inner as NSString).substring(with: NSRange(location: local.location + width, length: local.length - width * 2))
+        inner = (inner as NSString).replacingCharacters(in: local, with: content)
+      }
+      // The selection keeps to the same visible text: each position moves
+      // right by the new opening marker and left by the marker
+      // characters removed before it.
+      func shifted(_ position: Int) -> Int {
+        var removed = 0
+        for span in touched {
+          removed += min(max(position - span.location, 0), width)
+          removed += min(max(position - (NSMaxRange(span) - width), 0), width)
+        }
+        return position + width - removed
+      }
+      let start = shifted(selection.location)
+      return Edit(range: range, replacement: marker + inner + marker, cursor: start, selectionLength: shifted(NSMaxRange(selection)) - start)
+    }
     if selected.hasPrefix(marker), selected.hasSuffix(marker), (selected as NSString).length >= width * 2 {
       let inner = (selected as NSString).substring(with: NSRange(location: width, length: (selected as NSString).length - width * 2))
       return Edit(range: selection, replacement: inner, cursor: selection.location, selectionLength: (inner as NSString).length)
     }
-    let before = selection.location >= width ? ns.substring(with: NSRange(location: selection.location - width, length: width)) : ""
-    let afterStart = selection.location + selection.length
-    let after = afterStart + width <= ns.length ? ns.substring(with: NSRange(location: afterStart, length: width)) : ""
     if before == marker, after == marker {
       return Edit(range: NSRange(location: selection.location - width, length: selection.length + width * 2), replacement: selected, cursor: selection.location - width, selectionLength: selection.length)
     }
     return Edit(range: selection, replacement: marker + selected + marker, cursor: selection.location + width, selectionLength: selection.length)
+  }
+
+  /// A selection across lines, line by line (pairs never span lines):
+  /// when every line's part is already styled, each is unwrapped;
+  /// otherwise each unstyled part is wrapped (folding in the pairs it
+  /// touches) and the styled ones are left as they are, so the whole
+  /// selection ends up styled. Blank parts and fenced code are skipped.
+  private static func toggleWrapLines(in text: String, selection: NSRange, marker: String) -> Edit {
+    let ns = text as NSString
+    var segments: [NSRange] = []
+    var location = selection.location
+    while location < NSMaxRange(selection) {
+      var lineEnd = 0
+      var contentsEnd = 0
+      ns.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
+      let segment = NSRange(location: location, length: min(contentsEnd, NSMaxRange(selection)) - location)
+      var lineStart = 0
+      ns.getLineStart(&lineStart, end: nil, contentsEnd: nil, for: NSRange(location: location, length: 0))
+      let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
+      let isFenceLine = fenceLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) != nil
+      if segment.length > 0, !ns.substring(with: segment).trimmingCharacters(in: .whitespaces).isEmpty,
+        !isFenceLine, !insideFence(text, cursor: segment.location)
+      {
+        segments.append(segment)
+      }
+      if lineEnd == location { break }
+      location = lineEnd
+    }
+    guard !segments.isEmpty else {
+      return Edit(range: selection, replacement: ns.substring(with: selection), cursor: selection.location, selectionLength: selection.length)
+    }
+    let allStyled = segments.allSatisfy { wrapSpan(in: text, around: $0, marker: marker) != nil }
+    var edits: [Edit] = []
+    for segment in segments {
+      let styled = wrapSpan(in: text, around: segment, marker: marker) != nil
+      if allStyled || !styled { edits.append(toggleWrap(in: text, selection: segment, marker: marker)) }
+    }
+    guard let first = edits.first, let last = edits.last else {
+      return Edit(range: selection, replacement: ns.substring(with: selection), cursor: selection.location, selectionLength: selection.length)
+    }
+    let whole = NSRange(location: min(first.range.location, selection.location), length: max(NSMaxRange(last.range), NSMaxRange(selection)) - min(first.range.location, selection.location))
+    // The selection keeps to the visible text it covered: its ends map
+    // through the edit on their own line (each line edit already reports
+    // where its selected text lands), or shift by what changed before them.
+    var composed = ""
+    var cursor = whole.location
+    var newStart = selection.location
+    var newEnd: Int?
+    for edit in edits {
+      composed += ns.substring(with: NSRange(location: cursor, length: edit.range.location - cursor))
+      let editStart = whole.location + (composed as NSString).length
+      if selection.location >= edit.range.location, selection.location <= NSMaxRange(edit.range) {
+        newStart = editStart + (edit.cursor - edit.range.location)
+      }
+      if NSMaxRange(selection) >= edit.range.location, NSMaxRange(selection) <= NSMaxRange(edit.range) {
+        newEnd = editStart + (edit.cursor - edit.range.location) + edit.selectionLength
+      }
+      composed += edit.replacement
+      cursor = NSMaxRange(edit.range)
+    }
+    composed += ns.substring(with: NSRange(location: cursor, length: NSMaxRange(whole) - cursor))
+    let end = newEnd ?? NSMaxRange(selection) + (composed as NSString).length - whole.length
+    return Edit(range: whole, replacement: composed, cursor: newStart, selectionLength: max(0, end - newStart))
   }
 
   /// `[selection](url)` for ⌘L and for pasting a URL over a selection.

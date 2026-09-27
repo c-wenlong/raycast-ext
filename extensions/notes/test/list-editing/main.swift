@@ -184,6 +184,49 @@ do {
   check("empty selection inserts a pair", text == "a__b" && cursor == 2, "\(text) \(cursor)")
 }
 
+do {
+  let edit = ListEditing.toggleWrap(in: "**bold** x", selection: NSRange(location: 8, length: 0), marker: "**")
+  check("⌘B right after a closing pair changes nothing", edit.range == NSRange(location: 8, length: 0) && edit.replacement == "" && edit.cursor == 8, "\(edit)")
+  let front = ListEditing.toggleWrap(in: "x **bold**", selection: NSRange(location: 2, length: 0), marker: "**")
+  check("⌘B right before an opening pair changes nothing", front.replacement == "" && front.range == NSRange(location: 2, length: 0) && front.cursor == 2, "\(front)")
+  let between = ListEditing.toggleWrap(in: "**a****b**", selection: NSRange(location: 5, length: 0), marker: "**")
+  let merged = ("**a****b**" as NSString).replacingCharacters(in: between.range, with: between.replacement)
+  check("a caret between two pairs still merges them", merged == "**ab**", merged)
+  let fenced = "**a**\n```\n**b**\n```"
+  let acrossFence = ListEditing.toggleWrap(in: fenced, selection: NSRange(location: 0, length: (fenced as NSString).length), marker: "**")
+  let fencedOut = (fenced as NSString).replacingCharacters(in: acrossFence.range, with: acrossFence.replacement)
+  check("a selection across lines and a fence leaves the fenced pair alone", fencedOut.contains("```\n**b**\n```"), fencedOut.debugDescription)
+  func toggledAll(_ src: String, _ marker: String) -> String {
+    let edit = ListEditing.toggleWrap(in: src, selection: NSRange(location: 0, length: (src as NSString).length), marker: marker)
+    return (src as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+  }
+  check("styled lines unwrap line by line", toggledAll("**a**\n**b**", "**") == "a\nb", toggledAll("**a**\n**b**", "**").debugDescription)
+  check("plain lines wrap line by line", toggledAll("a\nb", "**") == "**a**\n**b**", toggledAll("a\nb", "**").debugDescription)
+  check("mixed lines all end up styled", toggledAll("**a**\nb\n\nc **d** e", "**") == "**a**\n**b**\n\n**c d e**", toggledAll("**a**\nb\n\nc **d** e", "**").debugDescription)
+  check("the fenced line is skipped when wrapping across lines", toggledAll("a\n```\nb\n```\nc", "**") == "**a**\n```\nb\n```\n**c**", toggledAll("a\n```\nb\n```\nc", "**").debugDescription)
+}
+do {
+  let src = "**a** and **b**"
+  let edit = ListEditing.toggleWrap(in: src, selection: NSRange(location: 0, length: (src as NSString).length), marker: "**")
+  let out = (src as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+  check("a selection over two pairs becomes one pair", out == "**a and b**", out)
+  check("the merged run stays selected", edit.cursor == 2 && edit.selectionLength == 7, "\(edit)")
+  let partial = ListEditing.toggleWrap(in: src, selection: NSRange(location: 3, length: 9), marker: "**")  // "** and **b" … visible " and b"
+  let partialOut = (src as NSString).replacingCharacters(in: partial.range, with: partial.replacement)
+  check("a selection reaching into pairs folds them in whole", partialOut == "**a and b**", partialOut)
+  check("the selection keeps to the visible text it covered (\" and \")", partial.cursor == 3 && partial.selectionLength == 5, "\(partial)")
+  let lines = ListEditing.toggleWrap(in: "xx **a**\nb yy", selection: NSRange(location: 7, length: 4), marker: "**")  // "a**\nb " visible "a\nb "
+  let linesOut = ("xx **a**\nb yy" as NSString).replacingCharacters(in: lines.range, with: lines.replacement)
+  check("across lines, styled and plain parts end up styled", linesOut == "xx **a**\n**b **yy", linesOut.debugDescription)
+  check("across lines the selection still covers just the visible text it did", lines.cursor == 7 && lines.selectionLength == 6, "\(lines)")
+  let mixed = ListEditing.toggleWrap(in: "plain **b** c", selection: NSRange(location: 0, length: 13), marker: "**")
+  let mixedOut = ("plain **b** c" as NSString).replacingCharacters(in: mixed.range, with: mixed.replacement)
+  check("a mixed selection becomes all styled", mixedOut == "**plain b c**", mixedOut)
+  let italic = ListEditing.toggleWrap(in: "_a_ _b_", selection: NSRange(location: 0, length: 7), marker: "_")
+  let italicOut = ("_a_ _b_" as NSString).replacingCharacters(in: italic.range, with: italic.replacement)
+  check("the same for italic", italicOut == "_a b_", italicOut)
+}
+
 /// Runs toggleWrap and returns (text, selection) after the edit.
 func toggled(_ src: String, _ location: Int, _ length: Int, _ marker: String) -> (String, NSRange) {
   let edit = ListEditing.toggleWrap(in: src, selection: NSRange(location: location, length: length), marker: marker)
@@ -232,7 +275,7 @@ do {
   let (text, selection) = toggled("ab**cd**", 0, 2, "**")
   check("a selection touching a pair still wraps", text == "**ab****cd**" && selection == NSRange(location: 2, length: 2), "\(text) \(selection)")
   let (after, caret) = toggled("**bold** x", 8, 0, "**")
-  check("a caret after the closing marker does not unwrap", after.hasPrefix("**bold**") && caret.location == 10, "\(after) \(caret)")
+  check("a caret after the closing marker neither unwraps nor adds a pair", after == "**bold** x" && caret.location == 8, "\(after) \(caret)")
   let (before, _) = toggled("x **bold**", 2, 0, "**")
   check("a caret before the opening marker does not unwrap", before.hasSuffix("**bold**"), before)
 }
