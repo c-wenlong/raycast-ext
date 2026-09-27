@@ -450,24 +450,28 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.setSelectedRange(NSRange(location: 2, length: 0))
   }
 
-  /// Today's daily note, `YYYY-MM-DD.md`, created on first use (the
-  /// same file the Tasks command and Browse Notes use).
+  /// Today's daily note, `YYYY-MM-DD.md`, created on first use with the
+  /// same date heading Browse Notes and Tasks write (createDailyIfMissing
+  /// in src/lib/notes.ts). The create is exclusive, so a note the
+  /// extension makes at the same moment is never overwritten.
   private func openToday() {
     saveNow()
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.dateFormat = "yyyy-MM-dd"
-    let path = (notesDir as NSString).appendingPathComponent(formatter.string(from: Date()) + ".md")
-    if !diskFiles.fileExists(atPath: path) {
-      do {
-        try diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
-        try "".write(toFile: path, atomically: false, encoding: .utf8)
-      } catch {
-        NSSound.beep()
-        panel.title = "Cannot write to \(notesDir)"
-        return
-      }
+    let day = formatter.string(from: Date())
+    let path = (notesDir as NSString).appendingPathComponent(day + ".md")
+    try? diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
+    let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+    if fd >= 0 {
+      let heading = "# \(day)\n\n"
+      _ = heading.withCString { write(fd, $0, strlen($0)) }
+      close(fd)
       refreshList()
+    } else if errno != EEXIST {
+      NSSound.beep()
+      panel.title = "Cannot write to \(notesDir)"
+      return
     }
     load(path)
   }
