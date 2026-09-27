@@ -647,12 +647,19 @@ final class NoteTextView: NSTextView {
   }
 
   /// Undoes repeatedly until the text matches `target`, since the query may
-  /// have landed in more than one separate typing-undo group. If a group
-  /// turns out to cover more than the query alone (typed in one unbroken
-  /// run together with text before the "/"), undoing it overshoots past
-  /// `target`: this puts the text back exactly as it was (redoing the same
-  /// number of steps) and reports failure, so picking an entry can never
-  /// discard text that came before the "/".
+  /// have landed in more than one separate typing-undo group. A group can
+  /// turn out to cover more than the query alone, when it was typed in one
+  /// unbroken run together with text right before the "/" (no coalescing
+  /// break in between, e.g. a plain word plus space that triggers no
+  /// rewrite): undoing that group removes both at once and overshoots past
+  /// `target`. Typing only ever grows text forward, so the overshot text is
+  /// still a prefix of `target` unless something else unexpected also
+  /// happened; when it is, the missing tail is typed back in directly, with
+  /// no undo registration of its own, so it folds invisibly into the
+  /// baseline rather than surfacing as a second, separate undo step. When
+  /// it is not a clean prefix, this puts the text back exactly as it was
+  /// (redoing the same number of steps) and reports failure, so picking an
+  /// entry can never discard text that came before the "/".
   private func foldQueryOutOfHistory(_ undoManager: UndoManager, target: String) -> Bool {
     var steps = 0
     while string != target, undoManager.canUndo, steps < 64 {
@@ -660,6 +667,18 @@ final class NoteTextView: NSTextView {
       steps += 1
     }
     if string == target { return true }
+
+    if let storage = textStorage {
+      let targetNS = target as NSString
+      let currentLength = (string as NSString).length
+      if currentLength <= targetNS.length, targetNS.substring(to: currentLength) == string {
+        let missing = targetNS.substring(from: currentLength)
+        storage.replaceCharacters(in: NSRange(location: currentLength, length: 0), with: missing)
+        didChangeText()
+        if string == target { return true }
+      }
+    }
+
     while steps > 0, undoManager.canRedo {
       undoManager.redo()
       steps -= 1
