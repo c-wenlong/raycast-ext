@@ -328,6 +328,18 @@ check("a bare > is an empty quote", tv.textStorage!.attribute(Markdown.quotePlac
 check("a bare >> is an empty callout", tv.textStorage!.attribute(Markdown.calloutPlaceholder, at: 18, effectiveRange: nil) != nil)
 check("slash finds the callout", SlashMenu.matches("call").map(\.id) == ["callout"] && SlashMenu.matches("box").map(\.id) == ["callout"])
 
+// 14c. boxed blocks share one padding and line up with the text column
+load("text\n```\ncode\n```\n>> box")
+let cardLM = tv.layoutManager as! TaskBoxLayoutManager
+let blocks = Markdown.codeBlocks(in: tv.string)
+let card = cardLM.codeCardRect(forCharacterRange: blocks[0].range)!
+let edge = tv.textContainer!.lineFragmentPadding
+check("the code card starts at the text column's left edge", abs(card.minX - edge) < 0.5, "\(card)")
+check("the code card ends at the text column's right edge", abs(card.maxX - (tv.textContainer!.size.width - edge)) < 0.5, "\(card)")
+let codeStyle = tv.textStorage!.attribute(.paragraphStyle, at: 9, effectiveRange: nil) as! NSParagraphStyle
+let boxStyle = tv.textStorage!.attribute(.paragraphStyle, at: 21, effectiveRange: nil) as! NSParagraphStyle
+check("code and callout text share the block padding", codeStyle.headIndent == Markdown.blockPad && codeStyle.tailIndent == -Markdown.blockPad && boxStyle.headIndent == Markdown.blockPad)
+
 // 15. slash menu
 check("slash entries match by title word prefix", SlashMenu.matches("head").map(\.id) == ["h1", "h2", "h3", "h4"])
 check("slash entries match aliases", SlashMenu.matches("todo").map(\.id) == ["task"])
