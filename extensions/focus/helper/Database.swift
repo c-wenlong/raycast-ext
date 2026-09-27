@@ -1,7 +1,11 @@
 // ~/.raycast/focus/focus.db through the sqlite3 C API. Only the helper opens
 // it. Times are ISO 8601 UTC text (see Dates.swift). The schema is PLAN.md's
-// "Database" section; `pragma user_version` holds the schema version so later
-// steps can migrate.
+// "Database" section; `pragma user_version` holds the schema version (2 adds
+// `extended_end`, the planned end with extensions).
+//
+// An open row (ended_at null) whose end_reason is set is at the end sheet:
+// "timer" when its planned end passed, "manual" after a stop. Extending clears
+// it again; finishing overwrites it with the final reason.
 
 import Foundation
 import SQLite3
@@ -19,6 +23,8 @@ struct SessionRow: Equatable {
   var profile: String
   var plannedStart: Date?
   var plannedEnd: Date?
+  /// planned_end plus extensions; nil until the first extension.
+  var extendedEnd: Date? = nil
   var startedAt: Date
   var endedAt: Date?
   var endReason: String?
@@ -29,6 +35,9 @@ struct SessionRow: Equatable {
   var logCalendarName: String?
   var logEventId: String?
   var lastHeartbeat: Date
+
+  /// The end the timer runs to: the extended end, else the planned end.
+  var deadline: Date? { extendedEnd ?? plannedEnd }
 }
 
 struct NewSession: Equatable {
@@ -82,7 +91,7 @@ private struct Row {
 }
 
 final class Database {
-  static let schemaVersion = 1
+  static let schemaVersion = 2
 
   private var handle: OpaquePointer?
 
@@ -145,6 +154,15 @@ final class Database {
           """)
       }
     }
+    if version < 2 {
+      try transaction {
+        try exec(
+          """
+          alter table sessions add column extended_end text;
+          pragma user_version = 2;
+          """)
+      }
+    }
   }
 
   var journalMode: String? { try? scalarText("pragma journal_mode") }
@@ -155,7 +173,7 @@ final class Database {
   private static let sessionColumns = """
     id, source_event_id, calendar_id, goal, profile, planned_start, planned_end, started_at,
     ended_at, end_reason, extended_seconds, rating, note, log_calendar_id, log_calendar_name,
-    log_event_id, last_heartbeat
+    log_event_id, last_heartbeat, extended_end
     """
 
   private static func session(_ row: Row) -> SessionRow {
@@ -167,6 +185,7 @@ final class Database {
       profile: row.text(4) ?? "default",
       plannedStart: row.date(5),
       plannedEnd: row.date(6),
+      extendedEnd: row.date(17),
       startedAt: row.date(7) ?? Date(timeIntervalSince1970: 0),
       endedAt: row.date(8),
       endReason: row.text(9),
@@ -207,7 +226,7 @@ final class Database {
   }
 
   /// Closes an open session and any open pause in one transaction. False if
-  /// the session had already ended.
+  /// the session had already ended. A pause never ends before it began.
   func finish(_ id: Int64, _ close: SessionClose) throws -> Bool {
     try transaction {
       let changed = try run(
@@ -222,7 +241,7 @@ final class Database {
         ])
       guard changed == 1 else { return false }
       try run(
-        "update pauses set resumed_at = ? where session_id = ? and resumed_at is null",
+        "update pauses set resumed_at = max(paused_at, ?) where session_id = ? and resumed_at is null",
         [SQLValue(close.endedAt), .int(id)])
       return true
     }
@@ -255,6 +274,19 @@ final class Database {
       """, [.text(calendarId), SQLValue(name)])
   }
 
+  /// Stores the extension total and the end it gives (open rows only).
+  func setExtension(_ id: Int64, seconds: Int, end: Date) throws {
+    try run(
+      "update sessions set extended_seconds = ?, extended_end = ? where id = ? and ended_at is null",
+      [.int(Int64(seconds)), SQLValue(end), .int(id)])
+  }
+
+  /// Marks an open row as at the end sheet ("timer" or "manual"), or clears
+  /// the mark with nil after an extension.
+  func setEnding(_ id: Int64, reason: String?) throws {
+    try run("update sessions set end_reason = ? where id = ? and ended_at is null", [SQLValue(reason), .int(id)])
+  }
+
   func heartbeat(_ id: Int64, at date: Date) throws {
     try run("update sessions set last_heartbeat = ? where id = ? and ended_at is null", [SQLValue(date), .int(id)])
   }
@@ -265,6 +297,13 @@ final class Database {
     try run(
       "insert into pauses (session_id, paused_at, resumed_at) values (?, ?, ?)",
       [.int(sessionId), SQLValue(start), SQLValue(end)])
+  }
+
+  /// Ends the session's open pause, never before it began.
+  func closePause(_ sessionId: Int64, at date: Date) throws {
+    try run(
+      "update pauses set resumed_at = max(paused_at, ?) where session_id = ? and resumed_at is null",
+      [SQLValue(date), .int(sessionId)])
   }
 
   func pauses(_ sessionId: Int64) throws -> [PauseSpan] {

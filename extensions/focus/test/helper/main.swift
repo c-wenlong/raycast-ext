@@ -1,5 +1,7 @@
 // Command-line tests for the focus-daemon logic: rules, log text, recovery,
-// config, protocol, sqlite and the command handlers over a fake calendar.
+// config, protocol, sqlite, the session state machine, the Raycast deeplink,
+// and the command handlers (sessions, timer, UI callbacks, launch recovery)
+// over a fake calendar.
 // Run with scripts/test-helper.sh (npm run test-helper).
 
 import Foundation
@@ -423,7 +425,7 @@ do {
   let path = dir + "/focus.db"
   let db = try! Database(path: path)
   check("database is in WAL mode", db.journalMode == "wal", db.journalMode ?? "nil")
-  check("schema version is 1", db.userVersion == 1, "\(String(describing: db.userVersion))")
+  check("schema version is 2", db.userVersion == 2, "\(String(describing: db.userVersion))")
 
   let new = NewSession(
     sourceEventId: "EV1", calendarId: "work", goal: "Write", profile: "deep", plannedStart: at(14, 0),
@@ -472,8 +474,236 @@ do {
 
   let reopened = try! Database(path: path)
   check("reopening keeps the data", (try! reopened.session(id: id))?.goal == "Write")
-  check("reopening keeps the schema version", reopened.userVersion == 1)
+  check("reopening keeps the schema version", reopened.userVersion == 2)
   check("the database file exists", FileManager.default.fileExists(atPath: path))
+}
+
+// MARK: - Session state machine
+
+/// The error message of a refused input, or nil when it was accepted.
+func refused(_ machine: inout SessionMachine, _ input: SessionInput) -> String? {
+  let before = machine
+  switch machine.apply(input) {
+  case .success: return nil
+  case .failure(let error):
+    check("a refusal leaves the machine unchanged (\(error.message))", machine == before)
+    return error.message
+  }
+}
+
+func applied(_ machine: inout SessionMachine, _ input: SessionInput) -> SessionTransition? {
+  try? machine.apply(input).get()
+}
+
+func running(at start: Date = at(14, 0), until end: Date = at(14, 30)) -> SessionMachine {
+  var machine = SessionMachine()
+  _ = machine.apply(.start(at: start, plannedEnd: end))
+  return machine
+}
+
+do {
+  // Idle: only start and tick are accepted.
+  var idle = SessionMachine()
+  check("a new machine is idle", idle.state == .idle && !idle.state.isOpen)
+  for input: SessionInput in [
+    .pause(at: at(14, 0)), .resume(at: at(14, 0)), .extend(seconds: 300, at: at(14, 0)), .stop(at: at(14, 0)),
+    .finish(at: at(14, 0), rating: nil, note: nil, reason: nil), .abandon(at: at(14, 0)),
+  ] {
+    check("idle refuses \(input)", refused(&idle, input) == "no session is running")
+  }
+  check("idle ticks to nothing", applied(&idle, .tick(at: at(14, 0))) == SessionTransition.none && idle.state == .idle)
+  check("start needs an end after the start", refused(&idle, .start(at: at(14, 0), plannedEnd: at(14, 0))) != nil)
+  check("idle numbers are zero", idle.remainingSeconds(at: at(14, 0)) == 0 && idle.pausedSeconds(at: at(14, 0)) == 0 && idle.focusedSeconds(at: at(14, 0)) == 0)
+
+  var machine = SessionMachine()
+  check("start", applied(&machine, .start(at: at(14, 0), plannedEnd: at(14, 30))) == .started)
+  check("start gives running", machine.state == .running && machine.startedAt == at(14, 0) && machine.plannedEnd == at(14, 30) && machine.extendedSeconds == 0)
+  check("start twice is refused", refused(&machine, .start(at: at(14, 1), plannedEnd: at(15, 0))) == "a session is already running")
+  check("resume while running is refused", refused(&machine, .resume(at: at(14, 1))) == "the session is not paused")
+  check("remaining counts down while running", machine.remainingSeconds(at: at(14, 10, 30)) == 1170)
+  check("a tick before the deadline changes nothing", applied(&machine, .tick(at: at(14, 29, 59))) == SessionTransition.none && machine.state == .running)
+
+  // Pause and resume.
+  check("pause", applied(&machine, .pause(at: at(14, 10))) == .paused && machine.state == .paused && machine.isPaused)
+  check("pause opens a pause span", machine.pauses == [PauseSpan(start: at(14, 10), end: nil)])
+  check("pause twice is refused", refused(&machine, .pause(at: at(14, 11))) == "the session is already paused")
+  check("an open pause counts up to now", machine.pausedSeconds(at: at(14, 12)) == 120)
+  check("the deadline keeps counting down while paused", machine.remainingSeconds(at: at(14, 12)) == 18 * 60)
+  check("resume", applied(&machine, .resume(at: at(14, 15))) == .resumed && machine.state == .running)
+  check("resume closes the pause", machine.pauses == [PauseSpan(start: at(14, 10), end: at(14, 15))])
+  check("paused time is kept after resume", machine.pausedSeconds(at: at(14, 20)) == 300)
+  check("focused time excludes pauses", machine.focusedSeconds(at: at(14, 20)) == 15 * 60)
+
+  // Extend while running and while paused.
+  check("extend while running", applied(&machine, .extend(seconds: 300, at: at(14, 20))) == .extended(seconds: 300, fromEnding: false))
+  check("extend moves the planned end", machine.plannedEnd == at(14, 35) && machine.extendedSeconds == 300 && machine.state == .running)
+  for bad in [0, 59, -300, 86_401] {
+    check("extend refuses \(bad) s", refused(&machine, .extend(seconds: bad, at: at(14, 20)))?.contains("60 to 86400") == true)
+  }
+  _ = machine.apply(.pause(at: at(14, 21)))
+  check("extend while paused", applied(&machine, .extend(seconds: 600, at: at(14, 22))) == .extended(seconds: 600, fromEnding: false))
+  check("extend while paused stays paused", machine.state == .paused && machine.plannedEnd == at(14, 45) && machine.extendedSeconds == 900)
+
+  // The planned end passes while paused.
+  check("a paused tick before the deadline changes nothing", applied(&machine, .tick(at: at(14, 44))) == SessionTransition.none)
+  check("the deadline passing while paused reaches the end sheet", applied(&machine, .tick(at: at(14, 46))) == .reachedDeadline)
+  check("paused past the deadline is ending by the timer", machine.state == .ending && machine.endingReason == .timer)
+  check("reaching the end sheet closes the pause at the deadline", machine.pauses.last == PauseSpan(start: at(14, 21), end: at(14, 45)))
+  check("remaining is zero while ending", machine.remainingSeconds(at: at(14, 46)) == 0)
+
+  // Ending refuses everything but extend and finish.
+  check("pause at the end sheet is refused", refused(&machine, .pause(at: at(14, 47)))?.contains("end sheet") == true)
+  check("resume at the end sheet is refused", refused(&machine, .resume(at: at(14, 47)))?.contains("end sheet") == true)
+  check("stop at the end sheet is refused", refused(&machine, .stop(at: at(14, 47)))?.contains("end sheet") == true)
+  check("start at the end sheet is refused", refused(&machine, .start(at: at(14, 47), plannedEnd: at(15, 0))) == "a session is already running")
+  check("a tick at the end sheet changes nothing", applied(&machine, .tick(at: at(15, 30))) == SessionTransition.none && machine.state == .ending)
+
+  // Extend from the end sheet after it waited: counts from now.
+  check("extend from the end sheet", applied(&machine, .extend(seconds: 300, at: at(14, 50))) == .extended(seconds: 300, fromEnding: true))
+  check("extend from the end sheet returns to running", machine.state == .running && machine.endingReason == nil)
+  check("an extension after the deadline counts from now", machine.plannedEnd == at(14, 55) && machine.extendedSeconds == 1200)
+  check("the same session carries on", machine.startedAt == at(14, 0) && machine.pauses.count == 2)
+
+  // The deadline while running, then finish records the timer.
+  check("the deadline while running reaches the end sheet", applied(&machine, .tick(at: at(14, 55))) == .reachedDeadline && machine.endingReason == .timer)
+  check("finish from the timer's end sheet", applied(&machine, .finish(at: at(14, 56), rating: 4, note: "ok", reason: nil)) == .finished(.timer))
+  check(
+    "finish closes the session", machine.state == .finished && !machine.state.isOpen && machine.endedAt == at(14, 56)
+      && machine.endReason == .timer && machine.rating == 4 && machine.note == "ok" && machine.endingReason == nil)
+  // 56 min elapsed, paused 14:10-14:15 and 14:21-14:45 (29 min).
+  check("focused seconds after finish", machine.focusedSeconds(at: at(16, 0)) == 27 * 60 && machine.pausedSeconds(at: at(16, 0)) == 29 * 60)
+  for input: SessionInput in [
+    .pause(at: at(15, 0)), .resume(at: at(15, 0)), .extend(seconds: 300, at: at(15, 0)), .stop(at: at(15, 0)),
+    .finish(at: at(15, 0), rating: nil, note: nil, reason: nil), .abandon(at: at(15, 0)),
+  ] {
+    check("finished refuses \(input)", refused(&machine, input) == "the session has already ended")
+  }
+  check("a finished session is not started again", refused(&machine, .start(at: at(15, 0), plannedEnd: at(16, 0))) != nil)
+  check("a finished session ignores ticks", applied(&machine, .tick(at: at(16, 0))) == SessionTransition.none)
+}
+
+do {
+  // Manual stop from running and from paused; extend from a manual stop.
+  var machine = running()
+  check("stop from running", applied(&machine, .stop(at: at(14, 10))) == .stopped && machine.state == .ending && machine.endingReason == .manual)
+  check("extend after a stop before the deadline moves the planned end", applied(&machine, .extend(seconds: 300, at: at(14, 11))) == .extended(seconds: 300, fromEnding: true) && machine.plannedEnd == at(14, 35))
+  check("stop again", applied(&machine, .stop(at: at(14, 12))) == .stopped)
+  check("finish after a stop is manual", applied(&machine, .finish(at: at(14, 13), rating: nil, note: nil, reason: nil)) == .finished(.manual))
+  check("finish without a rating", machine.rating == nil && machine.endedAt == at(14, 13))
+
+  var paused = running()
+  _ = paused.apply(.pause(at: at(14, 5)))
+  check("stop from paused", applied(&paused, .stop(at: at(14, 9))) == .stopped && paused.state == .ending)
+  check("stop from paused closes the pause at the stop", paused.pauses == [PauseSpan(start: at(14, 5), end: at(14, 9))])
+  check("extend from a stopped pause returns to running, not paused", applied(&paused, .extend(seconds: 600, at: at(14, 10))) != nil && paused.state == .running)
+
+  // Finish straight from running or paused (the shortcut), and explicit reasons.
+  var direct = running()
+  check("finish from running is manual", applied(&direct, .finish(at: at(14, 20), rating: 5, note: nil, reason: nil)) == .finished(.manual))
+  var directPaused = running()
+  _ = directPaused.apply(.pause(at: at(14, 10)))
+  check("finish from paused is manual", applied(&directPaused, .finish(at: at(14, 20), rating: nil, note: nil, reason: nil)) == .finished(.manual))
+  check("finish from paused closes the pause", directPaused.pauses == [PauseSpan(start: at(14, 10), end: at(14, 20))])
+  check("focused time from paused finish", directPaused.focusedSeconds(at: at(15, 0)) == 10 * 60)
+  var explicit = running()
+  check("an explicit reason wins", applied(&explicit, .finish(at: at(14, 20), rating: nil, note: nil, reason: .timer)) == .finished(.timer))
+  var badRating = running()
+  check("rating 0 is refused", refused(&badRating, .finish(at: at(14, 20), rating: 0, note: nil, reason: nil)) == "rating must be 1 to 5")
+  check("rating 6 is refused", refused(&badRating, .finish(at: at(14, 20), rating: 6, note: nil, reason: nil)) == "rating must be 1 to 5")
+  check("finish as abandoned is refused", refused(&badRating, .finish(at: at(14, 20), rating: nil, note: nil, reason: .abandoned)) != nil)
+  var early = running()
+  check("finish before the start clamps to the start", applied(&early, .finish(at: at(13, 0), rating: nil, note: nil, reason: nil)) != nil && early.endedAt == at(14, 0))
+
+  // The deadline is inclusive: now == planned end reaches it.
+  var exact = running()
+  check("the deadline is reached at exactly the planned end", applied(&exact, .tick(at: at(14, 30))) == .reachedDeadline)
+  // A tick long after (the Mac slept) still reaches it once, closing a pause at the deadline.
+  var slept = running()
+  _ = slept.apply(.pause(at: at(14, 20)))
+  check("a late tick reaches the deadline", applied(&slept, .tick(at: at(18, 0))) == .reachedDeadline && slept.pauses.last?.end == at(14, 30))
+  check("an extension after a long wait still gives the full length", applied(&slept, .extend(seconds: 1500, at: at(18, 0))) != nil && slept.plannedEnd == at(18, 25))
+
+  // Abandon (launch recovery) from each open state.
+  var abandonRunning = running()
+  check("abandon from running", applied(&abandonRunning, .abandon(at: at(14, 12))) == .abandoned)
+  check("abandoned ends at the given time", abandonRunning.state == .abandoned && abandonRunning.endedAt == at(14, 12) && abandonRunning.endReason == .abandoned && abandonRunning.rating == nil)
+  check("an abandoned session refuses finish", refused(&abandonRunning, .finish(at: at(14, 13), rating: 5, note: nil, reason: nil)) == "the session has already ended")
+  var abandonPaused = running()
+  _ = abandonPaused.apply(.pause(at: at(14, 20)))
+  check("abandon from paused", applied(&abandonPaused, .abandon(at: at(14, 15))) == .abandoned)
+  check("a pause begun after the last heartbeat closes at its own start", abandonPaused.pauses == [PauseSpan(start: at(14, 20), end: at(14, 20))])
+  var abandonEnding = running()
+  _ = abandonEnding.apply(.stop(at: at(14, 5)))
+  check("abandon from ending", applied(&abandonEnding, .abandon(at: at(14, 6))) == .abandoned)
+
+  // Pauses never start before the session or end before they began.
+  var clamp = running()
+  _ = clamp.apply(.pause(at: at(13, 0)))
+  _ = clamp.apply(.resume(at: at(12, 0)))
+  check("pause times are clamped", clamp.pauses == [PauseSpan(start: at(14, 0), end: at(14, 0))])
+
+  // Restoring from sqlite.
+  let restoredRunning = SessionMachine(restoring: at(14, 0), plannedEnd: at(14, 30), extendedSeconds: 0, pauses: [PauseSpan(start: at(14, 5), end: at(14, 6))], endingReason: nil)
+  check("restoring with closed pauses is running", restoredRunning.state == .running && restoredRunning.pauses.count == 1)
+  let restoredPaused = SessionMachine(restoring: at(14, 0), plannedEnd: at(14, 30), extendedSeconds: 300, pauses: [PauseSpan(start: at(14, 5), end: nil)], endingReason: nil)
+  check("restoring with an open pause is paused", restoredPaused.state == .paused && restoredPaused.extendedSeconds == 300)
+  var restoredEnding = SessionMachine(restoring: at(14, 0), plannedEnd: at(14, 30), extendedSeconds: 0, pauses: [], endingReason: .timer)
+  check("restoring with an ending reason is at the end sheet", restoredEnding.state == .ending && restoredEnding.endingReason == .timer)
+  check("a restored end sheet finishes with its reason", applied(&restoredEnding, .finish(at: at(14, 40), rating: nil, note: nil, reason: nil)) == .finished(.timer))
+  check("the extend options are 5, 10, 15 and 25 minutes", SessionMachine.extendOptions == [300, 600, 900, 1500])
+}
+
+// MARK: - Raycast deeplink
+
+do {
+  let url = RaycastDeeplink.start(goal: "Write & review: 50% done #1+2 é/x?y=z", durationSeconds: 1500)
+  check(
+    "the start deeplink encodes the goal as a query value",
+    url.absoluteString == "raycast://focus/start?goal=Write%20%26%20review%3A%2050%25%20done%20%231%2B2%20%C3%A9%2Fx%3Fy%3Dz&duration=1500&mode=block",
+    url.absoluteString)
+  let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+  check("the goal round-trips", items.first { $0.name == "goal" }?.value == "Write & review: 50% done #1+2 é/x?y=z", "\(items)")
+  check("duration and mode are separate items", items.map(\.name) == ["goal", "duration", "mode"] && items.last?.value == "block")
+  check("a negative duration becomes zero", RaycastDeeplink.start(goal: "x", durationSeconds: -5).absoluteString.contains("duration=0&"))
+  check("the complete deeplink", RaycastDeeplink.complete.absoluteString == "raycast://focus/complete")
+}
+
+// MARK: - SQLite: schema 2 and the step 2 writes
+
+do {
+  let dir = tempDir()
+  let path = dir + "/focus.db"
+  do {
+    let db = try! Database(path: path)
+    // Back to a step 1 database: no extended_end, version 1.
+    try! db.exec("alter table sessions drop column extended_end; pragma user_version = 1;")
+    try! db.insertSession(
+      NewSession(sourceEventId: nil, calendarId: "work", goal: "Old", profile: "default", plannedStart: at(9, 0), plannedEnd: at(9, 30), startedAt: at(9, 0)))
+  }
+  let db = try! Database(path: path)
+  check("a version 1 database migrates to 2", db.userVersion == 2)
+  let old = try! db.session(id: 1)
+  check("migration keeps the rows", old?.goal == "Old" && old?.extendedEnd == nil && old?.deadline == at(9, 30), "\(String(describing: old))")
+
+  try! db.setExtension(1, seconds: 600, end: at(9, 40))
+  try! db.setEnding(1, reason: "timer")
+  var row = try! db.session(id: 1)!
+  check("the extension is stored beside the planned end", row.extendedSeconds == 600 && row.extendedEnd == at(9, 40) && row.plannedEnd == at(9, 30) && row.deadline == at(9, 40))
+  check("an open row can carry its ending reason", row.endReason == "timer" && row.endedAt == nil && (try! db.openSession())?.id == 1)
+  check("an open row at the end sheet does not wait for a log event", (try! db.waitingSessions()).isEmpty)
+  try! db.setEnding(1, reason: nil)
+  check("the ending reason clears", (try! db.session(id: 1))?.endReason == nil)
+
+  try! db.addPause(1, start: at(9, 10), end: nil)
+  try! db.closePause(1, at: at(9, 5))
+  check("a pause never closes before it began", (try! db.pauses(1)) == [PauseSpan(start: at(9, 10), end: at(9, 10))])
+  try! db.addPause(1, start: at(9, 20), end: nil)
+  _ = try! db.finish(1, SessionClose(endedAt: at(9, 15), endReason: "abandoned"))
+  check("finish clamps an open pause too", (try! db.pauses(1)).last == PauseSpan(start: at(9, 20), end: at(9, 20)))
+  try! db.setExtension(1, seconds: 900, end: at(10, 0))
+  try! db.setEnding(1, reason: "manual")
+  row = try! db.session(id: 1)!
+  check("a finished row is not changed by open-row writes", row.extendedSeconds == 600 && row.endReason == "abandoned")
 }
 
 // MARK: - Commands over a fake calendar
@@ -483,14 +713,52 @@ final class Clock {
   init(_ now: Date) { self.now = now }
 }
 
-func makeCore(config: String? = nil, clock: Clock) -> (FocusCore, FakeCalendar, Database, String) {
-  let dir = tempDir()
-  if let config { try! config.write(toFile: dir + "/config.json", atomically: true, encoding: .utf8) }
-  let fake = FakeCalendar()
-  let db = try! Database(path: dir + "/focus.db")
-  let core = FocusCore(config: ConfigFile(path: dir + "/config.json"), db: db, calendar: fake, clock: { clock.now })
-  return (core, fake, db, dir)
+/// A core on a fake clock and calendar with a recording presenter, no real
+/// timer, presenter calls run inline, and deeplinks recorded.
+final class Harness {
+  let dir: String
+  let clock: Clock
+  let fake: FakeCalendar
+  let db: Database
+  let presenter = NullPresenter()
+  var opened: [URL] = []
+  var logs: [String] = []
+  var core: FocusCore!
+
+  init(config: String? = nil, clock: Clock, dir: String? = nil, fake: FakeCalendar = FakeCalendar()) {
+    self.dir = dir ?? tempDir()
+    self.clock = clock
+    self.fake = fake
+    if let config { try! config.write(toFile: self.dir + "/config.json", atomically: true, encoding: .utf8) }
+    db = try! Database(path: self.dir + "/focus.db")
+    core = FocusCore(
+      config: ConfigFile(path: self.dir + "/config.json"), db: db, calendar: fake, clock: { clock.now },
+      log: { [unowned self] in self.logs.append($0) }, secondTimer: false, presenter: presenter,
+      runOnMain: { $0() }, openURL: { [unowned self] in self.opened.append($0) })
+  }
+
+  /// A second daemon launch over the same folder (the first one died).
+  func relaunch(at date: Date) -> Harness {
+    clock.now = date
+    return Harness(clock: clock, dir: dir, fake: fake)
+  }
+
+  func send(_ cmd: String, _ fields: [String: JSONValue] = [:]) -> JSONValue {
+    var all = fields
+    all["cmd"] = .string(cmd)
+    return core.handle(line: JSONValue.object(all).serialized()).body
+  }
+
+  var lastView: SessionView? { presenter.views.last ?? nil }
 }
+
+func makeCore(config: String? = nil, clock: Clock) -> (FocusCore, FakeCalendar, Database, String) {
+  let harness = Harness(config: config, clock: clock)
+  keepHarnesses.append(harness)
+  return (harness.core, harness.fake, harness.db, harness.dir)
+}
+
+var keepHarnesses: [Harness] = []
 
 func send(_ core: FocusCore, _ cmd: String, _ fields: [String: JSONValue] = [:]) -> JSONValue {
   var all = fields
@@ -511,7 +779,7 @@ do {
   ]
 
   let ping = send(core, "ping")
-  check("ping", ping["ok"] == true && ping["version"] == "0.1.0" && ping["pid"]?.intValue != nil && ping["calendarAccess"] == "fullAccess", ping.serialized())
+  check("ping", ping["ok"] == true && ping["version"] == "0.2.0" && ping["pid"]?.intValue != nil && ping["calendarAccess"] == "fullAccess", ping.serialized())
 
   let calendars = send(core, "calendars")["calendars"]?.arrayValue ?? []
   check("calendars lists every calendar with its account", calendars.count == 3 && calendars.contains { $0["title"] == "Work" && $0["account"] == "Google" && $0["color"] == "#FF0000" && $0["writable"] == true })
@@ -548,14 +816,24 @@ do {
   let row = try! db.openSession()!
   check("start stores planned start and heartbeat", row.plannedStart == at(14, 0) && row.lastHeartbeat == at(14, 10, 30))
 
+  check("status returns the running session", send(core, "status")["session"] == session)
+  check(
+    "a running session reports its live numbers", session?["remainingSeconds"] == 2970 && session?["pausedSeconds"] == 0
+      && session?["extendedSeconds"] == 0 && session?["endReason"] == .null, started.serialized())
+  let bogus = send(core, "start", ["eventId": "nope"])
+  check("a start that fails validation leaves the running session alone", bogus["ok"] == false && send(core, "status")["session"]?["state"] == "running", bogus.serialized())
+
+  // PLAN: starting while a session is open sends that one to the end sheet first.
   let twice = send(core, "start", ["eventId": "E1"])
   check(
     "start refuses while a session runs", twice["ok"] == false
       && twice["error"]?.stringValue?.contains("already running: \"Write report\"") == true
+      && twice["error"]?.stringValue?.contains("end sheet") == true
       && twice["session"]?["id"] == session?["id"], twice.serialized())
+  check("the running session went to the end sheet", twice["session"]?["state"] == "ending" && twice["session"]?["endReason"] == "manual", twice.serialized())
   let adhocWhileRunning = send(core, "startAdhoc", ["goal": "x", "durationSeconds": 600, "calendarId": "work"])
-  check("startAdhoc refuses while a session runs", adhocWhileRunning["ok"] == false)
-  check("status returns the running session", send(core, "status")["session"] == session)
+  check("startAdhoc refuses while a session is at the end sheet", adhocWhileRunning["ok"] == false && adhocWhileRunning["session"]?["state"] == "ending")
+  check("status returns the session at the end sheet", send(core, "status")["session"]?["id"] == session?["id"] && send(core, "status")["session"]?["state"] == "ending")
 
   clock.now = at(14, 40)
   core.tick()
@@ -673,6 +951,235 @@ do {
   check("finish with no log calendar is pending", finished["logPending"] == true && finished["session"]?["note"] == .null)
   check("pending shows a null calendar name", send(core, "pending")["waiting"]?[0]?["logCalendarName"] == .null)
   check("the first request creates config.json", FileManager.default.fileExists(atPath: dir + "/config.json"))
+}
+
+// MARK: - Session commands, the timer and the presenter
+
+func pauseRows(_ db: Database, _ id: Int) -> [PauseSpan] { try! db.pauses(Int64(id)) }
+
+do {
+  let clock = Clock(at(10, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  check("idle: nothing to tick", !h.core.ticking && h.core.sessionView() == nil)
+  check("pause with nothing running", h.send("pause")["error"] == "no session is running")
+  check("stop with nothing running", h.send("stop")["error"] == "no session is running")
+  check("extend with nothing running", h.send("extend", ["seconds": 300])["error"] == "no session is running")
+
+  let started = h.send("startAdhoc", ["goal": "Draft", "durationSeconds": 600, "calendarId": "work"])
+  let id = started["session"]?["id"]?.intValue ?? 0
+  check("start begins the 1 Hz tick", h.core.ticking)
+  check("start shows the session", h.lastView?.state == "running" && h.lastView?.remainingSeconds == 600 && h.lastView?.goal == "Draft", "\(String(describing: h.lastView))")
+  check("the view names the calendar and the extend options", h.lastView?.calendarTitle == "Work" && h.lastView?.extendOptions == [300, 600, 900, 1500] && h.lastView?.id == id)
+  check("the view carries the start and the planned end", h.lastView?.startedAt == at(10, 0) && h.lastView?.plannedEnd == at(10, 10))
+  check("no deeplink unless configured", h.opened.isEmpty)
+
+  clock.now = at(10, 2)
+  let paused = h.send("pause")
+  check("pause replies with the paused session", paused["ok"] == true && paused["session"]?["state"] == "paused", paused.serialized())
+  check("pause writes an open pause row", pauseRows(h.db, id) == [PauseSpan(start: at(10, 2), end: nil)])
+  check("pause twice is refused", h.send("pause")["error"] == "the session is already paused")
+  check("the view shows paused", h.lastView?.state == "paused")
+  clock.now = at(10, 4)
+  let status = h.send("status")["session"]
+  check("status counts paused time and the deadline keeps running", status?["pausedSeconds"] == 120 && status?["remainingSeconds"] == 360 && status?["state"] == "paused", status?.serialized() ?? "")
+  let views = h.presenter.views.count
+  h.core.secondTick()
+  check("each second refreshes the view", h.presenter.views.count == views + 1 && h.lastView?.pausedSeconds == 120)
+
+  clock.now = at(10, 5)
+  check("resume", h.send("resume")["session"]?["state"] == "running")
+  check("resume closes the pause row", pauseRows(h.db, id) == [PauseSpan(start: at(10, 2), end: at(10, 5))])
+  check("resume twice is refused", h.send("resume")["error"] == "the session is not paused")
+
+  check("extend needs seconds", h.send("extend")["error"] == "seconds is required")
+  check("extend refuses 30 s", h.send("extend", ["seconds": 30])["ok"] == false)
+  check("extend refuses a fraction", h.send("extend", ["seconds": .double(90.5)])["ok"] == false)
+  clock.now = at(10, 6)
+  let extended = h.send("extend", ["seconds": 60])["session"]
+  check("extend moves the planned end", extended?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 11) && extended?["extendedSeconds"] == 60, extended?.serialized() ?? "")
+  var row = try! h.db.session(id: Int64(id))!
+  check("extend is stored", row.extendedSeconds == 60 && row.extendedEnd == at(10, 11) && row.plannedEnd == at(10, 10))
+
+  clock.now = at(10, 10, 59)
+  h.core.secondTick()
+  check("no end sheet before the extended end", h.presenter.endSheets.isEmpty && h.lastView?.remainingSeconds == 1)
+  clock.now = at(10, 11)
+  h.core.secondTick()
+  check("the timer reaching the planned end shows the end sheet", h.presenter.endSheets.count == 1 && h.presenter.endSheets.last?.state == "ending")
+  check("the end sheet view has nothing remaining", h.presenter.endSheets.last?.remainingSeconds == 0 && h.presenter.endSheets.last?.pausedSeconds == 180)
+  row = try! h.db.session(id: Int64(id))!
+  check("the end sheet is persisted on the open row", row.endReason == "timer" && row.endedAt == nil)
+  check("the tick keeps running at the end sheet", h.core.ticking)
+  h.core.secondTick()
+  check("the end sheet is shown once", h.presenter.endSheets.count == 1)
+  let ending = h.send("status")["session"]
+  check("status says ending, by the timer", ending?["state"] == "ending" && ending?["endReason"] == "timer" && ending?["remainingSeconds"] == 0, ending?.serialized() ?? "")
+  check("pause at the end sheet is refused", h.send("pause")["error"]?.stringValue?.contains("end sheet") == true)
+  check("stop at the end sheet is refused", h.send("stop")["ok"] == false)
+
+  clock.now = at(10, 12)
+  let dismissals = h.presenter.dismissals
+  let again = h.send("extend", ["seconds": 300])["session"]
+  check("extend from the end sheet returns to running", again?["state"] == "running" && again?["endReason"] == .null && again?["extendedSeconds"] == 360, again?.serialized() ?? "")
+  check("extend from the end sheet counts from now", again?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 17))
+  check("extend from the end sheet dismisses it", h.presenter.dismissals == dismissals + 1)
+  row = try! h.db.session(id: Int64(id))!
+  check("the same row carries on", row.endReason == nil && row.extendedSeconds == 360 && row.extendedEnd == at(10, 17) && row.endedAt == nil)
+
+  clock.now = at(10, 13)
+  let stopped = h.send("stop")["session"]
+  check("stop goes to the end sheet", stopped?["state"] == "ending" && stopped?["endReason"] == "manual" && h.presenter.endSheets.count == 2)
+  check("stop is persisted", (try! h.db.session(id: Int64(id)))?.endReason == "manual")
+
+  clock.now = at(10, 14)
+  let finished = h.send("finish", ["rating": 5, "note": "Good"])
+  check("finish from a stop", finished["ok"] == true && finished["session"]?["state"] == "finished" && finished["session"]?["endReason"] == "manual", finished.serialized())
+  check("finish reports the totals", finished["session"]?["extendedSeconds"] == 360 && finished["session"]?["pausedSeconds"] == 180 && finished["logPending"] == false)
+  check("finish ends the tick and clears the view", !h.core.ticking && h.lastView == nil && h.presenter.views.last! == nil)
+  check("finish dismisses the sheet", h.presenter.dismissals == dismissals + 2)
+  let notes = h.fake.saved.last?.draft.notes ?? ""
+  check("the log event counts pauses and the extension", notes.contains("Focused: 11 min of 14 min") && notes.contains("Pauses: 1, 3 min in total") && notes.contains("Ended: manually, after extending 6 min"), notes)
+  check("idle after finish", h.send("status")["session"] == .null && h.send("stop")["error"] == "no session is running")
+  h.core.secondTick()
+  check("a stray tick after finish does nothing", !h.core.ticking && h.lastView == nil)
+}
+
+do {
+  // The deadline while paused, noticed by a command before the timer fires,
+  // then Finish records "timer".
+  let clock = Clock(at(11, 0))
+  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  let id = h.send("startAdhoc", ["goal": "Short", "durationSeconds": 60, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(11, 0, 30)
+  _ = h.send("pause")
+  clock.now = at(11, 1, 5)
+  let status = h.send("status")["session"]
+  check("a command notices the deadline passed while paused", status?["state"] == "ending" && status?["endReason"] == "timer", status?.serialized() ?? "")
+  check("the end sheet shows then too", h.presenter.endSheets.count == 1)
+  check("the pause closes at the deadline", pauseRows(h.db, id) == [PauseSpan(start: at(11, 0, 30), end: at(11, 1))])
+  clock.now = at(11, 2)
+  let finished = h.send("finish", ["rating": 3])
+  check("finish at the timer's end sheet records timer", finished["session"]?["endReason"] == "timer", finished.serialized())
+  check("its log event says the timer ran out", h.fake.saved.last?.draft.notes.contains("Ended: when the timer ran out") == true)
+  check("pause with nothing running after finish", h.send("pause")["error"] == "no session is running")
+}
+
+do {
+  // The UI drives the same transitions through the delegate.
+  let clock = Clock(at(12, 0))
+  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  check("the core is the presenter's delegate", h.presenter.delegate === h.core)
+  _ = h.send("startAdhoc", ["goal": "From the menu bar", "durationSeconds": 1500, "calendarId": "work"])
+  clock.now = at(12, 1)
+  h.core.presenterPause()
+  h.core.drain()
+  check("pause from the UI", h.send("status")["session"]?["state"] == "paused" && h.lastView?.state == "paused")
+  h.core.presenterPause()
+  h.core.drain()
+  check("a refused UI call is logged and refreshes the view", h.logs.contains { $0.contains("pause from the UI refused") } && h.lastView?.state == "paused")
+  clock.now = at(12, 3)
+  h.core.presenterResume()
+  h.core.presenterExtend(seconds: 600)
+  h.core.drain()
+  check("resume and extend from the UI", h.lastView?.state == "running" && h.lastView?.plannedEnd == at(12, 35))
+  h.core.presenterStop()
+  h.core.drain()
+  check("stop from the UI shows the end sheet", h.presenter.endSheets.count == 1 && h.lastView?.state == "ending")
+  h.core.presenterFinish(rating: 9, note: nil)
+  h.core.drain()
+  check("an invalid rating from the UI keeps the sheet", h.lastView?.state == "ending" && h.logs.contains { $0.contains("rating must be 1 to 5") })
+  clock.now = at(12, 4)
+  h.core.presenterFinish(rating: 4, note: "  Done\n")
+  h.core.drain()
+  let last = try! h.db.session(id: 1)!
+  check("finish from the UI closes the row", last.endedAt == at(12, 4) && last.rating == 4 && last.note == "Done" && last.endReason == "manual", "\(last)")
+  check("finish from the UI writes the log event and idles", h.fake.saved.count == 1 && !h.core.ticking && h.lastView == nil)
+  let replacement = NullPresenter()
+  h.core.presenter = replacement
+  check("a new presenter is told the state at once", replacement.views.count == 1 && replacement.views[0] == nil && replacement.delegate === h.core)
+}
+
+do {
+  // Deeplink on: start and finish open Raycast Focus too.
+  let clock = Clock(at(13, 0))
+  let h = Harness(config: #"{"raycastDeeplink": true}"#, clock: clock)
+  _ = h.send("startAdhoc", ["goal": "Side by side", "durationSeconds": 1500, "calendarId": "work"])
+  check("start opens raycast://focus/start", h.opened == [RaycastDeeplink.start(goal: "Side by side", durationSeconds: 1500)], "\(h.opened)")
+  clock.now = at(13, 5)
+  _ = h.send("finish")
+  check("finish opens raycast://focus/complete", h.opened.last == RaycastDeeplink.complete && h.opened.count == 2)
+}
+
+do {
+  // Launch recovery: a stale heartbeat is abandoned, a fresh one carries on.
+  let clock = Clock(at(9, 0))
+  let first = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  let id = first.send("startAdhoc", ["goal": "Crashed", "durationSeconds": 3600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(9, 5)
+  first.core.tick()
+  clock.now = at(9, 6)
+  _ = first.send("pause")
+  // The helper dies here; it comes back 91 s after the last heartbeat.
+  let second = first.relaunch(at: at(9, 6, 31))
+  let row = try! second.db.session(id: Int64(id))!
+  check("a stale heartbeat is abandoned at launch", row.endReason == "abandoned" && row.endedAt == at(9, 5) && row.rating == nil, "\(row)")
+  check("an abandoned pause begun after the heartbeat closes at its start", pauseRows(second.db, id) == [PauseSpan(start: at(9, 6), end: at(9, 6))])
+  check("abandoned: no log event, not pending", second.fake.saved.isEmpty && second.send("pending")["waiting"] == [])
+  check("abandoned: the sheet is dismissed and the view cleared", second.presenter.dismissals == 1 && second.presenter.views.last! == nil)
+  check("abandoned: idle, no tick", second.send("status")["session"] == .null && !second.core.ticking)
+  check("abandoned is logged", second.logs.contains { $0.contains("abandoned") })
+  check("retry never writes an abandoned session", second.send("retryPending") == ["ok": true, "written": 0, "adopted": 0, "stillWaiting": 0])
+}
+
+do {
+  let clock = Clock(at(9, 0))
+  let first = Harness(clock: clock)
+  let id = first.send("startAdhoc", ["goal": "Restarted", "durationSeconds": 3600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(9, 1)
+  _ = first.send("extend", ["seconds": 600])
+  clock.now = at(9, 10)
+  _ = first.send("pause")
+  first.core.tick()
+  // Back exactly 90 s after the last heartbeat: still fresh.
+  let second = first.relaunch(at: at(9, 11, 30))
+  let status = second.send("status")["session"]
+  check("a fresh heartbeat resumes the session paused", status?["id"]?.intValue == id && status?["state"] == "paused", status?.serialized() ?? "")
+  check("the resumed session keeps its extension", status?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 10) && status?["extendedSeconds"] == 600)
+  check("the resumed session keeps its pause", status?["pausedSeconds"] == 90)
+  check("the resumed session ticks and is shown", second.core.ticking && second.presenter.views.contains { $0?.state == "paused" })
+  check("resuming is logged", second.logs.contains { $0.contains("resumed as paused") })
+  clock.now = at(9, 12)
+  _ = second.send("resume")
+  check("resume after a restart closes the same pause row", pauseRows(second.db, id) == [PauseSpan(start: at(9, 10), end: at(9, 12))])
+
+  // Restarted while at the end sheet: the sheet comes back.
+  _ = second.send("stop")
+  second.core.tick()
+  let third = second.relaunch(at: at(9, 12, 20))
+  check("a session at the end sheet comes back at it", third.send("status")["session"]?["state"] == "ending" && third.presenter.endSheets.count == 1)
+  let late = NullPresenter()
+  third.core.presenter = late
+  check("a presenter attached later is shown the sheet too", late.endSheets.count == 1 && late.views.count == 1)
+  clock.now = at(9, 13)
+  check("finish after the restart keeps the stop's reason", third.send("finish")["session"]?["endReason"] == "manual")
+}
+
+do {
+  // Restarted after the planned end passed during the downtime.
+  let clock = Clock(at(9, 0))
+  let first = Harness(clock: clock)
+  _ = first.send("startAdhoc", ["goal": "Short", "durationSeconds": 60, "calendarId": "work"])
+  clock.now = at(9, 0, 50)
+  first.core.tick()
+  let second = first.relaunch(at: at(9, 1, 30))
+  check("a resumed session whose end passed goes to the end sheet", second.send("status")["session"]?["state"] == "ending" && second.presenter.endSheets.count == 1)
+
+  // Heartbeat boundary: 91 s is stale.
+  let boundary = Harness(clock: clock)
+  clock.now = at(9, 30)
+  _ = boundary.send("startAdhoc", ["goal": "Boundary", "durationSeconds": 3600, "calendarId": "work"])
+  let stale = boundary.relaunch(at: at(9, 31, 31))
+  check("91 s without a heartbeat is abandoned", stale.send("status")["session"] == .null && (try! stale.db.session(id: 1))?.endReason == "abandoned")
 }
 
 extension JSONValue {

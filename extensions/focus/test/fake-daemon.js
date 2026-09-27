@@ -10,6 +10,12 @@
 // calendar decides whether `finish` logs or leaves the session waiting).
 // It refuses to start if something already answers on the socket, so it
 // never shadows a real helper. Ctrl-C stops it and removes the socket.
+//
+// Sessions follow the helper's state machine (helper/Session.swift): running
+// and paused go to "ending" when the planned end passes (checked on every
+// request) or on stop; pause, resume, extend and stop refuse the states they
+// do not apply to with the helper's messages; extend from ending counts from
+// now once the deadline is behind and returns to running.
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -70,6 +76,68 @@ function createFakeDaemon(options) {
 
   const calendarTitle = (id) => (CALENDARS.find((c) => c.id === id) || { title: id }).title;
 
+  // The open session lives in `state.session` as the wire shape plus private
+  // `_pauses` ({start, end}) and `_ending` (timer | manual | null).
+  function openSession(event, now, extra) {
+    return {
+      id: state.nextId++,
+      goal: event.goal,
+      state: "running",
+      startedAt: now.toISOString(),
+      plannedEnd: event.plannedEnd,
+      calendarId: event.calendarId,
+      profile: event.profile,
+      sourceEventId: event.sourceEventId,
+      extendedSeconds: 0,
+      ...extra,
+      _pauses: [],
+      _ending: null,
+    };
+  }
+
+  function closePause(session, at) {
+    const last = session._pauses[session._pauses.length - 1];
+    if (last && last.end === null) last.end = Math.max(at, last.start);
+  }
+
+  function pausedSeconds(session, now) {
+    const total = session._pauses.reduce((sum, p) => sum + ((p.end === null ? now : p.end) - p.start), 0);
+    return Math.round(total / 1000);
+  }
+
+  // Deadline check, as the helper does before every command.
+  function advance(now) {
+    const session = state.session;
+    if (!session || session.state === "ending") return;
+    const end = Date.parse(session.plannedEnd);
+    if (now.getTime() >= end) {
+      closePause(session, end);
+      session.state = "ending";
+      session._ending = "timer";
+    }
+  }
+
+  function wire(session, now) {
+    if (!session) return null;
+    const { _pauses, _ending, ...rest } = session;
+    const remaining = Math.floor((Date.parse(session.plannedEnd) - now.getTime()) / 1000);
+    return {
+      ...rest,
+      remainingSeconds: session.state === "ending" ? 0 : Math.max(0, remaining),
+      pausedSeconds: pausedSeconds({ _pauses }, now.getTime()),
+      endReason: _ending,
+    };
+  }
+
+  function refuse(action) {
+    const session = state.session;
+    if (!session) return { ok: false, error: "no session is running" };
+    if (session.state === "ending") {
+      return { ok: false, error: `the session is at the end sheet; extend or finish it (cannot ${action})` };
+    }
+    return { ok: false, error: `the session is ${session.state}; cannot ${action}` };
+  }
+
   function today() {
     const now = clock();
     const config = readConfig(configPath);
@@ -86,6 +154,7 @@ function createFakeDaemon(options) {
 
   function handle(request) {
     const now = clock();
+    advance(now);
     switch (request.cmd) {
       case "ping":
         return { ok: true, version: "fake-1", pid: process.pid };
@@ -94,52 +163,99 @@ function createFakeDaemon(options) {
       case "today":
         return { ok: true, events: today() };
       case "status":
-        return { ok: true, session: state.session };
+        return { ok: true, session: wire(state.session, now) };
       case "start": {
-        if (state.session) return { ok: false, error: "A session is already running." };
         const event = fixtureEvents(now).find((e) => e.id === request.eventId);
         if (!event) return { ok: false, error: `No event ${request.eventId} today.` };
         if (Date.parse(event.end) - now.getTime() <= 60 * 1000) {
           return { ok: false, error: "That event has already ended." };
         }
-        state.session = {
-          id: state.nextId++,
-          goal: event.title,
-          state: "running",
-          startedAt: now.toISOString(),
-          plannedEnd: event.end,
-          calendarId: event.calendarId,
-          profile: "default",
-          sourceEventId: event.id,
-        };
-        return { ok: true, session: state.session };
+        if (state.session) return alreadyRunning(now);
+        state.session = openSession(
+          { goal: event.title, plannedEnd: event.end, calendarId: event.calendarId, profile: "default", sourceEventId: event.id },
+          now,
+        );
+        return { ok: true, session: wire(state.session, now) };
       }
       case "startAdhoc": {
-        if (state.session) return { ok: false, error: "A session is already running." };
         if (typeof request.goal !== "string" || !request.goal.trim()) {
           return { ok: false, error: "goal is required." };
         }
         if (!Number.isInteger(request.durationSeconds) || request.durationSeconds <= 0) {
           return { ok: false, error: "durationSeconds must be a positive integer." };
         }
-        state.session = {
-          id: state.nextId++,
-          goal: request.goal,
-          state: "running",
-          startedAt: now.toISOString(),
-          plannedEnd: new Date(now.getTime() + request.durationSeconds * 1000).toISOString(),
-          calendarId: request.calendarId,
-          profile: request.profile || "default",
-          sourceEventId: null,
-        };
-        return { ok: true, session: state.session };
+        if (state.session) return alreadyRunning(now);
+        state.session = openSession(
+          {
+            goal: request.goal,
+            plannedEnd: new Date(now.getTime() + request.durationSeconds * 1000).toISOString(),
+            calendarId: request.calendarId,
+            profile: request.profile || "default",
+            sourceEventId: null,
+          },
+          now,
+        );
+        return { ok: true, session: wire(state.session, now) };
+      }
+      case "pause": {
+        const session = state.session;
+        if (session && session.state === "paused") return { ok: false, error: "the session is already paused" };
+        if (!session || session.state !== "running") return refuse("pause");
+        session._pauses.push({ start: now.getTime(), end: null });
+        session.state = "paused";
+        return { ok: true, session: wire(session, now) };
+      }
+      case "resume": {
+        const session = state.session;
+        if (session && session.state === "running") return { ok: false, error: "the session is not paused" };
+        if (!session || session.state !== "paused") return refuse("resume");
+        closePause(session, now.getTime());
+        session.state = "running";
+        return { ok: true, session: wire(session, now) };
+      }
+      case "extend": {
+        const seconds = request.seconds;
+        if (seconds === undefined || seconds === null) return { ok: false, error: "seconds is required" };
+        if (!Number.isInteger(seconds) || seconds < 60 || seconds > 86400) {
+          return { ok: false, error: "seconds must be a whole number from 60 to 86400" };
+        }
+        const session = state.session;
+        if (!session) return refuse("extend");
+        const from = Math.max(Date.parse(session.plannedEnd), now.getTime());
+        session.plannedEnd = new Date(from + seconds * 1000).toISOString();
+        session.extendedSeconds += seconds;
+        if (session.state === "ending") {
+          session.state = "running";
+          session._ending = null;
+        }
+        return { ok: true, session: wire(session, now) };
+      }
+      case "stop": {
+        const session = state.session;
+        if (!session || (session.state !== "running" && session.state !== "paused")) return refuse("stop");
+        closePause(session, now.getTime());
+        session.state = "ending";
+        session._ending = "manual";
+        return { ok: true, session: wire(session, now) };
       }
       case "finish": {
-        const session = state.session;
-        if (!session) return { ok: false, error: "No session is running." };
         if (request.rating !== undefined && !(Number.isInteger(request.rating) && request.rating >= 1 && request.rating <= 5)) {
           return { ok: false, error: "rating must be 1 to 5." };
         }
+        if (request.reason !== undefined && request.reason !== "timer" && request.reason !== "manual") {
+          return { ok: false, error: 'reason must be "timer" or "manual"' };
+        }
+        if (!state.session) return { ok: false, error: "no session is running" };
+        const open = wire(state.session, now);
+        const session = {
+          ...open,
+          state: "finished",
+          endedAt: now.toISOString(),
+          endReason: request.reason || state.session._ending || "manual",
+          rating: request.rating ?? null,
+          note: request.note ?? null,
+        };
+        delete session.remainingSeconds;
         state.session = null;
         const config = readConfig(configPath);
         const logCalendar = CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
@@ -175,6 +291,21 @@ function createFakeDaemon(options) {
       default:
         return { ok: false, error: `Unknown command: ${request.cmd}` };
     }
+  }
+
+  // PLAN: starting while a session is open sends that one to the end sheet.
+  function alreadyRunning(now) {
+    const session = state.session;
+    if (session.state === "running" || session.state === "paused") {
+      closePause(session, now.getTime());
+      session.state = "ending";
+      session._ending = "manual";
+    }
+    return {
+      ok: false,
+      error: `a session is already running: "${session.goal}" (id ${session.id}); it is at the end sheet, finish or extend it first`,
+      session: wire(session, now),
+    };
   }
 
   const server = net.createServer((socket) => {
