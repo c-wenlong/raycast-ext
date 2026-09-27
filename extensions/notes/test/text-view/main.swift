@@ -461,6 +461,20 @@ _ = tv.performKeyEquivalent(with: ctrlX(true))
 check("⌃X trashes once per press, not per key repeat", deleteCommands == 1, "\(deleteCommands)")
 tv.onCommand = nil
 
+// 17. the title is the first line, markdown stripped
+check("a heading is the title without its marks", Titles.firstLine(of: "## Hello **world**\nmore") == "Hello world")
+check("plain text is the title", Titles.firstLine(of: "hello\n") == "hello")
+check("a list item is the title without its marker", Titles.firstLine(of: "- [ ] buy milk") == "buy milk")
+check("a numbered item is the title without its number", Titles.firstLine(of: "1. first") == "first")
+check("a quote is the title without its >", Titles.firstLine(of: "> quoted _words_") == "quoted words")
+check("blank lines and fences are skipped", Titles.firstLine(of: "\n```\ncode\n```\nafter") == "code")
+check("a link keeps its text", Titles.firstLine(of: "see [the manual](https://x.y)") == "see the manual")
+check("an empty note has no title", Titles.firstLine(of: "\n\n") == nil)
+check("a long first line is cut", Titles.firstLine(of: String(repeating: "a", count: 100))!.count == Titles.maxLength)
+check("an image keeps its alt text", Titles.firstLine(of: "![diagram](image.png) here") == "diagram here")
+check("a long emoji line is cut at whole characters", Titles.firstLine(of: String(repeating: "👍🏽", count: 90))!.count == Titles.maxLength)
+check("the title line range covers the raw line", Titles.titleLineRange(of: "\n# Hi there\nmore") == NSRange(location: 1, length: 10))
+
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")
 tv.setSelectedRange(NSRange(location: 0, length: 28))

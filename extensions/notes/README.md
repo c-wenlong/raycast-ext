@@ -30,7 +30,7 @@ Inside the window:
 | `⌘K` | action palette: type to filter, `↑` `↓` to move, `↩` to run |
 | `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
-| `⌘N` | new note (the `#` heading becomes the title and filename) |
+| `⌘N` | new note (its first line, markdown stripped, becomes the title and filename) |
 | `⌘D` | duplicate note |
 | `⌘↩` | toggle the task on the current line, or click the `[ ]` box |
 | `⌘F` | find in note |

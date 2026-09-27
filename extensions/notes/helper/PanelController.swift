@@ -385,11 +385,15 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     var text = loadedText
     var copyName = "\((filename as NSString).deletingPathExtension) copy.md"
 
-    if let heading = headingPattern.firstMatch(in: text, range: fullRange(text)) {
-      let headingRange = heading.range(at: 1)
-      let copyTitle = (text as NSString).substring(with: headingRange) + " copy"
-      text = (text as NSString).replacingCharacters(in: headingRange, with: copyTitle)
-      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)) {
+    // The copy's title line (heading or not) gets " copy", so the two
+    // notes read apart in the title bar and in Browse Notes.
+    if let titleRange = Titles.titleLineRange(of: text) {
+      let line = (text as NSString).substring(with: titleRange)
+      let trimmed = line.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
+      text = (text as NSString).replacingCharacters(in: titleRange, with: trimmed + " copy")
+      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)),
+        let copyTitle = Titles.firstLine(of: text)
+      {
         let prefix = (filename as NSString).substring(with: match.range(at: 1))
         copyName = "\(prefix) - \(slugify(copyTitle)).md"
       }
@@ -505,17 +509,17 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     }
   }
 
-  /// Generated filenames follow the heading, as the Raycast extension does.
+  /// Generated filenames follow the note's first line (its title), as
+  /// the Raycast extension does.
   private func renameToMatchTitleIfNeeded() {
     guard let path = currentPath else { return }
     let filename = (path as NSString).lastPathComponent
     guard let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)),
-      let heading = headingPattern.firstMatch(in: loadedText, range: fullRange(loadedText))
+      let titleText = Titles.firstLine(of: loadedText)
     else { return }
-    let headingText = (loadedText as NSString).substring(with: heading.range(at: 1))
     let currentSlug = (filename as NSString).substring(with: match.range(at: 2))
-    let nextSlug = slugify(headingText)
-    guard !headingText.trimmingCharacters(in: .whitespaces).isEmpty, nextSlug != currentSlug else { return }
+    let nextSlug = slugify(titleText)
+    guard nextSlug != currentSlug else { return }
     let prefix = (filename as NSString).substring(with: match.range(at: 1))
     let nextPath = uniquePath(for: "\(prefix) - \(nextSlug).md", in: (path as NSString).deletingLastPathComponent)
     guard (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }
