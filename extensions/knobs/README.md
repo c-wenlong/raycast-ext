@@ -32,6 +32,14 @@ closed lid goes through the separate clamshell sleep path, which nothing but
 `pmset disablesleep` overrides. So use `lid` for a closed MacBook and `caff`
 for an open one that should not doze.
 
+## Moving from Color Filter and Lid Control
+
+Raycast sees Knobs as a new extension. Once: run `npm install && npx ray
+develop` in `extensions/knobs` so Raycast registers it, remove the two old
+development entries in Raycast > Extensions (their folders are gone), and
+rebind any hotkeys or aliases you had on the old commands to the Knobs ones
+of the same name.
+
 ## Development
 
 `npm run dev`, `npm run build` and `npm run lint`. There are no tests; check
