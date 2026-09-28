@@ -323,8 +323,9 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   a "Countdown" field, the panel's "…" menu has Move to Menu Bar, and the menu
   bar item's menu has Move to Floating Panel. The helper writes only this key
   and `panelPosition` to `config.json`, keeping every other key.
-- The panel floats above every window and space, at the top right of the
-  screen with the key window by default, and moves only by its drag handle;
+- The panel floats above every window and space, at the top centre of the
+  screen with the key window by default (where the end card shows; Kai
+  asked for it there on 2026-09-28, it was the top right before), and moves only by its drag handle;
   the place is saved and reset from the "…" menu. It hides at the end sheet.
 - Hover shows Pause (a menu: 1, 2, 5, 10 minutes or indefinitely), Complete
   (the end sheet, as Stop), "…" (Edit opens Focus Today; Cancel finishes the
@@ -347,6 +348,13 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   does not show through. The rim, top highlight, sheen and bottom shade are
   drawn by the panel, over the pill and the hover row. Before macOS 26 the
   HUD blur stays, with a denser tint.
+- Smooth sweep (2026-09-28, Kai: "the meter fills up one section at a
+  time; I'd like the meter to move smoothly, and the speed would be
+  inversely proportional to the time allocated"): the fill moves on with
+  the wall clock between the once-a-second updates at 1 / total per second.
+  It keeps moving while paused, because a pause does not move the planned
+  end and the digits keep counting down; freezing it would leave it behind
+  the digits and jump at resume.
 - Lava lamp (2026-09-28, the second half of that ask): soft pale-green
   blobs drift slowly inside the pill so it looks alive. They are drawn in
   the glass's content, over the tint and under the sweep, text and edges,
