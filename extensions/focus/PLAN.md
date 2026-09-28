@@ -1,14 +1,13 @@
 # Focus: plan
 
-Status: steps 1 and 2 of the build order are merged: the helper, Focus Today,
-the calendar half of Focus Settings, the session logic (state machine, timer,
-pause, resume, extend, stop, heartbeat recovery, deeplink, socket commands and
-Focus Today actions) and the native menu bar countdown and end sheet. Step 3
-is in two PRs: the blocking engine (profiles, categories, matching, app
-blocking and the block window) and the site half (loopback block page, Chrome
-and Dia tab watcher). Step 4 is in two PRs: the settings half (profiles, per-calendar default
-profile, browsers, snooze length, the Raycast deeplink toggle, and the Ad-hoc
-Session form) and the stats half. Written 2026-09-27 from an interview with Kai.
+Status: built. All four steps of the build order are merged (2026-09-28):
+the helper, Focus Today, Focus Settings, the session logic and its menu bar
+countdown and end sheet, blocking (engine, app block window, loopback block
+page, Chrome and Dia tab watcher), the Ad-hoc Session form and Focus Stats.
+The daemon reports version 0.3.0. Known operational facts: macOS asks for
+Calendar access and for Automation access to each browser once per binary
+path (Raycast's copy is a path of its own), and while an Automation prompt
+is pending every Apple Event to that browser times out. Written 2026-09-27 from an interview with Kai.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
 
