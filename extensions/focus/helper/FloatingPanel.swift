@@ -84,8 +84,10 @@ enum PanelStyle {
   /// Over the blur: close to the end sheet's #1A1A1A, a touch lighter like Raycast's pill.
   static let canvas = NSColor(white: 0.115, alpha: 0.93)
   static let border = NSColor(white: 1, alpha: 0.10)
-  static let chip = NSColor(white: 1, alpha: 0.10)
-  static let chipPaused = NSColor(white: 1, alpha: 0.06)
+  /// The chip is translucent so the green sweep reads through it; paused
+  /// stays dimmer than running.
+  static let chip = NSColor(white: 1, alpha: 0.16)
+  static let chipPaused = NSColor(white: 1, alpha: 0.09)
   /// #34C759 toned down for a dark canvas, like Raycast's fill.
   static let progress = NSColor(srgbRed: 0.19, green: 0.60, blue: 0.34, alpha: 1)
   static let progressPaused = NSColor(srgbRed: 0.19, green: 0.60, blue: 0.34, alpha: 0.5)
@@ -233,7 +235,7 @@ final class CountdownPillView: NSView {
     }
     // The chip sits on top, translucent, so the green reads through it.
     let chipPath = NSBezierPath(roundedRect: chip, xRadius: PanelStyle.chipRadius, yRadius: PanelStyle.chipRadius)
-    (content.paused ? PanelStyle.chipPaused : PanelStyle.chip).withAlphaComponent(0.45).setFill()
+    (content.paused ? PanelStyle.chipPaused : PanelStyle.chip).setFill()
     chipPath.fill()
 
     // Digits (and the pause glyph) centred in the chip; drawn once in grey,
@@ -261,18 +263,43 @@ final class CountdownPillView: NSView {
     }
 
     guard !content.goal.isEmpty else { return }
+    // A soft dark shadow keeps the white goal legible once the green sweep
+    // reaches it (white on the fill alone is about 3.6:1).
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.45)
+    shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+    shadow.shadowBlurRadius = 2
+    NSGraphicsContext.saveGraphicsState()
+    shadow.set()
+    Self.goalText(content).draw(with: goalRect, options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin], context: nil)
+    NSGraphicsContext.restoreGraphicsState()
+  }
+
+  /// The goal as drawn: one line, cut with an ellipsis at the pill's end.
+  static func goalText(_ content: PanelContent) -> NSAttributedString {
     let style = NSMutableParagraphStyle()
     style.lineBreakMode = .byTruncatingTail
-    let goal = NSAttributedString(
+    return NSAttributedString(
       string: content.goal,
       attributes: [.font: PanelStyle.goalFont, .foregroundColor: PanelStyle.goal, .paragraphStyle: style])
+  }
+
+  /// Where the goal is drawn: after the chip, up to the pill's trailing
+  /// inset, one line tall, capitals on the chip's middle. The width is
+  /// whatever the fixed pill leaves, so a long goal is cut here.
+  var goalRect: NSRect {
+    let chip = chipRect
     let goalFont = PanelStyle.goalFont
     let x = chip.maxX + PanelStyle.goalGap
     let width = max(0, bounds.width - x - PanelStyle.goalTrailing + 2)
-    // Line box so the capitals sit on the chip's middle.
     let lineHeight = ceil(goalFont.ascender - goalFont.descender)
     let y = (chip.midY - goalFont.capHeight / 2 + goalFont.descender).rounded()
-    goal.draw(with: NSRect(x: x, y: y, width: width, height: lineHeight), options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin])
+    return NSRect(x: x, y: y, width: width, height: lineHeight)
+  }
+
+  /// True when the goal does not fit `goalRect` and is truncated.
+  var goalIsTruncated: Bool {
+    ceil(Self.goalText(content).size().width) > goalRect.width
   }
 }
 

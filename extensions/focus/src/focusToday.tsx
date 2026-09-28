@@ -8,6 +8,7 @@ import {
   Toast,
   launchCommand,
   showToast,
+  closeMainWindow,
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FinishSessionForm } from "./components/FinishSessionForm";
@@ -196,7 +197,8 @@ export default function FocusTodayCommand() {
       toast.message = session.plannedEnd
         ? `Until ${formatClockIso(session.plannedEnd)}`
         : undefined;
-      await reload();
+      // Like Raycast Focus: the window goes away and the countdown takes over.
+      await closeMainWindow({ clearRootSearch: true });
     } catch (startError) {
       toast.style = Toast.Style.Failure;
       toast.title = "Could not start the session";

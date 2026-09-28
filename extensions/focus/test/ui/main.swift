@@ -436,7 +436,17 @@ let pausedPanelWidth = floating.frame.width
 ui.update(session(remaining: 1500, started: -1500))
 check("paused pill keeps the same size and its right edge", pausedPanelWidth == floating.frame.width && floating.frame.maxX == defaultFrame.maxX, "\(floating.frame)")
 ui.update(session(goal: "Write the quarterly planning document for the whole team", remaining: 1500, started: -1500))
-check("a long goal is cut at the pill's limit", floating.frame.width <= CountdownPillView.width(PanelContent(clock: "25:00", paused: false, progress: 0, goal: "")) + PanelStyle.goalGap + PanelStyle.goalMaxWidth + PanelStyle.goalTrailing, "\(floating.frame)")
+check("a long goal does not change the pill's size", floating.frame.width == floating.controlsWidth && floating.frame.height == 40, "\(floating.frame)")
+do {
+  let pill = floating.pill
+  let rect = pill.goalRect
+  check("the goal starts after the chip", rect.minX == pill.chipRect.maxX + PanelStyle.goalGap, "\(rect)")
+  check("the goal ends inside the pill", rect.maxX <= pill.bounds.width - PanelStyle.goalTrailing + 2 && rect.width > 40, "\(rect) \(pill.bounds)")
+  check("a long goal is truncated in that box", pill.goalIsTruncated)
+  check("the full goal is still read out", (pill.accessibilityLabel() ?? "").contains("Write the quarterly planning document for the whole team"))
+  ui.update(session(goal: "Deep Work", remaining: 1500, started: -1500))
+  check("a short goal is not truncated", !floating.pill.goalIsTruncated)
+}
 ui.update(session(remaining: 1500, started: -1500))
 
 // The pill changes width while the controls show (paused adds a glyph):
