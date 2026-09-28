@@ -8,9 +8,9 @@ calendar for everything if you set one in Focus Settings. A native helper,
 `focus-daemon`, owns Calendar access, the session state and the log; the
 Raycast commands are thin clients that talk to it over a unix socket.
 
-The full spec, including what later steps add (timer and menu bar countdown,
-end-of-session sheet, app and site blocking, stats), is
-[PLAN.md](PLAN.md).
+The full spec and every product decision since is [PLAN.md](PLAN.md); the
+helper's protocol, session rules, countdown displays, blocking and tests are
+in [HELPER.md](HELPER.md). Everything below is built (see "Status").
 
 ## Commands
 
