@@ -2,8 +2,8 @@
 // sheet, the completion sequence and the block window, with a fake delegate
 // in place of the session logic, a fake scheduler and sound, and a real
 // BlockEngine behind the app blocker. Run with scripts/test-ui.sh.
-// Pass a folder to also write sheet.png, menubar-*.png, panel-*.png,
-// banner.png, glow.png and block.png there.
+// Pass a folder to also write sheet.png, card-0s.png, card-2.5s.png,
+// card-over-glow.png, menubar-*.png, panel-*.png, glow.png and block.png there.
 //
 // Nothing shows on screen: the status item lives in a private NSStatusBar
 // and the sheet is ordered in far off screen without becoming key.
@@ -89,6 +89,10 @@ var popped: [String] = []
 ui.floating.popUpMenu = { menu, _ in popped.append(menu.title) }
 var opened: [URL] = []
 ui.openURL = { opened.append($0) }
+// The end card's hover poll reads this instead of the real mouse.
+let away = NSPoint(x: -5000, y: -5000)
+var pointer = away
+ui.pointerLocation = { pointer }
 let fake = FakeDelegate()
 ui.delegate = fake
 let bar = ui.menuBar
@@ -204,8 +208,17 @@ check("time's up text", sheet.statusLabel.stringValue == "Time's up · 25 min fo
 check("four extend buttons", sheet.extendButtons.map(\.title) == ["+5 min", "+10 min", "+15 min", "+25 min"], "\(sheet.extendButtons.map(\.title))")
 check("sheet floats on every space", panel.collectionBehavior.contains(.canJoinAllSpaces) && panel.collectionBehavior.contains(.fullScreenAuxiliary))
 check("sheet level above floating windows", panel.level.rawValue > NSWindow.Level.floating.rawValue)
+check("sheet level one above the completion glow", panel.level.rawValue == NSWindow.Level.screenSaver.rawValue + 1)
 check("sheet does not activate the app", panel.styleMask.contains(.nonactivatingPanel))
-check("sheet is 420 wide", panel.frame.width == 420, "\(panel.frame)")
+check("the card is 360 wide", panel.frame.width == 360, "\(panel.frame)")
+check("the card is compact: about 130 tall", panel.frame.height >= 110 && panel.frame.height <= 140, "\(panel.frame)")
+check("the card is borderless with the banner's type", panel.styleMask.contains(.borderless) && sheet.titleLabel.font?.pointSize == 14 && sheet.statusLabel.font?.pointSize == 13)
+sheet.content.layoutSubtreeIfNeeded()
+func inContent(_ view: NSView) -> NSRect { view.convert(view.bounds, to: sheet.content) }
+check("stars and the note share a row", abs(inContent(sheet.stars).midY - inContent(sheet.noteField).midY) <= 1 && inContent(sheet.noteField).minX > inContent(sheet.stars).maxX, "\(inContent(sheet.stars)) \(inContent(sheet.noteField))")
+check("extend and Finish share the row below", abs(inContent(sheet.extendRow).midY - inContent(sheet.finishButton).midY) <= 1 && inContent(sheet.extendRow).maxY < inContent(sheet.stars).minY && inContent(sheet.finishButton).maxX <= 360 - 11, "\(inContent(sheet.extendRow)) \(inContent(sheet.finishButton))")
+check("every extend label fits its button with room", sheet.extendButtons.allSatisfy { $0.frame.width >= $0.titleWidth + 8 }, "\(sheet.extendButtons.map { ($0.frame.width, $0.titleWidth) })")
+check("Finish and its keycap fit", sheet.finishButton.frame.width >= sheet.finishButton.intrinsicContentSize.width - 0.5, "\(sheet.finishButton.frame)")
 check("content is first responder", panel.firstResponder === sheet.content)
 
 check("stopped early text", EndSheet.statusText(session(state: "ending", remaining: 0, started: -600, plannedEnd: 900), now: now) == "Stopped · 10 min focused")
@@ -684,101 +697,318 @@ ui.update(session(id: 30, remaining: 300, started: -600))
 check("extended: sheet gone, panel back", !sheet.isVisible && floating.isVisible)
 ui.update(nil)
 
-// MARK: Completion
+// MARK: Completion and the end card
+
+func cardCentre() -> NSPoint { NSPoint(x: sheet.frame.midX, y: sheet.frame.midY) }
+func finishes() -> [String] { fake.calls.filter { $0.hasPrefix("finish") } }
+/// A session seen running whose timer then ran out: the card as Core shows it.
+func timerRunsOut(_ id: Int, display: Bool = true) -> SessionView {
+  ui.update(session(id: id, remaining: 1, started: -1499))
+  let over = session(id: id, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
+  ui.update(over)
+  ui.showEndSheet(over)
+  return over
+}
+/// Core's answer to a finish: idle, the sheet dismissed.
+func sessionFinished() {
+  ui.update(nil)
+  ui.dismissEndSheet()
+}
 
 fake.calls.removeAll()
 check("no sound yet", sound.plays == 0)
 let startTime = scheduler.time
-ui.update(session(id: 40, remaining: 1, started: -1499))
-now = now.addingTimeInterval(1)
-let over = session(id: 40, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
-ui.update(over)
-ui.showEndSheet(over)
+let over = timerRunsOut(40)
 check("timer ran out: the sound plays", sound.plays == 1)
-check("then the glow and the banner", ui.completion.trace == ["sound", "glow", "banner"], "\(ui.completion.trace)")
+check("then the glow, and no banner", ui.completion.trace == ["sound", "glow"], "\(ui.completion.trace)")
 check("a glow window per screen", ui.completion.glowWindows.filter(\.isVisible).count == 2 && ui.completion.glowFrames == [laptop.frame, external.frame])
 check("glow windows ignore the mouse and float over everything", ui.completion.glowWindows.allSatisfy { $0.ignoresMouseEvents && $0.level == .screenSaver && !$0.canBecomeKey && $0.collectionBehavior.contains(.canJoinAllSpaces) })
-check("the banner shows top centre of the main screen", ui.completion.isBannerVisible && abs(ui.completion.bannerFrame.midX - laptop.frame.midX) <= 1 && ui.completion.bannerFrame.maxY == laptop.visibleFrame.maxY - 12, "\(ui.completion.bannerFrame)")
-check("the banner is above the glow and ignores the mouse", ui.completion.banner.level.rawValue > NSWindow.Level.screenSaver.rawValue && ui.completion.banner.ignoresMouseEvents)
-check("the banner's words", BannerView.title == "Focus session completed" && BannerView.subtitle == "You stayed focused.")
+check("the card shows at once", sheet.isVisible && sheet.statusLabel.stringValue.hasPrefix("Time's up") && scheduler.time == startTime)
+check("the card starts fully opaque", panel.alphaValue == 1)
+check("the card is above the glow", panel.level.rawValue > ui.completion.glowWindows[0].level.rawValue)
+check("the card is a non-activating floating panel", panel.styleMask.contains(.nonactivatingPanel) && panel.collectionBehavior.contains(.canJoinAllSpaces) && panel.collectionBehavior.contains(.fullScreenAuxiliary))
+let cardFrame = sheet.frame
+check("the card sits top centre of the main screen, 12 below the menu bar", abs(cardFrame.midX - laptop.frame.midX) <= 1 && cardFrame.maxY == laptop.visibleFrame.maxY - 12 && cardFrame.width == 360, "\(cardFrame)")
+check("the card's frame maths", EndSheet.cardFrame(size: NSSize(width: 360, height: 130), on: laptop) == NSRect(x: 576, y: 802, width: 360, height: 130))
 check("the panel is hidden at once", !floating.isVisible)
-check("the end sheet waits", !sheet.isVisible && ui.pendingSheet?.id == 40)
+check("the card counts down, not engaged, not hovered", ui.endCard?.sessionId == 40 && ui.endCard?.engaged == false && ui.endCard?.pointerInside == false)
 ui.update(over)
-check("ticks while the banner shows keep the sheet waiting", !sheet.isVisible && !floating.isVisible && ui.pendingSheet != nil)
 ui.showEndSheet(over)
-check("a second showEndSheet does not replay it", sound.plays == 1 && ui.completion.trace.count == 3)
-scheduler.advance(1.8)
-check("fading out from 1.8 s", ui.completion.trace.last == "fadeOut" && !sheet.isVisible, "\(ui.completion.trace)")
-scheduler.advance(0.69)
-check("still no sheet before 2.5 s", !sheet.isVisible && ui.completion.isGlowVisible)
+check("a second showEndSheet does not replay the completion", sound.plays == 1 && ui.completion.trace.count == 2)
+// One continuous linear fade from the start: no hold, no cliff. Core's
+// once-a-second update while ending never lifts it.
+var alphas: [CGFloat] = [panel.alphaValue]
+for _ in 0..<5 {
+  scheduler.advance(0.25)
+  ui.update(over)
+  alphas.append(panel.alphaValue)
+}
+check("fading from the start", alphas[1] < 1 && abs(alphas[1] - 0.95) < 0.02, "\(alphas)")
+check("updates during the fade never raise it", zip(alphas, alphas.dropFirst()).allSatisfy { $0.1 < $0.0 }, "\(alphas)")
+scheduler.advance(0.55)
+check("the glow fades out from 1.8 s", ui.completion.trace.last == "fadeOut", "\(ui.completion.trace)")
+scheduler.advance(0.7)
+check("at 2.5 s the glow is gone", !ui.completion.isGlowVisible && ui.completion.trace.last == "done", "\(ui.completion.trace)")
+check("at 2.5 s the card is half faded", sheet.isVisible && abs(panel.alphaValue - 0.5) < 0.02, "\(panel.alphaValue)")
+for _ in 0..<5 {
+  let before = panel.alphaValue
+  ui.update(over)
+  scheduler.advance(0.3)
+  check("an update at \(String(format: "%.1f", scheduler.time - startTime)) s leaves it falling", panel.alphaValue < before, "\(before) -> \(panel.alphaValue)")
+}
+check("at 4 s about 0.2", abs(panel.alphaValue - 0.2) < 0.02, "\(panel.alphaValue)")
+scheduler.advance(0.99)
+check("no finish before 5 s", finishes().isEmpty && sheet.isVisible, "\(fake.calls)")
 scheduler.advance(0.01)
-check("at 2.5 s the glow and banner are gone", !ui.completion.isGlowVisible && !ui.completion.isBannerVisible && ui.completion.trace.last == "done", "\(ui.completion.trace)")
-check("and the end sheet shows", sheet.isVisible && sheet.statusLabel.stringValue.hasPrefix("Time's up") && ui.pendingSheet == nil)
-check("2.5 s in all", abs(scheduler.time - startTime - 2.5) < 0.001)
-check("the completion calls nothing on the session", fake.calls.isEmpty, "\(fake.calls)")
+check("at 5 s: finished with no rating and no note", fake.calls == ["finish nil nil"], "\(fake.calls)")
+check("the card is hidden at alpha 0", !sheet.isVisible && panel.alphaValue == 0, "\(panel.alphaValue)")
+check("5 s in all", abs(scheduler.time - startTime - 5) < 0.001)
+check("no countdown left", ui.endCard == nil)
+sessionFinished()
+scheduler.advance(30)
+check("one finish only", fake.calls == ["finish nil nil"], "\(fake.calls)")
+
+// The next card is opaque again.
+fake.calls.removeAll()
+_ = timerRunsOut(41)
+check("a new card starts opaque", sheet.isVisible && panel.alphaValue == 1)
+// A refresh of the card already up keeps its countdown.
+scheduler.advance(2)
+ui.showEndSheet(session(id: 41, state: "ending", remaining: 0, started: -1500, plannedEnd: 0))
+scheduler.advance(2.99)
+check("a refresh does not restart the countdown", finishes().isEmpty)
+scheduler.advance(0.01)
+check("finished 5 s after it first showed", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// The screen rule: the first screen given (the main one, as for the glow).
+screenList = [external, laptop]
+fake.calls.removeAll()
+_ = timerRunsOut(42)
+check("on another main screen: top centre of that one", abs(sheet.frame.midX - external.frame.midX) <= 1 && sheet.frame.maxY == external.visibleFrame.maxY - 12, "\(sheet.frame)")
+check("the glow's main screen is the same", ui.completion.glowFrames.first == external.frame)
+sheet.finishButton.performClick(nil)
+sessionFinished()
+screenList = [laptop, external]
+
+// Hover at 4 s: opaque again, no finish until 5 s after the pointer leaves.
+fake.calls.removeAll()
+_ = timerRunsOut(43)
+scheduler.advance(4)
+check("mid-fade at 4 s", panel.alphaValue < 1)
+pointer = cardCentre()
+scheduler.advance(0.1)
+check("hover: the poll sees the pointer and pauses", ui.endCard?.pointerInside == true && panel.alphaValue == 1, "\(panel.alphaValue)")
+scheduler.advance(20)
+check("no finish while hovered", finishes().isEmpty && sheet.isVisible && panel.alphaValue == 1, "\(fake.calls)")
+pointer = away
+scheduler.advance(0.1)
+check("the pointer left", ui.endCard?.pointerInside == false)
+scheduler.advance(0.1)
+check("leaving starts the fade again from opaque", panel.alphaValue < 1 && panel.alphaValue > 0.95, "\(panel.alphaValue)")
+scheduler.advance(2.4)
+check("half faded 2.5 s after leaving", abs(panel.alphaValue - 0.5) < 0.05, "\(panel.alphaValue)")
+scheduler.advance(2.29)
+check("fading, and no finish 4.9 s after leaving", finishes().isEmpty && panel.alphaValue < 1 && sheet.isVisible)
+scheduler.advance(0.21)
+check("finished 5 s after the pointer left (within a poll)", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// The tracking area reports crossings too; the poll then keeps it honest.
+fake.calls.removeAll()
+_ = timerRunsOut(44)
+scheduler.advance(4.05)
+let entered = NSEvent.enterExitEvent(
+  with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+  eventNumber: 0, trackingNumber: 0, userData: nil)!
+pointer = cardCentre()
+sheet.content.mouseEntered(with: entered)
+check("an entered event pauses at alpha 1", ui.endCard?.pointerInside == true && panel.alphaValue == 1)
+scheduler.advance(10)
+check("still up while the pointer stays", finishes().isEmpty && sheet.isVisible)
+pointer = away
+let exited = NSEvent.enterExitEvent(
+  with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+  eventNumber: 0, trackingNumber: 0, userData: nil)!
+sheet.content.mouseExited(with: exited)
+scheduler.advance(4.95)
+check("an exited event restarts the 5 s", finishes().isEmpty)
+scheduler.advance(0.1)
+check("and it finishes after them", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// Using the card cancels the auto-finish for good.
+fake.calls.removeAll()
+_ = timerRunsOut(45)
+scheduler.advance(1)
+click(star: 3)
+check("a star click engages", ui.endCard?.engaged == true && sheet.rating == 3)
+scheduler.advance(60)
+check("no finish after a star click", finishes().isEmpty && sheet.isVisible && panel.alphaValue == 1, "\(fake.calls)")
+sheet.finishButton.performClick(nil)
+check("then Finish sends the rating", fake.calls == ["finish 3 nil"], "\(fake.calls)")
+sessionFinished()
+
+fake.calls.removeAll()
+_ = timerRunsOut(46)
+now = now.addingTimeInterval(1)
+scheduler.advance(4.2)
+check("mid-fade before the key", panel.alphaValue < 1)
+key("2", 19)
+check("key 2 rates and engages", sheet.rating == 2 && ui.endCard?.engaged == true)
+check("and snaps back to opaque", panel.alphaValue == 1)
+scheduler.advance(60)
+check("no finish after a digit", finishes().isEmpty && sheet.isVisible, "\(fake.calls)")
+key("\r", 36)
+check("Return finishes with it", fake.calls == ["finish 2 nil"], "\(fake.calls)")
+sessionFinished()
+
+fake.calls.removeAll()
+_ = timerRunsOut(47)
+now = now.addingTimeInterval(1)
+scheduler.advance(2)
+key("a", 0)
+check("a typed character engages", ui.endCard?.engaged == true && sheet.noteField.stringValue == "a", sheet.noteField.stringValue)
+scheduler.advance(60)
+check("no finish after typing", finishes().isEmpty && sheet.isVisible, "\(fake.calls)")
+(sheet.noteField.currentEditor() as? NSTextView)?.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+sheet.finishButton.performClick(nil)
+check("Finish sends the note", fake.calls == ["finish nil \"a\""], "\(fake.calls)")
+sessionFinished()
+
+// Typing straight into the note (the field editor) engages too.
+fake.calls.removeAll()
+_ = timerRunsOut(48)
+now = now.addingTimeInterval(1)
+panel.makeFirstResponder(sheet.noteField)
+(sheet.noteField.currentEditor() as? NSTextView)?.insertText("z", replacementRange: NSRange(location: NSNotFound, length: 0))
+check("typing in the note field engages", ui.endCard?.engaged == true && sheet.noteField.stringValue == "z", sheet.noteField.stringValue)
+scheduler.advance(60)
+check("no finish after typing in the field", finishes().isEmpty && sheet.isVisible)
+sessionFinished()
+
+fake.calls.removeAll()
+_ = timerRunsOut(49)
+now = now.addingTimeInterval(1)
+panel.makeFirstResponder(sheet.noteField)
+(sheet.noteField.currentEditor() as? NSTextView)?.doCommand(by: #selector(NSResponder.moveLeft(_:)))
+check("an arrow key in the note engages", ui.endCard?.engaged == true)
+sessionFinished()
+
+// Keys typed in the grace period (meant for another app) do not engage.
+fake.calls.removeAll()
+_ = timerRunsOut(50)
+key("a", 0)
+key("3", 20)
+key("\t", 48)
+check("keys inside the grace period: no note, no rating, not engaged", sheet.noteField.stringValue == "" && sheet.rating == nil && ui.endCard?.engaged == false, sheet.noteField.stringValue)
+scheduler.advance(5)
+check("so it still finishes by itself", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// Extend and Finish presses answer it; nothing comes later.
+fake.calls.removeAll()
+_ = timerRunsOut(51)
+scheduler.advance(1)
+sheet.extendButtons[0].performClick(nil)
+check("Extend on the card extends", fake.calls == ["extend 300"] && !sheet.isVisible, "\(fake.calls)")
+ui.update(session(id: 51, remaining: 300, started: -1500))
+scheduler.advance(60)
+check("no finish after Extend", fake.calls == ["extend 300"], "\(fake.calls)")
 ui.update(nil)
 
-// Manual stop: no completion, sheet at once.
-ui.update(session(id: 41, remaining: 600, started: -900))
-ui.update(session(id: 41, state: "ending", remaining: 0, started: -900, plannedEnd: 600))
-ui.showEndSheet(session(id: 41, state: "ending", remaining: 0, started: -900, plannedEnd: 600))
-check("manual stop: no sound, sheet at once", sound.plays == 1 && sheet.isVisible && ui.pendingSheet == nil)
+fake.calls.removeAll()
+_ = timerRunsOut(52)
+scheduler.advance(4.2)
+sheet.finishButton.performClick(nil)
+check("Finish mid-fade finishes once", fake.calls == ["finish nil nil"], "\(fake.calls)")
+scheduler.advance(60)
+check("and nothing after it", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// The same session back after an extend keeps what was entered, and the
+// new card's auto-finish sends it (as Finish would).
+fake.calls.removeAll()
+_ = timerRunsOut(53)
+click(star: 4)
+sheet.extendButtons[0].performClick(nil)
+ui.update(session(id: 53, remaining: 300, started: -1500))
+let soundsBack = sound.plays
+_ = timerRunsOut(53)
+check("back after an extend: the completion again, a new countdown, the rating kept", ui.endCard?.engaged == false && sheet.rating == 4 && sound.plays == soundsBack + 1, "\(sound.plays)")
+scheduler.advance(5)
+check("left alone, it finishes with the kept rating", fake.calls == ["extend 300", "finish 4 nil"], "\(fake.calls)")
+sessionFinished()
+
+// Manual stop: no sound or glow, the same card and timer.
+fake.calls.removeAll()
+let soundsBefore = sound.plays
+ui.update(session(id: 60, remaining: 600, started: -900))
+let stopped = session(id: 60, state: "ending", remaining: 0, started: -900, plannedEnd: 600)
+ui.update(stopped)
+ui.showEndSheet(stopped)
+check("manual stop: no sound, the card at once", sound.plays == soundsBefore && sheet.isVisible && sheet.statusLabel.stringValue.hasPrefix("Stopped"))
+check("manual stop: top centre too", sheet.frame == cardFrame, "\(sheet.frame)")
+scheduler.advance(5)
+check("manual stop: finished at 5 s", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// Paused past its planned end: the completion plays, the card at once.
+fake.calls.removeAll()
+ui.update(session(id: 61, state: "paused", remaining: 1, started: -1499))
+let pausedOver = session(id: 61, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
+ui.update(pausedOver)
+ui.showEndSheet(pausedOver)
+check("paused past the end: sound and card at once", sound.plays == soundsBefore + 1 && sheet.isVisible)
+sheet.finishButton.performClick(nil)
+sessionFinished()
+
+// A daemon restarted at the end sheet: no sound, the card and its timer.
+fake.calls.removeAll()
+ui.showEndSheet(session(id: 62, state: "ending", remaining: 0, plannedEnd: -60))
+check("restart at the sheet: no sound, the card at once", sound.plays == soundsBefore + 1 && sheet.isVisible)
+scheduler.advance(5)
+check("restart at the sheet: finished at 5 s", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// Extended from the menu bar or Raycast while the card counts down.
+fake.calls.removeAll()
+_ = timerRunsOut(63)
+scheduler.advance(2)
+ui.update(session(id: 63, remaining: 300, started: -1500))
+check("extended elsewhere: card gone, panel back", !sheet.isVisible && floating.isVisible && ui.endCard == nil)
+scheduler.advance(30)
+check("and no finish later", finishes().isEmpty, "\(fake.calls)")
 ui.update(nil)
+
+// Finished from Raycast while the card counts down.
+_ = timerRunsOut(64)
+scheduler.advance(2)
+sessionFinished()
+scheduler.advance(30)
+check("finished elsewhere: no finish from the card", finishes().isEmpty && !sheet.isVisible, "\(fake.calls)")
 
 // Cancel: finished straight away, nothing plays.
-ui.update(session(id: 42, remaining: 600, started: -900))
+let soundsAtCancel = sound.plays
+ui.update(session(id: 65, remaining: 600, started: -900))
 ui.update(nil)
-check("cancel: no sound, no sheet", sound.plays == 1 && !sheet.isVisible && !floating.isVisible)
+check("cancel: no sound, no card", sound.plays == soundsAtCancel && !sheet.isVisible && !floating.isVisible)
 
-// A daemon restarted at the end sheet does not replay it.
-ui.showEndSheet(session(id: 43, state: "ending", remaining: 0, plannedEnd: -60))
-check("restart at the sheet: no sound, sheet at once", sound.plays == 1 && sheet.isVisible)
-ui.update(nil)
-
-// Extended (from the menu bar or Raycast) while the banner shows: no sheet after it.
-ui.update(session(id: 44, remaining: 1, started: -1499))
-let over44 = session(id: 44, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
-ui.update(over44)
-ui.showEndSheet(over44)
-check("second completion plays", sound.plays == 2)
-ui.update(session(id: 44, remaining: 300, started: -1500))
-check("extended during the banner: no sheet pending, panel back", ui.pendingSheet == nil && floating.isVisible)
-scheduler.advance(2.5)
-check("and no sheet after it", !sheet.isVisible)
-ui.update(nil)
-
-// Finished from Raycast during the banner: dismiss drops the sheet.
-ui.update(session(id: 45, remaining: 1, started: -1499))
-let over45 = session(id: 45, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
-ui.update(over45)
-ui.showEndSheet(over45)
-ui.update(nil)
-ui.dismissEndSheet()
-scheduler.advance(2.5)
-check("finished during the banner: no sheet", !sheet.isVisible && ui.pendingSheet == nil)
-
-// On the menu bar display the completion plays too.
+// On the menu bar display the completion plays and the card shows.
 ui.setDisplay(.menuBar)
-ui.update(session(id: 46, remaining: 1, started: -1499))
-let over46 = session(id: 46, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
-ui.update(over46)
-ui.showEndSheet(over46)
-check("menu bar display: the completion plays", sound.plays == 4 && !floating.isVisible && bar.statusItem.isVisible, "\(sound.plays)")
-scheduler.advance(2.5)
-check("menu bar display: then the sheet", sheet.isVisible)
-ui.update(nil)
-ui.dismissEndSheet()
+_ = timerRunsOut(66)
+check("menu bar display: the completion plays and the card shows", sound.plays == soundsAtCancel + 1 && sheet.isVisible && !floating.isVisible && bar.statusItem.isVisible)
+sheet.finishButton.performClick(nil)
+sessionFinished()
 
-// Turned off (the UI demo without FOCUS_UI_DEMO_COMPLETE): sheet at once.
+// Turned off (the UI demo without FOCUS_UI_DEMO_COMPLETE): the card alone.
 ui.completionEnabled = false
-ui.update(session(id: 47, remaining: 1, started: -1499))
-ui.update(session(id: 47, state: "ending", remaining: 0, started: -1500, plannedEnd: 0))
-ui.showEndSheet(session(id: 47, state: "ending", remaining: 0, started: -1500, plannedEnd: 0))
-check("completion off: sheet at once", sound.plays == 4 && sheet.isVisible)
+_ = timerRunsOut(67)
+check("completion off: no sound, the card", sound.plays == soundsAtCancel + 1 && sheet.isVisible)
 ui.completionEnabled = true
-ui.update(nil)
-ui.dismissEndSheet()
+sessionFinished()
 ui.setDisplay(.panel)
+fake.calls.removeAll()
 
 // MARK: Presenter plumbing
 
@@ -920,8 +1150,8 @@ if CommandLine.arguments.count > 1 {
   ui.dismissEndSheet()
 
   // The floating panel at 2x over a mid-grey desktop: idle near the start,
-  // half way, paused, and the controls on hover. Then the banner, and one
-  // glow screen at a quarter size.
+  // half way, paused, and the controls on hover. Then one glow screen at
+  // half size, and the card over it where it shows.
   func render(_ view: NSView, _ name: String, background: NSColor, scale: CGFloat = 2, pad: CGFloat = 12) {
     view.layoutSubtreeIfNeeded()
     let size = NSSize(width: view.bounds.width + pad * 2, height: view.bounds.height + pad * 2)
@@ -964,10 +1194,47 @@ if CommandLine.arguments.count > 1 {
   render(floating.chrome, "panel-hover-paused.png", background: desktop)
   floating.setHovering(false, animated: false)
   ui.update(nil)
-  ui.completion.bannerView.frame = NSRect(x: 0, y: 0, width: BannerView.width, height: CompletionStyle.bannerHeight)
-  render(ui.completion.bannerView, "banner.png", background: desktop)
   let glow = GlowView(frame: NSRect(x: 0, y: 0, width: 1512, height: 982))
   render(glow, "glow.png", background: desktop, scale: 0.5, pad: 0)
+  // The card over the glow on the laptop screen, as the timer runs out.
+  ui.showEndSheet(session(id: 13, goal: "Deep Work", state: "ending", remaining: 0, started: -1560, plannedEnd: 0, paused: 60))
+  sheet.content.layoutSubtreeIfNeeded()
+  let screenView = NSView(frame: laptop.frame)
+  let glowCopy = GlowView(frame: screenView.bounds)
+  screenView.addSubview(glowCopy)
+  if let cardRep = sheet.content.bitmapImageRepForCachingDisplay(in: sheet.content.bounds) {
+    sheet.content.cacheDisplay(in: sheet.content.bounds, to: cardRep)
+    let image = NSImage(size: sheet.content.bounds.size)
+    image.addRepresentation(cardRep)
+    let cardView = NSImageView(frame: sheet.frame)
+    cardView.image = image
+    cardView.imageScaling = .scaleNone
+    screenView.addSubview(cardView)
+  }
+  render(screenView, "card-over-glow.png", background: desktop, scale: 0.5, pad: 0)
+  // The card alone at 2x over the desktop grey, as it appears (0 s) and
+  // half way through its fade (2.5 s, alpha 0.5).
+  for (name, alpha) in [("card-0s.png", 1.0), ("card-2.5s.png", 0.5)] as [(String, CGFloat)] {
+    guard let cardRep = sheet.content.bitmapImageRepForCachingDisplay(in: sheet.content.bounds) else { continue }
+    sheet.content.cacheDisplay(in: sheet.content.bounds, to: cardRep)
+    let pad: CGFloat = 16
+    let size = NSSize(width: sheet.content.bounds.width + pad * 2, height: sheet.content.bounds.height + pad * 2)
+    guard let rep = NSBitmapImageRep(
+      bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2), bitsPerSample: 8,
+      samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    else { continue }
+    rep.size = size
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    desktop.setFill()
+    NSRect(origin: .zero, size: size).fill()
+    cardRep.draw(
+      in: NSRect(x: pad, y: pad, width: sheet.content.bounds.width, height: sheet.content.bounds.height), from: .zero,
+      operation: .sourceOver, fraction: alpha, respectFlipped: true, hints: nil)
+    NSGraphicsContext.restoreGraphicsState()
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: folder + "/" + name))
+  }
+  ui.dismissEndSheet()
 
   // The block window at a laptop size, with Calculator's icon.
   let calculator = NSWorkspace.shared.icon(forFile: "/System/Applications/Calculator.app")

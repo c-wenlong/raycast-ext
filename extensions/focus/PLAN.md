@@ -334,10 +334,36 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   the session is paused as usual and resumed by the presenter when the time
   is up, unless it was resumed or ended first. A helper restart during a
   timed pause leaves it paused until Resume.
-- When the timer runs out (not on a manual stop or Cancel), a sound plays,
-  the screen edges glow green and a banner "Focus session completed / You
-  stayed focused." shows top centre; after 2.5 s both are gone and the end
-  sheet appears.
+- When the timer runs out (not on a manual stop or Cancel), a sound plays
+  and the screen edges glow green for 2.5 s.
+
+## End card (2026-09-28)
+
+Kai asked for the end sheet to replace the completion banner, float for
+about 5 seconds and fade out, stay while hovered, and count as Finish with
+no rating or note when left alone. Decided while building it:
+
+- No banner. The end sheet is the card: it shows at once for every way a
+  session reaches it (timer, paused past the end, Complete or Stop, a
+  helper restart at the sheet), top centre of the main screen 12 pt below
+  the menu bar, above the glow. There was no saved sheet position, so top
+  centre is used for every case.
+- It is compact, like a notification that may be ignored: about 360 by
+  128 pt, the banner's type (14 pt semibold goal over 13 pt grey status),
+  stars and note on one row, extend and Finish as small pills on the next.
+  Every control still works (stars, note, extend, Finish, 1 to 5, Return).
+- Left alone for 5 s it finishes the session as Finish would with nothing
+  filled in (no rating, no note). It fades slowly over the whole 5 s, from
+  the moment it appears, in one linear animation (Kai: no hold then a
+  one-second cliff). Hovering holds it at full opacity; leaving starts the
+  5 s fade again from opaque.
+- Using it (a star, 1 to 5, typing a note, Extend, Finish, Return) cancels
+  the auto-finish; it then waits for Finish or Extend as before, with
+  blocking on. Keys in its first 0.8 s are swallowed and do not count.
+- The same session's card back after an extend keeps its stars and note, and
+  its auto-finish sends them (as Finish would) rather than dropping them.
+- The countdown, hover and "used" flag are presenter state, not session
+  state; a helper restart at the sheet shows a fresh card with a fresh 5 s.
 
 ## Open questions
 
