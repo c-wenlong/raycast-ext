@@ -20,6 +20,18 @@ enum Rules {
   /// counted in stats under "Ad hoc" and never written to a calendar.
   static let noCalendar = "none"
 
+  /// Where a session's log event goes (PLAN.md "Log event", decided
+  /// 2026-09-28): the Settings override (`logCalendarId`) when one is set,
+  /// else the calendar the session is filed under (the picked calendar for
+  /// ad hoc, the source event's calendar otherwise). Nil for a session filed
+  /// under no calendar, which is never written, and for one with no calendar
+  /// id at all when there is no override.
+  static func logCalendar(sessionCalendar: String, override: String?) -> String? {
+    if sessionCalendar == noCalendar { return nil }
+    if let override, !override.isEmpty { return override }
+    return sessionCalendar.isEmpty ? nil : sessionCalendar
+  }
+
   /// An event is startable only while more than this much of it is left.
   static let minimumRemaining: TimeInterval = 60
   /// Ad-hoc sessions run between one minute and one day.

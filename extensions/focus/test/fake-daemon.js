@@ -6,8 +6,10 @@
 //   node test/fake-daemon.js [--socket PATH] [--no-waiting]
 //
 // Default socket: ~/.raycast/focus/focus.sock. It reads config.json next to
-// the socket on every request (startable calendars filter `today`, the log
-// calendar decides whether `finish` logs or leaves the session waiting).
+// the socket on every request (startable calendars filter `today`; `finish`
+// logs to the log calendar override when one is set, else to the session's
+// own calendar, as the helper does, and leaves the session waiting when that
+// calendar is not in the fake's list or is read-only).
 // It refuses to start if something already answers on the socket, so it
 // never shadows a real helper. Ctrl-C stops it and removes the socket.
 //
@@ -55,6 +57,16 @@ function fixtureEvents(now) {
     { id: "ev-done", title: "Standup", calendarId: "cal-work", start: at(-120), end: at(-105) },
   ];
 }
+
+// The helper's destination rule (Rules.logCalendar): the override when set,
+// else the session's own calendar; null for a session filed under none.
+function logDestination(sessionCalendar, override) {
+  if (sessionCalendar === "none") return null;
+  if (typeof override === "string" && override) return override;
+  return sessionCalendar || null;
+}
+
+const calendarName = (calendar) => `${calendar.title} (${calendar.account})`;
 
 function readConfig(configPath) {
   if (!configPath) return {};
@@ -344,7 +356,15 @@ function createFakeDaemon(options) {
         const config = readConfig(configPath);
         // A session filed under no calendar ("none") is never written to one.
         const skipped = session.calendarId === "none";
-        const logCalendar = skipped ? null : CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
+        const destinationId = skipped ? null : logDestination(session.calendarId, config.logCalendarId);
+        const destination = destinationId ? CALENDARS.find((c) => c.id === destinationId) : undefined;
+        const writable = destination !== undefined && destination.writable;
+        let destinationName = destination ? calendarName(destination) : null;
+        if (destinationId && destinationId === config.logCalendarId && config.logCalendarName) {
+          destinationName = config.logCalendarName;
+        }
+        session.logCalendarId = destinationId;
+        session.logCalendarName = destinationName;
         const item = {
           id: session.id,
           goal: session.goal,
@@ -358,22 +378,29 @@ function createFakeDaemon(options) {
           endReason: session.endReason,
           blockedAttempts: snoozed,
           snoozes: snoozed,
-          logPending: !logCalendar && !skipped,
+          logPending: !writable && !skipped,
           logSkipped: skipped,
           logEventId: null,
         };
         state.history.push(item);
         if (skipped) return { ok: true, session, logEventId: null, logPending: false, logSkipped: true };
-        if (!logCalendar) {
+        if (!writable) {
+          const label = destinationName || destinationId;
           state.waiting.push({
             sessionId: session.id,
             goal: session.goal,
             endedAt: now.toISOString(),
-            logCalendarName: config.logCalendarName || null,
+            logCalendarId: destinationId,
+            logCalendarName: destinationName,
+            reason: !destinationId
+              ? "the session has no calendar to log to; move the waiting sessions to a calendar"
+              : destination
+                ? `calendar ${label} is read-only, so it cannot take the log event; move the waiting sessions to a writable calendar`
+                : `calendar ${label} is not in Calendar.app`,
           });
           return { ok: true, session, logEventId: null, logPending: true, logSkipped: false };
         }
-        const logEventId = writeLogEvent(item, logCalendar.id);
+        const logEventId = writeLogEvent(item, destination.id);
         return { ok: true, session: { ...session, logEventId }, logEventId, logPending: false, logSkipped: false };
       }
       case "blocking":
@@ -656,7 +683,7 @@ function seedHistory(now) {
   ];
 }
 
-module.exports = { createFakeDaemon, CALENDARS, fixtureEvents };
+module.exports = { createFakeDaemon, CALENDARS, fixtureEvents, logDestination };
 
 function answers(socketPath) {
   return new Promise((resolve) => {

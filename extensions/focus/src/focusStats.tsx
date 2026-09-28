@@ -8,8 +8,10 @@ import {
   showToast,
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MoveWaitingAction } from "./components/MoveWaitingAction";
 import { FocusConfig, readConfig } from "./lib/config";
 import {
+  Calendar,
   RecentSession,
   STATS_DAYS,
   Stats,
@@ -18,7 +20,7 @@ import {
   errorMessage,
   getDaemon,
 } from "./lib/daemon";
-import { moveTarget } from "./lib/settings";
+import { moveTargets } from "./lib/settings";
 import {
   attemptsText,
   endReasonText,
@@ -36,8 +38,9 @@ interface Data {
   stats: Stats;
   // When the stats arrived; busts Raycast's image cache for the chart.
   loadedAt: number;
-  // Only for the Move action's target; the stats work without it.
+  // Only for the Move action's targets; the stats work without them.
   config: FocusConfig | null;
+  calendars: Calendar[];
 }
 
 const DAYS = STATS_DAYS.default;
@@ -54,12 +57,14 @@ export default function FocusStatsCommand() {
     const id = ++latest.current;
     setIsLoading(true);
     try {
-      const [stats, config] = await Promise.all([
-        getDaemon().stats(DAYS),
+      const daemon = getDaemon();
+      const [stats, config, calendars] = await Promise.all([
+        daemon.stats(DAYS),
         readConfig().catch((): FocusConfig | null => null),
+        daemon.calendars().catch((): Calendar[] => []),
       ]);
       if (id !== latest.current) return;
-      setData({ stats, config, loadedAt: Date.now() });
+      setData({ stats, config, calendars, loadedAt: Date.now() });
       setError(null);
     } catch (loadError) {
       if (id !== latest.current) return;
@@ -301,7 +306,7 @@ export default function FocusStatsCommand() {
                 {session.logPending ? (
                   <List.Item.Detail.Metadata.Label
                     title="Log event"
-                    text="waiting for the log calendar"
+                    text="waiting to be written"
                   />
                 ) : null}
               </List.Item.Detail.Metadata>
@@ -319,9 +324,12 @@ export default function FocusStatsCommand() {
     );
   }
 
-  function renderWaiting(item: StatsWaiting, config: FocusConfig | null) {
-    const target = config ? moveTarget(config) : null;
-    const calendar = item.logCalendarName ?? "a log calendar";
+  function renderWaiting(
+    item: StatsWaiting,
+    config: FocusConfig | null,
+    calendars: Calendar[],
+  ) {
+    const calendar = item.logCalendarName ?? "a calendar";
     return (
       <List.Item
         key={`waiting-${item.sessionId}`}
@@ -338,11 +346,10 @@ export default function FocusStatsCommand() {
               icon={Icon.ArrowClockwise}
               onAction={handleRetryPending}
             />
-            {target ? (
-              <Action
-                title={`Move Waiting Sessions to ${target.name}`}
-                icon={Icon.ArrowRight}
-                onAction={() => handleMovePending(target.id, target.name)}
+            {config ? (
+              <MoveWaitingAction
+                targets={moveTargets(config, calendars)}
+                onMove={handleMovePending}
               />
             ) : null}
             {refresh}
@@ -386,10 +393,12 @@ export default function FocusStatsCommand() {
       ) : null}
       {stats && data && stats.waiting.length > 0 ? (
         <List.Section
-          title="Waiting for log calendar"
+          title="Waiting to be logged"
           subtitle={`${stats.waiting.length}`}
         >
-          {stats.waiting.map((item) => renderWaiting(item, data.config))}
+          {stats.waiting.map((item) =>
+            renderWaiting(item, data.config, data.calendars),
+          )}
         </List.Section>
       ) : null}
     </List>

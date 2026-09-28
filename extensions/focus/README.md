@@ -2,7 +2,9 @@
 
 Calendar-driven focus sessions for Raycast. Today's events from calendars you
 choose become sessions you can start; when a session finishes, its actual time
-is written as a new event in a log calendar of your choice. A native helper,
+is written as a new event in the session's own calendar (beside the planned
+event, or in the calendar an ad-hoc session is filed under), or in one log
+calendar for everything if you set one in Focus Settings. A native helper,
 `focus-daemon`, owns Calendar access, the session state and the log; the
 Raycast commands are thin clients that talk to it over a unix socket.
 
@@ -27,13 +29,17 @@ end-of-session sheet, app and site blocking, stats), is
   blocklist"; blocking is off while paused).
   Starting another event while a session is open sends that one to the end
   sheet first. Sessions whose log event could
-  not be written yet are listed under **Waiting for log calendar**, with Retry
-  and "Move Waiting Sessions to <current log calendar>". `⌘R` refreshes,
-  `⌘,` opens Focus Settings.
-- **Focus Settings**: pick the startable calendars and the log calendar.
-  Every calendar Calendar.app knows about is listed as `title (account)`, so a
-  calendar reachable through two accounts can be told apart; only writable
-  calendars can be the log calendar. Below them: a blocking profile for each
+  not be written yet (their calendar is read-only, such as a subscribed one,
+  or no longer in Calendar.app) are listed under **Waiting to be logged**,
+  with the reason in the row's info icon, Retry, and Move Waiting Sessions:
+  to the log calendar when one is set in Focus Settings, otherwise a submenu
+  of the writable calendars. `⌘R` refreshes, `⌘,` opens Focus Settings.
+- **Focus Settings**: pick the startable calendars and, optionally, a log
+  calendar. Every calendar Calendar.app knows about is listed as
+  `title (account)`, so a calendar reachable through two accounts can be told
+  apart. Log Calendar starts on "Each session's own calendar": each session's
+  event goes to the calendar the session belongs to. Pick a writable calendar
+  there instead to log every session to that one calendar. Below them: a blocking profile for each
   selected startable calendar (default "default"), the snooze length (1, 3, 5
   or 10 minutes), the browsers whose tabs are watched (Google Chrome, Dia),
   "Also start Raycast Focus", a summary line per profile, and Countdown
@@ -48,8 +54,10 @@ end-of-session sheet, app and site blocking, stats), is
   picks a change up within seconds.
 - **Ad-hoc Session**: start a session with no calendar event: a goal, a
   length (15, 25, 45, 60 or 90 minutes, or custom minutes from 1 to 1440), a
-  calendar to file it under (the last one used is preselected), and a
-  blocking profile (the calendar's default is preselected). Starting while a
+  calendar to file it under (the last one used is preselected; the session's
+  log event is written there too, or to the log calendar when one is set;
+  "(No Calendar)" writes nothing), and a blocking profile (the calendar's
+  default is preselected). Starting while a
   session is open sends that one to the end sheet, and the toast says so.
 
 - **Focus Stats**: a list with a detail pane. **Overview** has Today and Last
@@ -72,7 +80,7 @@ Everything is in `~/.raycast/focus/` (gitignored at the repo root as `/focus/`):
 
 | File | Written by | What |
 |---|---|---|
-| `config.json` | Focus Settings | startable calendars, log calendar id and name, and the step 4 keys (profiles, browsers, snooze length, Raycast deeplink). Unknown keys are kept on save; writes go through a temp file and a rename. |
+| `config.json` | Focus Settings | startable calendars, the optional log calendar override (id and name, null for each session's own calendar), and the step 4 keys (profiles, browsers, snooze length, Raycast deeplink). Unknown keys are kept on save; writes go through a temp file and a rename. |
 | `focus.sock` | the helper | the socket the commands talk to: one JSON request line, one JSON reply line. |
 | `focus.db` | the helper | sqlite log of sessions, pauses and blocked attempts. |
 | `stats/week.svg` | the helper | the Focus Stats chart, rewritten on every `stats` request. |

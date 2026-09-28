@@ -631,18 +631,15 @@ final class FocusCore: SessionPresenterDelegate {
       .finish(at: now, rating: rating, note: (trimmed?.isEmpty == false) ? trimmed : nil, reason: reason)
     ).get()
 
-    // Step 1: close the row and fix its destination before touching EventKit.
+    // Step 1: close the row and fix its destination before touching EventKit:
+    // the Settings override when set, else the session's own calendar.
     let settings = config.load()
     // A session filed under no calendar is never written to one.
     let skipsLog = open.row.calendarId == Rules.noCalendar
-    let logCalendarId = skipsLog ? nil : settings.logCalendarId
-    var logCalendarName = skipsLog ? nil : settings.logCalendarName
-    if logCalendarName == nil, let logCalendarId, calendar.accessState == "fullAccess" {
-      logCalendarName = calendar.calendar(id: logCalendarId)?.displayName
-    }
+    let destination = skipsLog ? nil : logDestination(for: open.row, settings: settings)
     let close = SessionClose(
       endedAt: machine.endedAt ?? now, endReason: (machine.endReason ?? .manual).rawValue, rating: machine.rating,
-      note: machine.note, logCalendarId: logCalendarId, logCalendarName: logCalendarName, logSkipped: skipsLog)
+      note: machine.note, logCalendarId: destination?.id, logCalendarName: destination?.name, logSkipped: skipsLog)
     let id = open.row.id
     guard try db.finish(id, close) else {
       endActive()
@@ -758,17 +755,77 @@ final class FocusCore: SessionPresenterDelegate {
       attempts: try db.attempts(row.id), rating: row.rating, note: row.note)
   }
 
+  /// The log destination rule (PLAN.md "Log event"): the Settings override
+  /// when one is set (with its stored name), else the calendar the session
+  /// is filed under. The name is looked up in EventKit when config has none
+  /// and access allows; it stays nil otherwise and is filled in later by
+  /// recovery. Nil for a session with no calendar (see Rules.logCalendar).
+  private func logDestination(for row: SessionRow, settings: FocusConfig) -> (id: String, name: String?)? {
+    guard let id = Rules.logCalendar(sessionCalendar: row.calendarId, override: settings.logCalendarId) else {
+      return nil
+    }
+    var name = id == settings.logCalendarId ? settings.logCalendarName : nil
+    if name == nil, calendar.accessState == "fullAccess" { name = calendar.calendar(id: id)?.displayName }
+    return (id, name)
+  }
+
+  /// Recovery for a waiting row that has no destination (finished before
+  /// 2026-09-28 with no log calendar set, which then meant "wait"): it gets
+  /// one from the rule above, but only when that calendar is in EventKit, so
+  /// a row filed under something that is not a calendar is not bound to it
+  /// and keeps waiting with the reason. Returns the row as it now is, or why
+  /// it still waits.
+  private func heal(_ row: SessionRow, settings: FocusConfig) throws -> Result<SessionRow, WaitReason> {
+    guard let id = Rules.logCalendar(sessionCalendar: row.calendarId, override: settings.logCalendarId) else {
+      return .failure(WaitReason(Recovery.noDestination))
+    }
+    guard calendar.accessState == "fullAccess" else {
+      return .failure(WaitReason("calendar access is \(calendar.accessState)"))
+    }
+    guard let info = calendar.calendar(id: id) else {
+      let label = id == settings.logCalendarId ? settings.logCalendarName ?? id : id
+      return .failure(WaitReason(Recovery.missing(label)))
+    }
+    var healed = row
+    if try db.setLogDestination(row.id, calendarId: id, name: info.displayName) {
+      log("session \(row.id): log event now bound for \(info.displayName)")
+    }
+    healed.logCalendarId = id
+    healed.logCalendarName = info.displayName
+    return .success(healed)
+  }
+
+  struct WaitReason: Error {
+    var text: String
+    init(_ text: String) { self.text = text }
+  }
+
+  /// Records why a row waits: for `pending`, and logged only when it changes.
+  private func noteWaiting(_ id: Int64, _ reason: String) {
+    if waitingReasons[id] != reason { log("session \(id): log event waiting: \(reason)") }
+    waitingReasons[id] = reason
+  }
+
   /// One pass of adopt-or-create for one finished row; stores the id on success.
   private func writeLogEvent(for row: SessionRow) throws -> RecoveryOutcome {
     let outcome: RecoveryOutcome
     if calendar.accessState != "fullAccess" {
       outcome = .waiting("calendar access is \(calendar.accessState)")
     } else {
+      var row = row
+      // A destination fixed without its name (Finish without access) is named now.
+      if row.logCalendarName == nil, let id = row.logCalendarId, let info = calendar.calendar(id: id) {
+        if try db.setLogCalendarName(row.id, calendarId: id, name: info.displayName) {
+          row.logCalendarName = info.displayName
+        }
+      }
       let summary = try logSummary(for: row)
       let draft = LogEventDraft(
         title: row.goal, start: summary.startedAt, end: summary.endedAt, notes: LogText.description(summary))
       outcome = Recovery.resolve(
-        WaitingSession(sessionId: row.id, logCalendarId: row.logCalendarId, draft: draft), store: calendar)
+        WaitingSession(
+          sessionId: row.id, logCalendarId: row.logCalendarId, draft: draft, logCalendarName: row.logCalendarName),
+        store: calendar)
     }
     switch outcome {
     case .created(let id), .adopted(let id):
@@ -781,17 +838,29 @@ final class FocusCore: SessionPresenterDelegate {
       }
       if case .adopted = outcome { log("session \(row.id): adopted log event \(id)") }
     case .waiting(let reason):
-      if waitingReasons[row.id] != reason { log("session \(row.id): log event waiting: \(reason)") }
-      waitingReasons[row.id] = reason
+      noteWaiting(row.id, reason)
     }
     return outcome
   }
 
-  /// Recovery over every waiting row (launch, every 30 s, retryPending).
+  /// Recovery over every waiting row (launch, every 30 s, retryPending). A
+  /// row with no destination is given one first (`heal`), then written like
+  /// any other.
   func runRecovery() throws -> RecoveryCounts {
     try onQueue {
       var outcomes: [RecoveryOutcome] = []
+      let settings = config.load()
       for row in try db.waitingSessions() {
+        var row = row
+        if row.logCalendarId == nil {
+          switch try heal(row, settings: settings) {
+          case .success(let healed): row = healed
+          case .failure(let reason):
+            noteWaiting(row.id, reason.text)
+            outcomes.append(.waiting(reason.text))
+            continue
+          }
+        }
         outcomes.append(try writeLogEvent(for: row))
       }
       return Recovery.tally(outcomes)

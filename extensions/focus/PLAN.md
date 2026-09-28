@@ -17,7 +17,8 @@ A Raycast extension plus a native Swift helper that turns calendar events into
 focus sessions. It lists today's events from chosen calendars, starts a session
 with app and website blocking, keeps the timer in the menu bar, asks for a
 rating and a note at the end, logs everything to a local sqlite database, and
-writes the actual time as a new event in a log calendar of Kai's choosing.
+writes the actual time as a new event in the session's own calendar (or in
+one log calendar for everything, when Kai sets one).
 
 It replaces Raycast Focus so that nothing breaks if Raycast moves Focus into
 the paid tier. The Raycast deeplink stays available as an optional extra.
@@ -28,7 +29,7 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 |---|---|
 | Which events are startable | Only events from calendars picked in a settings page that lists every calendar Calendar.app knows about, and only while their planned end is more than one minute away. Events that already ended today are not listed; to focus on one anyway, start an ad-hoc session with its title. |
 | What "start" does | Our own blocking and UI, built in the Swift helper. Optionally also fire `raycast://focus/start` so the two can run side by side during migration. |
-| Where actual time goes | A new event in a log calendar Kai picks from the same calendar list. The planned event is never edited. |
+| Where actual time goes | A new event in the session's own calendar: the calendar an ad-hoc session is filed under, or the calendar the source event lives in, so the actual block sits next to the planned one. Settings has an optional override, "Log Calendar", that sends every session's event to one calendar instead. The planned event is never edited. (Changed 2026-09-28; it was always the log calendar Kai picked, and a session finished with none picked waited.) |
 | When the log event is written | Only at the end. A running or abandoned session leaves no trace on the calendar. |
 | Session length from an event | Until the planned end of the event. Starting at 14:10 on a 14:00 to 15:00 event gives 50 minutes. |
 | Ad-hoc sessions | Yes. A goal, a length, and a calendar to file the session under for stats. |
@@ -49,7 +50,7 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 |---|---|---|
 | Raycast commands | `extensions/focus/src/` | Focus Today (startable events), Ad-hoc Session (form), Focus Stats (list and detail), Focus Settings (form that writes `config.json`). Thin: they talk to the helper over its socket. |
 | Helper `focus-daemon` | `extensions/focus/helper/`, compiled to `assets/focus-daemon` | Long-running, single instance over a unix socket like `notes-panel`. Owns EventKit, the session state machine, the timer, the menu bar item, the blocker, the overlay, the end sheet, and sqlite. |
-| Config | `~/.raycast/focus/config.json` | Startable calendars, log calendar, per-calendar default profile, profiles and categories, browsers, whether to also fire the Raycast deeplink. |
+| Config | `~/.raycast/focus/config.json` | Startable calendars, the optional log calendar override, per-calendar default profile, profiles and categories, browsers, whether to also fire the Raycast deeplink. |
 | Database | `~/.raycast/focus/focus.db` | Sessions, pauses, blocked attempts. Only the helper opens it (sqlite3 C API); native Node modules do not load in Raycast, so the stats view asks the helper over the socket. |
 
 Raycast's own menu bar commands refresh on an interval, so the per-second
@@ -196,7 +197,29 @@ one in the form.
 
 ## Log event
 
-Written once, at Finish, to the chosen log calendar:
+Where it goes (Kai, 2026-09-28: "The calendar you choose is where the event
+goes."), one rule:
+
+1. If `logCalendarId` is set in config, every session's event goes there.
+   This is the optional override, "Log everything to one calendar instead";
+   it was the only behaviour before this date.
+2. Otherwise the event goes to the session's own calendar: for an ad-hoc
+   session the calendar picked in the form, for a calendar session the
+   calendar the source event lives in (so the actual block sits next to the
+   planned one).
+3. A session filed under no calendar (`none`) is never written, as before.
+
+So the stats bucket and the destination are the same calendar unless the
+override is on. A calendar session on a read-only (subscribed) calendar
+cannot take the event: it waits with the reason "read-only", and "Move
+waiting sessions" is the way out. Rows that finished before this change with
+no log calendar set (then they waited with "no log calendar was chosen") are
+healed by recovery: on each pass a waiting row with no destination and a
+calendar that EventKit has gets its destination from the rule above, then is
+written like any other; a row filed under something that is not a calendar
+keeps waiting, saying "calendar … is not in Calendar.app".
+
+Written once, at Finish, to that calendar:
 
 - Title: the source event's title, or the ad-hoc goal.
 - Start and end: real start and real end (pauses included in the span).
@@ -207,10 +230,10 @@ Written once, at Finish, to the chosen log calendar:
 Order and recovery, so a session is never lost and never logged twice:
 
 1. Finish first closes the sqlite row: `ended_at`, `end_reason`, `rating`,
-   `note`, and `log_calendar_id` set to the log calendar chosen at that
-   moment. From here the session is finished even if everything after fails,
-   and its destination calendar is fixed: changing the setting later only
-   affects later sessions.
+   `note`, and `log_calendar_id` set by the rule above at that moment. From
+   here the session is finished even if everything after fails, and its
+   destination calendar is fixed: changing the setting later only affects
+   later sessions.
 2. The helper then creates the log event in `log_calendar_id`. Its description
    carries the line `focus-session: <sqlite id>` and the row gets
    `log_event_id` once the save returns.
@@ -228,10 +251,12 @@ Order and recovery, so a session is never lost and never logged twice:
    removed from Calendar.app) may still hold the saved event on Google and
    come back later. The stats view shows "N sessions waiting for <calendar
    name>" using the `log_calendar_name` stored on the row at Finish, since
-   the calendar itself may no longer be there to ask, and offers one action, "Move waiting sessions to <current log
-   calendar>", which rewrites both `log_calendar_id` and `log_calendar_name`
-   to the new destination and lets step 3 run there, so any later waiting
-   message names the calendar the session is actually bound for.
+   the calendar itself may no longer be there to ask, and offers "Move
+   waiting sessions": to the override when one is set, otherwise a choice of
+   the writable calendars. It rewrites both `log_calendar_id` and
+   `log_calendar_name` to the new destination and lets step 3 run there, so
+   any later waiting message names the calendar the session is actually
+   bound for.
    Kai takes that step knowingly; if the old calendar returns afterwards, the
    `focus-session: <id>` line in both descriptions makes the duplicate easy to
    find and remove.

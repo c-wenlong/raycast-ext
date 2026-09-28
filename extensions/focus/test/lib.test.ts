@@ -16,6 +16,7 @@ import {
   DEFAULT_ADHOC_MINUTES,
   LAST_CALENDAR_KEY,
   adhocCalendarGone,
+  adhocCalendarInfo,
   adhocProfileFor,
   adhocRefusedText,
   adhocStartedText,
@@ -38,6 +39,7 @@ import {
   FocusDaemon,
   calendarLabel,
   deleteToastText,
+  finishToastText,
   sendRequest,
 } from "../src/lib/daemon";
 import {
@@ -74,11 +76,14 @@ import {
 } from "../src/lib/profiles";
 import {
   COUNTDOWN_OPTIONS,
-  NO_LOG_CALENDAR,
+  LOG_CALENDAR_INFO,
+  OWN_CALENDAR,
   SNOOZE_MINUTES,
   browserOptions,
   isCountdownDisplay,
-  moveTarget,
+  logCalendarValue,
+  logDestinationText,
+  moveTargets,
   resolveLogCalendar,
   settingsChoices,
   snoozeOptions,
@@ -495,7 +500,7 @@ const cases: Case[] = [
         logCalendarId: "w2",
         logCalendarName: "Work (a)",
       });
-      assert.deepEqual(resolveLogCalendar(NO_LOG_CALENDAR, calendars, config), {
+      assert.deepEqual(resolveLogCalendar(OWN_CALENDAR, calendars, config), {
         logCalendarId: null,
         logCalendarName: null,
       });
@@ -521,24 +526,171 @@ const cases: Case[] = [
     },
   ],
   [
-    "settings: the move action targets the log calendar by id, whatever the names",
+    "settings: the log calendar is an optional override, own calendar first",
     async () => {
-      assert.equal(moveTarget(defaultConfig()), null);
-      // Two calendars can share "Work (a)"; the target is the id.
+      // No override saved: the dropdown shows "Each session's own calendar".
+      assert.equal(logCalendarValue(defaultConfig()), OWN_CALENDAR);
+      assert.equal(
+        logCalendarValue({ ...defaultConfig(), logCalendarId: "w" }),
+        "w",
+      );
+      // Choosing it (or an empty value) saves no override.
+      for (const value of [OWN_CALENDAR, ""]) {
+        assert.deepEqual(resolveLogCalendar(value, [], defaultConfig()), {
+          logCalendarId: null,
+          logCalendarName: null,
+        });
+      }
+      assert.match(LOG_CALENDAR_INFO, /^Optional\./);
+      assert.match(LOG_CALENDAR_INFO, /calendar the session belongs to/);
+      assert.equal(
+        logDestinationText(null),
+        "logging each session to its own calendar",
+      );
+      assert.equal(
+        logDestinationText("Log (x)"),
+        "logging every session to Log (x)",
+      );
+    },
+  ],
+  [
+    "config: a null override survives a save and a read",
+    async () => {
+      const file = path.join(freshDir(), "config.json");
+      await writeConfig(
+        { logCalendarId: "w", logCalendarName: "Work (a)" },
+        file,
+      );
+      const { logCalendarId, logCalendarName } = resolveLogCalendar(
+        OWN_CALENDAR,
+        [],
+        await readConfig(file),
+      );
+      await writeConfig({ logCalendarId, logCalendarName }, file);
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(raw.logCalendarId, null);
+      assert.equal(raw.logCalendarName, null);
+      const back = await readConfig(file);
+      assert.equal(back.logCalendarId, null);
+      assert.equal(logCalendarValue(back), OWN_CALENDAR);
+    },
+  ],
+  [
+    "settings: the move action targets the override by id, else offers every writable calendar",
+    async () => {
+      const calendars = [
+        { id: "w", title: "Work", account: "a", color: null, writable: true },
+        {
+          id: "ro",
+          title: "Holidays",
+          account: "b",
+          color: null,
+          writable: false,
+        },
+        { id: "w2", title: "Work", account: "a", color: null, writable: true },
+      ];
+      // No override: a submenu of the writable calendars, by id.
+      assert.deepEqual(moveTargets(defaultConfig(), calendars), {
+        kind: "menu",
+        targets: [
+          { id: "w", name: "Work (a)" },
+          { id: "w2", name: "Work (a)" },
+        ],
+      });
+      // Nothing writable (or no access): no action.
+      assert.equal(moveTargets(defaultConfig(), [calendars[1]]), null);
+      assert.equal(moveTargets(defaultConfig(), []), null);
+      // The override: one action. Two calendars can share "Work (a)"; the
+      // target is the id.
       assert.deepEqual(
-        moveTarget({
-          ...defaultConfig(),
-          logCalendarId: "w2",
-          logCalendarName: "Work (a)",
-        }),
-        { id: "w2", name: "Work (a)" },
+        moveTargets(
+          {
+            ...defaultConfig(),
+            logCalendarId: "w2",
+            logCalendarName: "Work (a)",
+          },
+          calendars,
+        ),
+        { kind: "single", target: { id: "w2", name: "Work (a)" } },
       );
       assert.deepEqual(
-        moveTarget({ ...defaultConfig(), logCalendarId: "w2" }),
-        {
-          id: "w2",
-          name: "the log calendar",
-        },
+        moveTargets({ ...defaultConfig(), logCalendarId: "w2" }, []),
+        { kind: "single", target: { id: "w2", name: "the log calendar" } },
+      );
+    },
+  ],
+  [
+    "adhoc: the Calendar info says where the log event goes",
+    async () => {
+      const own = adhocCalendarInfo(defaultConfig());
+      assert.match(own, /log event is written to this calendar too/);
+      assert.match(own, /read-only/);
+      assert.match(own, /\(No Calendar\)/);
+      const override = adhocCalendarInfo({
+        logCalendarId: "log",
+        logCalendarName: "Focus Log (Google)",
+      });
+      assert.match(override, /goes to Focus Log \(Google\), the log calendar/);
+      assert.doesNotMatch(override, /written to this calendar/);
+      assert.match(
+        adhocCalendarInfo({ logCalendarId: "log", logCalendarName: null }),
+        /goes to the log calendar/,
+      );
+    },
+  ],
+  [
+    "finish: the toast names the calendar the helper chose",
+    async () => {
+      const session = {
+        id: 1,
+        goal: "g",
+        state: "finished" as const,
+        startedAt: "",
+        plannedEnd: null,
+        calendarId: "w",
+        profile: "default",
+        sourceEventId: null,
+      };
+      const result = (over: object, sessionOver: object = {}) => ({
+        session: { ...session, ...sessionOver },
+        logEventId: null,
+        logPending: false,
+        logSkipped: false,
+        ...over,
+      });
+      assert.equal(
+        finishToastText(result({}, { logCalendarName: "Work (a)" }), null),
+        "Logged to Work (a)",
+      );
+      assert.equal(
+        finishToastText(result({}, { logCalendarName: "Work (a)" }), "Log (x)"),
+        "Logged to Work (a)",
+      );
+      assert.equal(finishToastText(result({}), "Log (x)"), "Logged to Log (x)");
+      assert.equal(finishToastText(result({}), null), "Logged");
+      assert.equal(
+        finishToastText(
+          result({ logPending: true }, { logCalendarName: "Holidays (b)" }),
+          null,
+        ),
+        "The log event is waiting for Holidays (b)",
+      );
+      assert.equal(
+        finishToastText(result({ logPending: true }), null),
+        "The log event is waiting; see Focus Today",
+      );
+      // The helper returned the destination without a name (no access): the
+      // config's override name, which may be stale, is not used.
+      assert.equal(
+        finishToastText(
+          result({ logPending: true }, { logCalendarName: null }),
+          "Old override (x)",
+        ),
+        "The log event is waiting; see Focus Today",
+      );
+      assert.equal(
+        finishToastText(result({ logSkipped: true }), "Log (x)"),
+        "Not logged: the session had no calendar",
       );
     },
   ],
@@ -1036,13 +1188,19 @@ net.createServer((socket) => {
         await assert.rejects(daemon.finish({ rating: 2.5 }), RangeError);
         assert.equal(fake.state.requests.length, sent);
 
-        // No log calendar yet: the session waits.
+        // No override: the event goes beside the planned one, in its calendar.
         const finished = await daemon.finish({
           rating: 4,
           note: "  good\n run \n",
         });
-        assert.equal(finished.logPending, true);
-        assert.equal(finished.logEventId, null);
+        assert.equal(finished.logPending, false);
+        assert.equal(finished.logEventId, `log-${session.id}`);
+        assert.equal(finished.session.logCalendarId, "cal-work");
+        assert.equal(
+          finished.session.logCalendarName,
+          "Work (kai@work.example)",
+        );
+        assert.equal(fake.state.calendarEvents.at(-1).calendarId, "cal-work");
         // No reason unless asked: the helper knows why the session ended.
         assert.deepEqual(fake.state.requests.at(-1), {
           rating: 4,
@@ -1050,11 +1208,25 @@ net.createServer((socket) => {
           cmd: "finish",
         });
         assert.equal(await daemon.status(), null);
+        assert.deepEqual(await daemon.pending(), []);
+
+        // A read-only calendar cannot take it: the session waits and says why.
+        await daemon.startAdhoc({
+          goal: "Review the Focus plan",
+          durationSeconds: 600,
+          calendarId: "cal-holidays",
+        });
+        const readOnly = await daemon.finish({});
+        assert.equal(readOnly.logPending, true);
+        assert.equal(readOnly.logEventId, null);
+        assert.equal(readOnly.session.logCalendarId, "cal-holidays");
         const waiting = await daemon.pending();
         assert.deepEqual(
           waiting.map((w) => w.goal),
           ["Review the Focus plan"],
         );
+        assert.match(waiting[0].reason ?? "", /read-only.*move the waiting/);
+        assert.equal(waiting[0].logCalendarName, "Holidays (Subscribed)");
 
         assert.deepEqual(await daemon.retryPending(), {
           written: 0,
@@ -2519,7 +2691,7 @@ net.createServer((socket) => {
         ),
       );
       assert.ok(waitingMarkdown("a`b").includes("`a'b`"));
-      assert.ok(waitingMarkdown(null).includes("waits for a log calendar."));
+      assert.ok(waitingMarkdown(null).includes("waits for a calendar."));
       const markdown = overviewMarkdown({
         label: "Today",
         totals: { focusedSeconds: 5100, sessions: 2, averageRating: null },
@@ -3085,6 +3257,77 @@ net.createServer((socket) => {
           message: "x",
         },
       );
+    },
+  ],
+  [
+    "fake daemon: finish follows the helper's destination rule",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      const clock = new Date(2026, 8, 28, 10, 0, 0);
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
+      await fake.listen();
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      const run = async (calendarId: string) => {
+        await daemon.startAdhoc({ goal: "G", durationSeconds: 60, calendarId });
+        return daemon.finish({});
+      };
+      try {
+        // No override: the session's own calendar.
+        const own = await run("cal-study");
+        assert.equal(own.logPending, false);
+        assert.equal(own.session.logCalendarId, "cal-study");
+        assert.equal(fake.state.calendarEvents.at(-1).calendarId, "cal-study");
+        // None is skipped.
+        const none = await run(NO_CALENDAR);
+        assert.equal(none.logSkipped, true);
+        assert.equal(none.logPending, false);
+        assert.equal(none.session.logCalendarId, null);
+        // A calendar the fake does not list waits, and says so.
+        const unknown = await run("cal-gone");
+        assert.equal(unknown.logPending, true);
+        assert.equal(unknown.session.logCalendarId, "cal-gone");
+        assert.equal(
+          (await daemon.pending()).at(-1)?.reason,
+          "calendar cal-gone is not in Calendar.app",
+        );
+        // The override wins; none stays skipped under it.
+        await writeConfig(
+          { logCalendarId: "cal-log", logCalendarName: "Focus Log (Google)" },
+          configPath,
+        );
+        const events = fake.state.calendarEvents.length;
+        const overridden = await run("cal-study");
+        assert.equal(overridden.logPending, false);
+        assert.equal(overridden.session.logCalendarId, "cal-log");
+        assert.equal(overridden.session.logCalendarName, "Focus Log (Google)");
+        assert.equal(fake.state.calendarEvents.at(-1).calendarId, "cal-log");
+        const noneAgain = await run(NO_CALENDAR);
+        assert.equal(noneAgain.logSkipped, true);
+        assert.equal(fake.state.calendarEvents.length, events + 1);
+        // An override the fake does not list leaves every session waiting.
+        await writeConfig(
+          { logCalendarId: "cal-gone2", logCalendarName: "Old (x)" },
+          configPath,
+        );
+        const gone = await run("cal-study");
+        assert.equal(gone.logPending, true);
+        assert.equal(gone.session.logCalendarName, "Old (x)");
+        assert.equal(
+          (await daemon.pending()).at(-1)?.reason,
+          "calendar Old (x) is not in Calendar.app",
+        );
+      } finally {
+        await fake.close();
+      }
     },
   ],
 ];

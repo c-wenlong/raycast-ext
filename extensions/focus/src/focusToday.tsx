@@ -13,8 +13,9 @@ import {
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FinishSessionForm } from "./components/FinishSessionForm";
+import { MoveWaitingAction } from "./components/MoveWaitingAction";
 import { FocusConfig, readConfig } from "./lib/config";
-import { moveTarget } from "./lib/settings";
+import { moveTargets } from "./lib/settings";
 import {
   BlockingStatus,
   Calendar,
@@ -53,6 +54,9 @@ interface Data {
   events: TodayEvent[];
   waiting: WaitingSession[];
   colors: Map<string, string>;
+  // Every calendar EventKit lists (empty without access): the row colours
+  // and the Move Waiting Sessions choices.
+  calendars: Calendar[];
 }
 
 const STATE_COLORS: Record<Session["state"], Color> = {
@@ -112,7 +116,8 @@ export default function FocusTodayCommand() {
           config.startableCalendars.length > 0
             ? daemon.today()
             : Promise.resolve([]),
-          // Only for row colours; the list works without them.
+          // Only for row colours and the move choices; the list works
+          // without them.
           daemon.calendars().catch((): Calendar[] => []),
           // Only for the Running row's profile line.
           daemon.blocking().catch((): BlockingStatus | null => null),
@@ -132,6 +137,7 @@ export default function FocusTodayCommand() {
         events,
         waiting,
         colors,
+        calendars,
       });
       setError(null);
     } catch (loadError) {
@@ -495,14 +501,18 @@ export default function FocusTodayCommand() {
   }
 
   function renderWaiting(item: WaitingSession, config: FocusConfig) {
-    const target = moveTarget(config);
+    const accessories: List.Item.Accessory[] = [];
+    if (item.reason) {
+      accessories.push({ icon: Icon.Info, tooltip: item.reason });
+    }
+    accessories.push({ date: new Date(item.endedAt), tooltip: "Ended" });
     return (
       <List.Item
         key={`waiting-${item.sessionId}`}
         icon={{ source: Icon.Hourglass, tintColor: Color.Orange }}
         title={item.goal}
-        subtitle={`waiting for ${item.logCalendarName ?? "a log calendar"}`}
-        accessories={[{ date: new Date(item.endedAt), tooltip: "Ended" }]}
+        subtitle={`waiting for ${item.logCalendarName ?? "a calendar"}`}
+        accessories={accessories}
         actions={
           <ActionPanel>
             <Action
@@ -510,19 +520,9 @@ export default function FocusTodayCommand() {
               icon={Icon.ArrowClockwise}
               onAction={handleRetryPending}
             />
-            {target ? (
-              <Action
-                title={`Move Waiting Sessions to ${target.name}`}
-                icon={Icon.ArrowRight}
-                onAction={() => handleMovePending(target.id, target.name)}
-              />
-            ) : null}
-            <Action
-              title={
-                target ? "Choose Another Log Calendar" : "Choose a Log Calendar"
-              }
-              icon={Icon.Gear}
-              onAction={openSettings}
+            <MoveWaitingAction
+              targets={moveTargets(config, data?.calendars ?? [])}
+              onMove={handleMovePending}
             />
             {commonActions}
           </ActionPanel>
@@ -614,7 +614,7 @@ export default function FocusTodayCommand() {
       ) : null}
       {waiting.length > 0 && config ? (
         <List.Section
-          title="Waiting for log calendar"
+          title="Waiting to be logged"
           subtitle={`${waiting.length}`}
         >
           {waiting.map((item) => renderWaiting(item, config))}

@@ -61,6 +61,10 @@ export interface Session {
   // While ending, why ("timer" or "manual"), which Finish records unless
   // told otherwise; for a finished session, the recorded reason.
   endReason?: string | null;
+  // Finished sessions: where the log event went (or waits to go), fixed at
+  // Finish: the Settings override when set, else the session's own calendar.
+  logCalendarId?: string | null;
+  logCalendarName?: string | null;
 }
 
 export interface FinishResult {
@@ -69,6 +73,26 @@ export interface FinishResult {
   logPending: boolean;
   // Started under no calendar: nothing is written to any calendar.
   logSkipped: boolean;
+}
+
+// The toast after Finish from Raycast. The helper fixes the destination at
+// Finish and returns it on the session, its name null when it could not be
+// looked up (no Calendar access); the config's override name is only a
+// fallback for an older helper that leaves the field out, never for that
+// null, since the override may have changed since the view loaded.
+export function finishToastText(
+  result: FinishResult,
+  logCalendarName: string | null,
+): string {
+  if (result.logSkipped) return "Not logged: the session had no calendar";
+  const name =
+    result.session.logCalendarName === undefined
+      ? logCalendarName
+      : result.session.logCalendarName;
+  if (!result.logPending) return name ? `Logged to ${name}` : "Logged";
+  return name
+    ? `The log event is waiting for ${name}`
+    : "The log event is waiting; see Focus Today";
 }
 
 // The `deleteSession` reply. The row (with its pauses and blocked attempts)
@@ -104,6 +128,9 @@ export interface WaitingSession {
   goal: string;
   endedAt: string;
   logCalendarName: string | null;
+  // Why it still waits, from the helper's last try ("calendar X is
+  // read-only, ..."); null before the first try.
+  reason?: string | null;
 }
 
 export interface PendingCounts {

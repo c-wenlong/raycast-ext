@@ -8,7 +8,13 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { useState } from "react";
-import { FinishResult, Session, errorMessage, getDaemon } from "../lib/daemon";
+import {
+  FinishResult,
+  Session,
+  errorMessage,
+  finishToastText,
+  getDaemon,
+} from "../lib/daemon";
 import { stars } from "../lib/time";
 
 // Finish from Raycast: the fallback for the helper's native end sheet (the
@@ -18,19 +24,10 @@ import { stars } from "../lib/time";
 
 const RATINGS = [5, 4, 3, 2, 1];
 
-function finishMessage(result: FinishResult, logCalendarName: string | null) {
-  if (result.logSkipped) return "Not logged: the session had no calendar";
-  if (!result.logPending) {
-    return logCalendarName ? `Logged to ${logCalendarName}` : "Logged";
-  }
-  return logCalendarName
-    ? `The log event is waiting for ${logCalendarName}`
-    : "Pick a log calendar in Focus Settings to log it";
-}
-
 export function FinishSessionForm(props: {
   session: Session;
-  // From config.json, for the toast; the helper decides where the log goes.
+  // The override from config.json, a fallback for the toast; the helper
+  // decides where the log goes and says so in its reply.
   logCalendarName: string | null;
   onFinished: (result: FinishResult) => void;
 }) {
@@ -50,7 +47,7 @@ export function FinishSessionForm(props: {
       });
       toast.style = Toast.Style.Success;
       toast.title = `Finished: ${result.session.goal}`;
-      toast.message = finishMessage(result, props.logCalendarName);
+      toast.message = finishToastText(result, props.logCalendarName);
       props.onFinished(result);
       pop();
     } catch (error) {

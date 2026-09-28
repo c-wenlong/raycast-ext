@@ -988,17 +988,157 @@ do {
   check("finish looks up the log calendar name when config has none", named["session"]?["logCalendarName"] == "Focus Log (iCloud)", named.serialized())
 }
 
+// MARK: - Where the log event goes (2026-09-28: the session's own calendar unless overridden)
+
+check("destination: the override wins", Rules.logCalendar(sessionCalendar: "work", override: "log") == "log")
+check("destination: no override means the session's calendar", Rules.logCalendar(sessionCalendar: "work", override: nil) == "work")
+check("destination: an empty override is no override", Rules.logCalendar(sessionCalendar: "work", override: "") == "work")
+check("destination: none is never written, override or not", Rules.logCalendar(sessionCalendar: Rules.noCalendar, override: "log") == nil && Rules.logCalendar(sessionCalendar: Rules.noCalendar, override: nil) == nil)
+check("destination: no calendar id and no override has none", Rules.logCalendar(sessionCalendar: "", override: nil) == nil)
+check("destination: no calendar id goes to the override", Rules.logCalendar(sessionCalendar: "", override: "log") == "log")
+
+/// A fake with a second writable calendar for event sessions.
+func destinationFake() -> FakeCalendar {
+  let fake = FakeCalendar()
+  fake.infos.append(CalendarInfo(id: "study", title: "Study", account: "iCloud", color: nil, writable: true))
+  return fake
+}
+
 do {
-  // Config with no log calendar at all: the row waits with a null name.
+  // No override: an ad-hoc session is logged to the calendar picked for it.
   let clock = Clock(at(10, 0))
-  let (core, _, _, dir) = makeCore(clock: clock)
-  _ = send(core, "startAdhoc", ["goal": "Read", "durationSeconds": 120, "calendarId": "work", "profile": "light"])
-  check("startAdhoc keeps an explicit profile", send(core, "status")["session"]?["profile"] == "light")
+  let h = Harness(clock: clock, fake: destinationFake())
+  _ = h.send("startAdhoc", ["goal": "Read", "durationSeconds": 120, "calendarId": "work", "profile": "light"])
+  check("startAdhoc keeps an explicit profile", h.send("status")["session"]?["profile"] == "light")
   clock.now = at(10, 2)
-  let finished = send(core, "finish", ["note": "  "])
-  check("finish with no log calendar is pending", finished["logPending"] == true && finished["session"]?["note"] == .null)
-  check("pending shows a null calendar name", send(core, "pending")["waiting"]?[0]?["logCalendarName"] == .null)
-  check("the first request creates config.json", FileManager.default.fileExists(atPath: dir + "/config.json"))
+  let finished = h.send("finish", ["note": "  "])
+  check("no override: ad hoc is logged at once", finished["logPending"] == false && finished["logEventId"] == "log-1" && finished["session"]?["note"] == .null, finished.serialized())
+  check("no override: ad hoc goes to the picked calendar", h.fake.saved.last?.calendarId == "work")
+  check(
+    "no override: the row names the picked calendar", finished["session"]?["logCalendarId"] == "work"
+      && finished["session"]?["logCalendarName"] == "Work (Google)", finished.serialized())
+  check("the first request creates config.json", FileManager.default.fileExists(atPath: h.dir + "/config.json"))
+  let written = (try? JSONValue.parse(String(contentsOfFile: h.dir + "/config.json", encoding: .utf8))) ?? .null
+  check("a new config.json has no override", written["logCalendarId"] == .null, written.serialized())
+
+  // No override: a calendar session is logged beside its planned event.
+  try! #"{"startableCalendars": ["study", "holidays"]}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  h.fake.eventList = [
+    event("S1", "Problem set", at(10, 0), at(11, 0), calendar: "study"),
+    event("H1", "Subscribed talk", at(10, 0), at(11, 0), calendar: "holidays"),
+  ]
+  clock.now = at(10, 5)
+  _ = h.send("start", ["eventId": "S1"])
+  clock.now = at(10, 50)
+  let study = h.send("finish", ["rating": 5])
+  check("no override: a calendar session is logged at once", study["logPending"] == false && study["logEventId"] != .null, study.serialized())
+  check("no override: the event goes to the source event's calendar", h.fake.saved.last?.calendarId == "study" && h.fake.saved.last?.draft.title == "Problem set")
+  check("no override: the row names the event's calendar", study["session"]?["logCalendarId"] == "study" && study["session"]?["logCalendarName"] == "Study (iCloud)", study.serialized())
+
+  // A read-only (subscribed) calendar cannot take the event: it waits, and the reason says to move it.
+  clock.now = at(10, 51)
+  _ = h.send("start", ["eventId": "H1"])
+  clock.now = at(10, 55)
+  let createsBefore = h.fake.creates
+  let readOnly = h.send("finish", [:])
+  check("read-only: finish leaves the log event waiting", readOnly["logPending"] == true && readOnly["logEventId"] == .null && h.fake.creates == createsBefore, readOnly.serialized())
+  check("read-only: the row is bound to its own calendar", readOnly["session"]?["logCalendarId"] == "holidays" && readOnly["session"]?["logCalendarName"] == "Holidays (Subscribed)", readOnly.serialized())
+  let reason = h.send("pending")["waiting"]?[0]?["reason"]?.stringValue ?? ""
+  check("read-only: pending says read-only and how out", reason.contains("Holidays (Subscribed) is read-only") && reason.contains("move the waiting sessions"), reason)
+  check("read-only: retry keeps it waiting", h.send("retryPending") == ["ok": true, "written": 0, "adopted": 0, "stillWaiting": 1])
+  let moved = h.send("movePending", ["calendarId": "work"])
+  check("read-only: moving it writes it", moved == ["ok": true, "moved": 1, "written": 1, "adopted": 0, "stillWaiting": 0], moved.serialized())
+  check("read-only: the moved event is in the target", h.fake.saved.last?.calendarId == "work" && h.fake.saved.last?.draft.title == "Subscribed talk")
+
+  // The override wins over the session's calendar.
+  try! #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  clock.now = at(11, 0)
+  _ = h.send("startAdhoc", ["goal": "Override", "durationSeconds": 600, "calendarId": "study"])
+  clock.now = at(11, 10)
+  let overridden = h.send("finish", [:])
+  check("override: the event goes to the override", overridden["logPending"] == false && h.fake.saved.last?.calendarId == "log", overridden.serialized())
+  check("override: the row names the override", overridden["session"]?["logCalendarId"] == "log" && overridden["session"]?["logCalendarName"] == "Focus Log (iCloud)")
+
+  // No calendar is never written, with or without the override.
+  for config in [#"{"logCalendarId": "log"}"#, "{}"] {
+    try! config.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+    let creates = h.fake.creates
+    clock.now = clock.now.addingTimeInterval(60)
+    _ = h.send("startAdhoc", ["goal": "Scratch", "durationSeconds": 60, "calendarId": .string(Rules.noCalendar)])
+    clock.now = clock.now.addingTimeInterval(60)
+    let skipped = h.send("finish", [:])
+    check("none is skipped with config \(config)", skipped["logSkipped"] == true && skipped["logPending"] == false && skipped["session"]?["logCalendarId"] == .null && h.fake.creates == creates, skipped.serialized())
+  }
+  check("nothing else waits", h.send("pending")["waiting"] == [])
+
+  // No override, ad hoc filed under an id that is not a calendar: it waits, and says why.
+  clock.now = at(12, 0)
+  _ = h.send("startAdhoc", ["goal": "Elsewhere", "durationSeconds": 600, "calendarId": "personal"])
+  clock.now = at(12, 10)
+  let unknown = h.send("finish", [:])
+  check("unknown calendar: finish is pending", unknown["logPending"] == true && unknown["session"]?["logCalendarId"] == "personal" && unknown["session"]?["logCalendarName"] == .null, unknown.serialized())
+  check("unknown calendar: pending says it is not in Calendar.app", h.send("pending")["waiting"]?[0]?["reason"] == "calendar personal is not in Calendar.app")
+}
+
+do {
+  // Finish without Calendar access and no override: bound to the session's
+  // calendar with no name; written and named once access arrives.
+  let clock = Clock(at(10, 0))
+  let h = Harness(config: "{}", clock: clock)
+  h.fake.accessState = "denied"
+  _ = h.send("startAdhoc", ["goal": "Offline", "durationSeconds": 60, "calendarId": "work"])
+  clock.now = at(10, 1)
+  let finished = h.send("finish", [:])
+  check("no access: finish binds the session's calendar", finished["logPending"] == true && finished["session"]?["logCalendarId"] == "work" && finished["session"]?["logCalendarName"] == .null, finished.serialized())
+  h.fake.accessState = "fullAccess"
+  check("no access: retry writes it once access is back", h.send("retryPending") == ["ok": true, "written": 1, "adopted": 0, "stillWaiting": 0])
+  let row = try! h.db.session(id: Int64(finished["session"]?["id"]?.intValue ?? 0))
+  check("no access: the name is filled in when it is written", row?.logCalendarName == "Work (Google)" && h.fake.saved.last?.calendarId == "work", "\(String(describing: row))")
+}
+
+do {
+  // Rows that finished before the change with no log calendar (Kai's
+  // sessions 2 and 3): recovery gives them a destination, then writes them.
+  let clock = Clock(at(10, 0))
+  let h = Harness(config: "{}", clock: clock, fake: destinationFake())
+  func oldRow(_ goal: String, calendarId: String, minute: Int) -> Int64 {
+    let id = try! h.db.insertSession(
+      NewSession(
+        sourceEventId: nil, calendarId: calendarId, goal: goal, profile: "default", plannedStart: at(9, minute),
+        plannedEnd: at(9, minute + 5), startedAt: at(9, minute)))
+    _ = try! h.db.finish(id, SessionClose(endedAt: at(9, minute + 5), endReason: "timer", rating: 3, note: nil))
+    return id
+  }
+  let study = oldRow("Old study", calendarId: "study", minute: 0)
+  let unknown = oldRow("Old elsewhere", calendarId: "personal", minute: 10)
+  let blank = oldRow("Old blank", calendarId: "", minute: 20)
+  check("heal setup: three rows wait with no destination", (try! h.db.waitingSessions()).filter { $0.logCalendarId == nil }.count == 3)
+
+  h.fake.accessState = "denied"
+  check("heal: nothing without access", h.send("retryPending") == ["ok": true, "written": 0, "adopted": 0, "stillWaiting": 3])
+  check("heal: no access leaves the destination empty", (try! h.db.session(id: study))?.logCalendarId == nil)
+  check("heal: pending says access is missing", h.send("pending")["waiting"]?[0]?["reason"] == "calendar access is denied")
+
+  h.fake.accessState = "fullAccess"
+  let counts = h.send("retryPending")
+  check("heal: retry writes the row with a real calendar", counts == ["ok": true, "written": 1, "adopted": 0, "stillWaiting": 2], counts.serialized())
+  let healed = try! h.db.session(id: study)!
+  check("heal: the destination is the session's calendar", healed.logCalendarId == "study" && healed.logCalendarName == "Study (iCloud)" && healed.logEventId != nil, "\(healed)")
+  check("heal: the event is in that calendar", h.fake.saved.last?.calendarId == "study" && h.fake.saved.last?.draft.title == "Old study")
+  check("heal: a row whose calendar is not a calendar is not bound", (try! h.db.session(id: unknown))?.logCalendarId == nil)
+  let reasons = Dictionary(
+    uniqueKeysWithValues: (h.send("pending")["waiting"]?.arrayValue ?? []).map {
+      (Int64($0["sessionId"]?.intValue ?? 0), $0["reason"]?.stringValue ?? "")
+    })
+  check("heal: the unknown calendar's reason", reasons[unknown] == "calendar personal is not in Calendar.app", "\(reasons)")
+  check("heal: the blank row's reason", reasons[blank] == Recovery.noDestination, "\(reasons)")
+
+  // The tick heals too, and follows the override when one is set by then.
+  try! #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  h.core.tick()
+  check("heal: the tick writes the rest to the override", h.send("pending")["waiting"] == [] && (try! h.db.session(id: unknown))?.logCalendarId == "log" && (try! h.db.session(id: blank))?.logCalendarName == "Focus Log (iCloud)")
+  check("heal: a healed row is never re-pointed", (try! h.db.session(id: study))?.logCalendarId == "study")
+  check("heal: setLogDestination only fills an empty slot", (try! h.db.setLogDestination(study, calendarId: "log", name: "x")) == false)
 }
 
 // MARK: - Session commands, the timer and the presenter

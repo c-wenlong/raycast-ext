@@ -8,8 +8,11 @@
 //                                  neither a recreated focus.db reusing an id nor Kai
 //                                  moving the event in Calendar.app can fool it
 //   search failed               -> keep waiting (creating now could duplicate)
-//   calendar read-only          -> keep waiting
+//   calendar read-only          -> keep waiting (only movePending gets it written)
 //   otherwise                   -> create the event; a failed save keeps waiting
+//
+// A row with no destination at all (finished before 2026-09-28 with no log
+// calendar set) is given one by FocusCore before it gets here.
 
 import Foundation
 
@@ -46,6 +49,14 @@ struct WaitingSession: Equatable {
   var sessionId: Int64
   var logCalendarId: String?
   var draft: LogEventDraft
+  /// The destination's stored "<title> (<account>)", for the waiting reason.
+  var logCalendarName: String? = nil
+
+  /// How the waiting reasons name the destination.
+  var calendarLabel: String {
+    if let name = logCalendarName, !name.isEmpty { return name }
+    return logCalendarId ?? "?"
+  }
 }
 
 enum RecoveryOutcome: Equatable {
@@ -80,10 +91,10 @@ enum Recovery {
 
   static func resolve(_ session: WaitingSession, store: LogCalendarStore) -> RecoveryOutcome {
     guard let calendarId = session.logCalendarId else {
-      return .waiting("no log calendar was chosen when the session finished")
+      return .waiting(Recovery.noDestination)
     }
     let state = store.writeState(of: calendarId)
-    if state == .missing { return .waiting("log calendar \(calendarId) is not in Calendar.app") }
+    if state == .missing { return .waiting(Recovery.missing(session.calendarLabel)) }
 
     do {
       let events = try store.loggedEvents(in: calendarId, span: searchSpan(for: session.draft))
@@ -94,12 +105,25 @@ enum Recovery {
       return .waiting("searching the log calendar failed: \(error.localizedDescription)")
     }
 
-    guard state == .writable else { return .waiting("log calendar \(calendarId) is read-only") }
+    guard state == .writable else { return .waiting(Recovery.readOnly(session.calendarLabel)) }
     do {
       return .created(try store.createEvent(session.draft, in: calendarId))
     } catch {
       return .waiting("writing the log event failed: \(error.localizedDescription)")
     }
+  }
+
+  // The waiting reasons `pending` shows as they are.
+
+  /// A row with no destination: no override and no calendar id to log to.
+  static let noDestination = "the session has no calendar to log to; move the waiting sessions to a calendar"
+
+  static func missing(_ label: String) -> String { "calendar \(label) is not in Calendar.app" }
+
+  /// A subscribed (or otherwise read-only) calendar never takes the event;
+  /// only `movePending` gets such a row written.
+  static func readOnly(_ label: String) -> String {
+    "calendar \(label) is read-only, so it cannot take the log event; move the waiting sessions to a writable calendar"
   }
 
   static func tally(_ outcomes: [RecoveryOutcome]) -> RecoveryCounts {
