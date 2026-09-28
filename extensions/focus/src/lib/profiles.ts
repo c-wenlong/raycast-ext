@@ -320,7 +320,8 @@ export function validateProfile(
     originalName === DEFAULT_PROFILE ? DEFAULT_PROFILE : draft.name.trim();
   if (!name) {
     errors.name = "Give the profile a name";
-  } else if (name === "__proto__") {
+  } else if (name === "__proto__" && originalName !== name) {
+    // Refused as a new name only: one already in config.json stays editable.
     errors.name = "Pick another name";
   } else if (
     existingNames.some(

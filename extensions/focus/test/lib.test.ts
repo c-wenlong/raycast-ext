@@ -1202,6 +1202,10 @@ net.createServer((socket) => {
         validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, null, ["default"]),
         { ok: false, errors: { name: "Pick another name" } },
       );
+      // One already in config.json can still be edited under its own name.
+      assert.ok(
+        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, "__proto__", ["default", "__proto__"]).ok,
+      );
       assert.deepEqual(pruneCalendarProfiles({}, ["__proto__", "toString"]), {});
       assert.equal(calendarProfileValue({}, "toString"), "default");
       assert.deepEqual(remapCalendarProfiles({ a: "x", b: "y" }, "x", "default"), { b: "y" });
