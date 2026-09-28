@@ -3,7 +3,8 @@
 // in place of the session logic, a fake scheduler and sound, and a real
 // BlockEngine behind the app blocker. Run with scripts/test-ui.sh.
 // Pass a folder to also write sheet.png, card-0s.png, card-2.5s.png,
-// card-over-glow.png, menubar-*.png, panel-*.png, glow.png and block.png there.
+// card-over-glow.png, menubar-*.png, panel-*.png (panel-fallback.png is the
+// pre-macOS 26 backdrop), glow.png and block.png there.
 //
 // Nothing shows on screen: the status item lives in a private NSStatusBar
 // and the sheet is ordered in far off screen without becoming key.
@@ -435,6 +436,98 @@ check("default place: top right of the main screen, 12 in", defaultFrame == NSRe
 check("first show uses the default place", floating.frame == defaultFrame, "\(floating.frame)")
 check("default place maths", FloatingPanel.defaultFrame(width: 160, on: laptop) == NSRect(x: 1340, y: 892, width: 160, height: 40))
 check("anchored to the right edge there", floating.anchoredRight)
+
+// The glass. The window server's glass does not render headless, so these
+// check how it is set up and the edges' geometry, and sample what the
+// edges draw.
+check("the panel window stays clear so the glass shows the desktop", !floating.panel.isOpaque && floating.panel.backgroundColor == .clear)
+check("the backdrop is the window's content view", floating.panel.contentView === floating.backdrop)
+if #available(macOS 26, *) {
+  let glass = floating.backdrop as? NSGlassEffectView
+  check("macOS 26: the backdrop is NSGlassEffectView", floating.usesGlass && glass != nil)
+  check("the glass has the pill's radius", glass?.cornerRadius == PanelStyle.radius)
+  check("clear glass, untinted (the tint is painted: AppKit greys a glass tint in a window that is never key)", glass?.style == .clear && glass?.tintColor == nil)
+  check("the chrome is the glass's content view", glass?.contentView === floating.chrome)
+} else {
+  check("before macOS 26: the HUD blur", !floating.usesGlass && floating.backdrop is NSVisualEffectView)
+}
+check("the chrome paints the dark green tint", floating.chrome.canvas == (floating.usesGlass ? GlassStyle.tint : GlassStyle.fallbackCanvas))
+check("the tint is a translucent dark green", GlassStyle.tint.alphaComponent >= 0.65 && GlassStyle.tint.alphaComponent <= 0.8
+  && GlassStyle.tint.greenComponent > GlassStyle.tint.redComponent && GlassStyle.tint.greenComponent < 0.35)
+check("the edges sit on top of the pill and the controls", floating.chrome.subviews.last === floating.edges
+  && floating.edges.frame == floating.chrome.bounds && floating.edges.radius == PanelStyle.radius)
+check("the edges never take the mouse", floating.edges.hitTest(NSPoint(x: 10, y: 10)) == nil)
+
+let pillEdges = GlassEdges(bounds: NSRect(x: 0, y: 0, width: 264, height: 40), radius: 14)
+check("rim: 1 pt, half a point in from the edge", pillEdges.rimRect == NSRect(x: 0.5, y: 0.5, width: 263, height: 39) && pillEdges.rimRadius == 13.5)
+check("highlight: the top 6 pt", pillEdges.highlightRect == NSRect(x: 0, y: 34, width: 264, height: 6))
+check("sheen: the top third", pillEdges.sheenRect == NSRect(x: 0, y: 27, width: 264, height: 13))
+check("shade: the bottom 9 pt", pillEdges.shadeRect == NSRect(x: 0, y: 0, width: 264, height: 9))
+check("the left light reaches 36 pt in", pillEdges.leftLightRect == NSRect(x: 0, y: 0, width: 36, height: 40))
+check("every edge rect lies inside the pill", [pillEdges.rimRect, pillEdges.highlightRect, pillEdges.sheenRect, pillEdges.shadeRect, pillEdges.leftLightRect]
+  .allSatisfy { pillEdges.bounds.contains($0) })
+let tinyEdges = GlassEdges(bounds: NSRect(x: 0, y: 0, width: 30, height: 8), radius: 4)
+check("a short pill keeps the highlight and shade to half its height each", tinyEdges.highlightRect.height == 4 && tinyEdges.shadeRect.height == 4)
+check("rim colours: light at the top, dark at the bottom", GlassEdges.rimStops.first?.1 == 0 && GlassEdges.rimStops.last?.1 == 1
+  && GlassEdges.rimStops.last?.0 == GlassStyle.rimTop && GlassEdges.rimStops.first?.0 == GlassStyle.rimBottom
+  && GlassStyle.rimTop.whiteComponent == 1 && GlassStyle.rimBottom.whiteComponent == 0 && abs(GlassStyle.rimBottom.alphaComponent - 0.25) < 0.001)
+check("highlight white 35 %, sheen 8 %", abs(GlassStyle.highlight.alphaComponent - 0.35) < 0.001 && abs(GlassStyle.sheen.alphaComponent - 0.08) < 0.001)
+// What the edges draw, over mid grey at 1x: brighter along the top and the
+// left, darker along the bottom, untouched in the middle and outside the
+// rounded corners.
+func edgesSample() -> ((Int, Int) -> CGFloat)? {
+  guard let rep = NSBitmapImageRep(
+    bitmapDataPlanes: nil, pixelsWide: 264, pixelsHigh: 40, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+    isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+  else { return nil }
+  rep.size = NSSize(width: 264, height: 40)
+  NSGraphicsContext.saveGraphicsState()
+  NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+  NSColor(white: 0.5, alpha: 1).setFill()
+  NSRect(x: 0, y: 0, width: 264, height: 40).fill()
+  pillEdges.draw()
+  NSGraphicsContext.restoreGraphicsState()
+  // Rows count from the top in a bitmap.
+  return { x, y in rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceGray)?.whiteComponent ?? -1 }
+}
+if let grey = edgesSample() {
+  let middle = grey(132, 20)
+  check("the middle of the pill is untouched", abs(middle - 0.5) < 0.02, "\(middle)")
+  check("the top rim is bright", grey(132, 0) > middle + 0.12, "\(grey(132, 0))")
+  check("the highlight fades down from the top", grey(132, 2) > grey(132, 4) && grey(132, 4) > grey(132, 7) - 0.001, "\(grey(132, 2)) \(grey(132, 4)) \(grey(132, 7))")
+  check("the bottom rim is dark", grey(132, 39) < middle - 0.05, "\(grey(132, 39))")
+  check("the left rim is brighter than the right", grey(0, 20) > grey(263, 20) + 0.04, "\(grey(0, 20)) \(grey(263, 20))")
+  check("nothing drawn outside the rounded corner", abs(grey(0, 0) - 0.5) < 0.01, "\(grey(0, 0))")
+} else {
+  check("the edges render", false)
+}
+let chipBorder = floating.pill.chipBorder
+check("the chip's border is 1 pt inside the chip", chipBorder.rect == floating.pill.chipRect.insetBy(dx: 0.5, dy: 0.5) && chipBorder.radius == PanelStyle.chipRadius - 0.5)
+check("chip: white 12 % fill, 22 % border", abs(GlassStyle.chipFill.alphaComponent - 0.12) < 0.001 && abs(GlassStyle.chipBorder.alphaComponent - 0.22) < 0.001)
+check("the sweep is translucent green glass", GlassStyle.progressTop.alphaComponent < 0.6 && GlassStyle.progressBottom.alphaComponent < 0.6
+  && GlassStyle.progressTop.greenComponent > GlassStyle.progressTop.redComponent)
+if let edge = floating.pill.progressEdgeRect {
+  check("half way: the sweep's lit edge is 1 pt at its right end", edge == NSRect(x: floating.pill.progressRect.maxX - 1, y: 0, width: 1, height: 40), "\(edge)")
+} else {
+  check("half way: the sweep has a lit edge", false)
+}
+check("hover buttons: glass pills, white 10 % fill and 20 % border", abs(GlassStyle.buttonFill.alphaComponent - 0.10) < 0.001 && abs(GlassStyle.buttonBorder.alphaComponent - 0.20) < 0.001)
+
+// The pre-macOS 26 backdrop, forced: the HUD blur cut to the pill, the
+// tint painted denser, the same fixed size.
+let fallback = FloatingPanel(scheduler: scheduler, screens: { screenList }, glass: false)
+fallback.headless = true
+fallback.show(session(remaining: 1500, started: -1500), saved: nil)
+let fallbackEffect = fallback.backdrop as? NSVisualEffectView
+check("fallback: the HUD blur", !fallback.usesGlass && fallbackEffect?.material == .hudWindow && fallbackEffect?.state == .active)
+check("fallback: cut to the pill's shape", fallbackEffect?.maskImage != nil && fallbackEffect?.maskImage?.capInsets.left == PanelStyle.radius)
+check("fallback: the chrome on the blur, painting the denser tint", fallback.chrome.superview === fallback.backdrop && fallback.chrome.canvas == GlassStyle.fallbackCanvas)
+check("fallback: the edges on top", fallback.chrome.subviews.last === fallback.edges)
+check("fallback: the same fixed size", fallback.frame.height == 40 && fallback.frame.width == fallback.controlsWidth && fallback.frame.width == floating.frame.width, "\(fallback.frame)")
+fallback.setHovering(true, animated: false)
+check("fallback: hovering keeps the size", fallback.frame.size == NSSize(width: floating.frame.width, height: 40), "\(fallback.frame)")
+fallback.setHovering(false, animated: false)
+fallback.hide()
 
 ui.update(session(remaining: 3000, started: 0))
 check("at the start: no green", floating.content?.progress == 0 && floating.pill.progressRect.width == 0)
@@ -1251,6 +1344,12 @@ if CommandLine.arguments.count > 1 {
   ui.update(session(goal: "Deep Work", state: "paused", remaining: 1350, started: -1350))
   render(floating.chrome, "panel-hover-paused.png", background: desktop)
   floating.setHovering(false, animated: false)
+  // The chrome is what renders headless: the painted tint, the sweep, the
+  // chip and the edges, without the glass's blur of the desktop. The
+  // fallback's denser tint half way for comparison.
+  fallback.show(session(goal: "Deep Work", remaining: 1350, started: -1350), saved: nil)
+  render(fallback.chrome, "panel-fallback.png", background: desktop)
+  fallback.hide()
   ui.update(nil)
   let glow = GlowView(frame: NSRect(x: 0, y: 0, width: 1512, height: 982))
   render(glow, "glow.png", background: desktop, scale: 0.5, pad: 0)
