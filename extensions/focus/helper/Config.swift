@@ -1,8 +1,8 @@
 // ~/.raycast/focus/config.json: written by Focus Settings (TypeScript), read
 // by the helper on every request. Decoding is per key and forgiving: a
 // missing or mistyped key falls back to its default and unknown keys are
-// ignored. The helper writes only the two countdown keys (the floating
-// panel's "Move to Menu Bar", a dragged panel), through ConfigFile.update,
+// ignored. The helper writes only the two countdown keys (the displays'
+// "Move to …" items, a dragged panel), through ConfigFile.update,
 // which keeps every other key as it is.
 
 import Foundation
@@ -87,10 +87,12 @@ struct FocusConfig: Equatable {
   }
 }
 
-/// `countdownDisplay` in config.json: the floating panel (default) or the menu bar item.
+/// `countdownDisplay` in config.json: the floating panel (default), the
+/// menu bar item or the island at the notch.
 enum CountdownDisplay: String {
   case panel
   case menuBar
+  case notch
 }
 
 /// `panelPosition` in config.json: `{"x": 1200, "y": 870}`. Anything else

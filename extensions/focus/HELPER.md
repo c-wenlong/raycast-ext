@@ -3,7 +3,7 @@
 The Swift half of Focus ([PLAN.md](PLAN.md), build steps 1 to 3 and the stats half of 4). Sources in `helper/`,
 compiled to `assets/focus-daemon` (committed). No Dock icon. The session logic
 (timer, pause, extend, end sheet state, recovery) is in `Session.swift` and
-`Core.swift`; the countdown (floating panel or menu bar) and the end sheet draw it through the
+`Core.swift`; the countdown (floating panel, menu bar or notch) and the end sheet draw it through the
 `SessionPresenter` protocol in `Presenter.swift`.
 
 ## Files
@@ -13,7 +13,7 @@ All in `~/.raycast/focus/` (gitignored as `/focus/`; `FOCUS_DIR` overrides the f
 | File | What |
 |---|---|
 | `focus.sock` | Unix socket, mode 0600. |
-| `config.json` | Settings. Created with defaults if missing; re-read on every request. `logCalendarId` (with `logCalendarName`, its "Title (account)") is the optional override: null (the default) sends each session's log event to its own calendar, an id sends every session's event there (see "Log event and recovery"). The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
+| `config.json` | Settings. Created with defaults if missing; re-read on every request. `countdownDisplay` is `"panel"`, `"menuBar"` or `"notch"`. `logCalendarId` (with `logCalendarName`, its "Title (account)") is the optional override: null (the default) sends each session's log event to its own calendar, an id sends every session's event there (see "Log event and recovery"). The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
 | `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`, the end the timer runs to when it is not `planned_end`: extensions, plus for an ad-hoc session its closed pauses). |
 | `focus.lock` | `flock` held by the running instance (holds its pid). |
 | `daemon.log` | stderr of the daemon; rotated to `daemon.log.1` past 1 MB. |
@@ -134,9 +134,9 @@ looked up. Without a UI the core uses a presenter that discards every call
 
 ## Countdown panel and completion
 
-`UIPresenter.swift` owns both countdown displays and shows exactly one, per
-`countdownDisplay` in `config.json` (`"panel"`, the default, or `"menuBar"`;
-anything else is the panel). It re-reads the file whenever its modification
+`UIPresenter.swift` owns the three countdown displays and shows exactly one,
+per `countdownDisplay` in `config.json` (`"panel"`, the default, `"menuBar"`
+or `"notch"`; anything else is the panel). It re-reads the file whenever its modification
 time, size or inode changes, so a switch in Focus Settings shows within a
 second. Core is unchanged: everything below lives behind `SessionPresenter`.
 
@@ -223,9 +223,10 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   **"…"**: Edit opens `raycast://extensions/c-wenlong/focus/focusToday`;
   Cancel calls `presenterFinish(rating: nil, note: nil)` (finished at once,
   reason "manual", no sheet); Move to Menu Bar writes
-  `countdownDisplay: "menuBar"` and switches at once; Reset Panel Position
+  `countdownDisplay: "menuBar"` and switches at once, Move to Notch the same
+  with `"notch"`; Reset Panel Position
   writes `panelPosition: null` and moves the panel to the default place. The
-  menu bar item's menu gains "Move to Floating Panel", the reverse.
+  menu bar item's menu gains "Move to Floating Panel" and "Move to Notch".
 - **Position**: only the handle drags the panel (`isMovableByWindowBackground`
   is off). 0.4 s after a drag ends, the idle pill's top-left is written as
   `panelPosition: {x, y}` in whole points, AppKit global coordinates (y up,
@@ -238,6 +239,53 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   A restored or dropped panel then slides just far enough that the pill and
   the wider, taller controls row both fit in the visible frame (below the
   menu bar, clear of the Dock) of the screen it overlaps most.
+- **Notch** (`NotchPanel.swift`, `countdownDisplay: "notch"`): the
+  countdown as an island at the notch, measured against HeyClicky
+  (1.0.52) on this MacBook (1512 × 982, notch 185 × 32 at x 663). A
+  borderless non-activating `NSPanel` that never becomes key, at HeyClicky's
+  level (`.statusBar + 1`, 26), on every space and over full-screen apps, no
+  shadow. It hangs from the top centre of the screen with a notch
+  (`safeAreaInsets.top > 0`; the notch is the gap between
+  `auxiliaryTopLeftArea` and `auxiliaryTopRightArea`, as tall as the inset),
+  else from the top centre of the main screen, where a 12 pt gap stands in
+  for the notch and the menu bar's height comes from the visible frame (24
+  when it reports none). **Strip** (collapsed): pure black, the notch's width
+  plus a wing each side (the clock's width in 13 pt semibold monospaced
+  digits, plus 12 pt outside and 10 inside; 60 pt for `mm:ss`, so 305 pt on
+  this Mac), one point taller than the menu bar (33 pt, as HeyClicky's), top
+  on the top edge, with 8 pt flares curving out over the top 10 pt and
+  rounded bottom corners (radius 11, a curve reaching 1.25 × that and
+  bending late). The time sits in the left wing; the right wing has a 14 pt
+  ring (2 pt, a white 18 % track, the elapsed part in `#5CDB85` from twelve
+  o'clock). Paused dims both and puts a 6 pt ⏸ inside the ring; the width
+  never changes for a pause, only for an hour or more. **Hover**: a 10 Hz
+  poll of the pointer (the window ignores the mouse while collapsed, so its
+  clear part never takes a click); resting 0.5 s on the strip or the notch
+  opens the **card** (HeyClicky waits about 0.6 s), leaving it for 0.15 s
+  closes it; a menu open holds it open. The card grows downwards from the
+  strip over 0.25 s (ease out; closing eases in and out; a reversal starts
+  from where it is): black under the menu bar band, easing to `#1A1A1A`
+  over 36 pt, radius 15 at the bottom; 16 pt padding, then 8 pt below the
+  band the floating panel's pill (chip, goal, sweep; 40 tall, the card's
+  content width) on the panel's dark green tint with the glass edges (the
+  window server's glass cannot show through a black card, so the tint is
+  painted), 8 pt, and Pause, Complete and "…" centred (no drag handle), 14
+  pt bottom: 130 pt tall on this Mac. The content is clipped to the growing
+  shape; the strip's content fades out over the first third, the card's in
+  over the last half. The window is fixed at the card's size plus the flares,
+  and the island is redrawn at 120 Hz while it moves (headless: no
+  animation). Pause, Complete and "…" work as the panel's; "…" has Edit,
+  Cancel, Move to Floating Panel and Move to Menu Bar. Hidden while idle
+  (nothing but the notch, as HeyClicky with nothing to show) and at the end
+  card (it hangs right under the island and says it all), back on an
+  extend. **The sweep** (`NotchSweep`): a pause freezes the fill; two paused
+  updates 1.5 s or more apart with the same time left mark a pause that
+  stops the clock (ad hoc), and from then on the length leaves out
+  `pausedSeconds`, so the fill carries on from where it froze; time left
+  falling while paused (a calendar session) keeps the fill moving over the
+  whole span. With HeyClicky running too, the island covers its collapsed
+  island (256 × 33, same place, same level, ordered later) and, opening
+  first, keeps its card from opening while the pointer rests there: pick one.
 - **Completion** (`Completion.swift`): when `showEndSheet` gets a session
   this UI saw running or paused (the timer ran out, a calendar session's
   planned end passed while paused, or Complete/Stop was pressed; Cancel
@@ -459,8 +507,8 @@ and note (Focus Stats' Edit Session, `⌘E`).
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon`, signed with Kai's Apple Development identity when the keychain has it and ad hoc otherwise; `FOCUS_SIGN_IDENTITY` overrides, and an override missing from the keychain fails the build.
 - `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, what a pause does (a calendar session keeps its end and reaches the sheet while paused; an ad-hoc session freezes the time left, moves the end by each pause, extends from a pause, never reaches the sheet while paused, stops as "manual" from a long pause, and keeps all of it across restarts mid-pause and after a resume, with the log's "Focused" line and stats excluding the pauses), UI delegate calls, and abandoned versus resumed launch recovery, the log destination (the override, an ad-hoc session's calendar, a calendar session's event calendar, `none` skipped with and without the override, a read-only calendar waiting until moved, an unknown calendar, Finish without access naming the calendar later, and rows with no destination healed on retry and on the tick, or left waiting without access or a real calendar), `deleteSession` (a finished session with its event, pauses and attempts; an event whose markers are gone or name another start; an unavailable calendar, no access and a failed remove; no calendar; waiting; the open session running, paused and at the end sheet; unknown and malformed ids), `updateSession` (`LogText.replacingReview`: replace, add and drop the note line, CRLF, Kai's own "Rating:" and "Note:" lines above the block, a line inserted inside the block, no Rating line above the markers; rating and note changed with the event's review lines rewritten; Kai's own text in the event kept; the Rating line gone; notes changed between the check and the save; a field left out kept; clearing both; a multi-line or blank note; bad ratings and notes; the open session refused, running and at the end sheet; markers gone or naming another start; an unavailable calendar, no access and a failed save, then a later edit catching up; no calendar; a waiting session written later with the edit; an abandoned session; unknown and malformed ids). Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
-- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, the completion (sound, glow, the card at once, no banner) plus every case that skips it, and the end card: its compact layout (360 wide, stars and note on one row, extend and Finish on the next, labels fitting), top centre of the given screen above the glow, alpha 1 at 0.5 s and 1 s, then falling (about 0.5 at 3.5 s, 0.2 at 5 s) and never raised by `update`, `presenterFinish(nil, nil)` and alpha 0 at 6 s, hover (poll and tracking area) resetting the hold and fade, a click on bare card, a star click, a digit, a typed character, a key in the note, Extend and Finish each cancelling it, keys in the grace period not counting, a refresh keeping the countdown, manual stop, paused past the end, a restart at the sheet, and extended or finished elsewhere. The glass: its setup on this system (glass or HUD blur, radius, clear style, no `tintColor`, the painted tint), the edges' geometry and a pixel sample of what they draw (bright top and left rim, dark bottom, nothing outside the corners), the chip border, the sweep's lit edge, and the pre-macOS 26 backdrop forced on (same fixed size, hover included). The smooth sweep: the truth at an update, moving on at 1 / total (a 10 min session five times as fast as a 50 min one), capped at full, the exact planned end or the whole seconds, the next tick carried on with no step, 0.4 s behind ignored, 0.6 s off snapped, an extension lowering and slowing it, a new session afresh, paused keeping pace, still and full at the end sheet, and in the panel the fill moving about 2.2 pt in half a second of a 60 s session between updates, on device pixels, and stopping when hidden. The default place at top centre, the same rect as the end card. The lava lamp: for 300 seeds, five blobs whose drift stays inside the pill with sizes, alphas, periods and colours in range; a seed repeats its blobs; each disc's x, y and scale loops (eased, autoreversing, infinite, between the blob's points); stop freezes the clock and start carries on from it; dimmed at 45 %; Reduce Motion keeps it still, and switching it applies at once without starting a stopped lamp; in the panel it sits under the pill, runs while a running session shows, and freezes when paused (dimmed) or hidden. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `card-0s.png`, `card-2.5s.png` (alpha 0.7), `card-over-glow.png`, `menubar-*.png`, `panel-*.png` (the chrome without the glass's blur; `panel-fallback.png` is the pre-macOS 26 tint), `glow.png` and `block.png` there.
-- `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion with the card), `FOCUS_UI_DEMO_HOVER=<from>-<to>` (seconds after the card shows: the poll sees the pointer over the card in that window, the real pointer otherwise; tracking-area crossings and uses of the card are logged), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel and glow draw, plus `state.txt`; menus are logged and closed after 2 s; while the card shows, every 0.25 s `card-<ms>.png` at its alpha, `screen-<ms>.png` with the glow and the card where they are, and a line in `card.txt`). For a shell without Screen Recording. `FOCUS_DIR` must be short: the socket path has a length limit.
+- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, the completion (sound, glow, the card at once, no banner) plus every case that skips it, and the end card: its compact layout (360 wide, stars and note on one row, extend and Finish on the next, labels fitting), top centre of the given screen above the glow, alpha 1 at 0.5 s and 1 s, then falling (about 0.5 at 3.5 s, 0.2 at 5 s) and never raised by `update`, `presenterFinish(nil, nil)` and alpha 0 at 6 s, hover (poll and tracking area) resetting the hold and fade, a click on bare card, a star click, a digit, a typed character, a key in the note, Extend and Finish each cancelling it, keys in the grace period not counting, a refresh keeping the countdown, manual stop, paused past the end, a restart at the sheet, and extended or finished elsewhere. The glass: its setup on this system (glass or HUD blur, radius, clear style, no `tintColor`, the painted tint), the edges' geometry and a pixel sample of what they draw (bright top and left rim, dark bottom, nothing outside the corners), the chip border, the sweep's lit edge, and the pre-macOS 26 backdrop forced on (same fixed size, hover included). The smooth sweep: the truth at an update, moving on at 1 / total (a 10 min session five times as fast as a 50 min one), capped at full, the exact planned end or the whole seconds, the next tick carried on with no step, 0.4 s behind ignored, 0.6 s off snapped, an extension lowering and slowing it, a new session afresh, paused keeping pace, still and full at the end sheet, and in the panel the fill moving about 2.2 pt in half a second of a 60 s session between updates, on device pixels, and stopping when hidden. The default place at top centre, the same rect as the end card. The lava lamp: for 300 seeds, five blobs whose drift stays inside the pill with sizes, alphas, periods and colours in range; a seed repeats its blobs; each disc's x, y and scale loops (eased, autoreversing, infinite, between the blob's points); stop freezes the clock and start carries on from it; dimmed at 45 %; Reduce Motion keeps it still, and switching it applies at once without starting a stopped lamp; in the panel it sits under the pill, runs while a running session shows, and freezes when paused (dimmed) or hidden. The notch: the wing (every `mm:ss` alike, paused too, wider past an hour), the strip on a notched screen (305 × 33 on this Mac's notch, centred on it, covering it) and on a plain one (the 12 pt gap, a point under a 25 pt menu bar), the card (130 tall, as wide as the strip or the content, centred), the window (both plus the flares), the hover rect (strip or notch), the interpolation and easing, the outline's flares and corners, the real screen's notch; the sweep (frozen while paused, an ad-hoc pause detected and left out so it resumes where it froze, a calendar pause keeping pace, a new session afresh, full at the end); the routing (Move to Notch from the panel, the menu bar and Settings' config; the panel and item hidden; hidden idle, at the end card and on `update(nil)`, back on an extend; another screen, no screen); the window (level, spaces, never key, no shadow, clicks through while collapsed); hover on the fake scheduler (not before 0.5 s, open after, back within 0.15 s stays open, closed after 0.15 s, a quick pass never opens it, the poll on the notch, the card and a wing, never while hidden); the content (the strip's clock, ring and label, the pill's title and fill, the controls under it, no handle); paused (⏸, same width, Resume); Pause and its timed pause, Complete, Edit, Cancel, Move to Floating Panel and Move to Menu Bar. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `card-0s.png`, `card-2.5s.png` (alpha 0.7), `card-over-glow.png`, `menubar-*.png`, `panel-*.png` (the chrome without the glass's blur; `panel-fallback.png` is the pre-macOS 26 tint), `notch-collapsed.png`, `notch-paused.png`, `notch-open.png`, `glow.png` and `block.png` there.
+- `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion with the card), `FOCUS_UI_DEMO_HOVER=<from>-<to>` (seconds after the card shows: the poll sees the pointer over the card in that window, the real pointer otherwise; tracking-area crossings and uses of the card are logged), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel, notch (`notch.png`) and glow draw, plus `state.txt` with the notch's window, island and hover rects; menus are logged and closed after 2 s; while the card shows, every 0.25 s `card-<ms>.png` at its alpha, `screen-<ms>.png` with the glow and the card where they are, and a line in `card.txt`). For a shell without Screen Recording. `FOCUS_DIR` must be short: the socket path has a length limit (a relative path, run from its parent, is fine).
 
 ## Site blocking (block page and tab watcher)
 For HELPER.md (step 3, site half): `BlockPage.swift` (HTML, pure), `BlockServer.swift` (loopback

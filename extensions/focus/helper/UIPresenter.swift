@@ -4,9 +4,10 @@ import Foundation
 // MARK: - The presenter behind the session logic
 //
 // UIPresenter is what the session logic (Core) drives through
-// SessionPresenter. It owns the two countdown displays, the floating panel
-// (FloatingPanel.swift, the default) and the menu bar item (MenuBar.swift),
-// and shows exactly one of them per `countdownDisplay` in config.json, read
+// SessionPresenter. It owns the three countdown displays, the floating panel
+// (FloatingPanel.swift, the default), the menu bar item (MenuBar.swift) and
+// the island at the notch (NotchPanel.swift), and shows exactly one of them
+// per `countdownDisplay` in config.json, read
 // again whenever the file changes. It also owns the end sheet (EndSheet.swift)
 // and its auto-finish (the end card: its timer, hover polling and whether it
 // was used), the completion sound and glow (Completion.swift) played with the
@@ -14,7 +15,7 @@ import Foundation
 // the two config writes the panel makes (display and position). Main thread
 // only.
 
-final class UIPresenter: SessionPresenter, FloatingPanelActions {
+final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActions {
   weak var delegate: SessionPresenterDelegate? {
     didSet {
       menuBar.delegate = delegate
@@ -24,6 +25,7 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
   let menuBar: MenuBar
   let endSheet: EndSheet
   let floating: FloatingPanel
+  let notch: NotchPanel
   let completion: Completion
   /// config.json; nil uses the defaults (the panel) and writes nothing.
   let settings: ConfigFile?
@@ -68,11 +70,13 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
   static let pointerPoll: TimeInterval = 0.1
 
   /// The tests pass a private NSStatusBar, a fixed clock, a config file in a
-  /// temp folder, a fake scheduler, a fake sound and fixed screens.
+  /// temp folder, a fake scheduler, a fake sound and fixed screens (and the
+  /// notch's screen).
   init(
     statusBar: NSStatusBar = .system, clock: @escaping () -> Date = Date.init, settings: ConfigFile? = nil,
     scheduler: UIScheduler = MainScheduler(), sound: CompletionSound = SystemCompletionSound(),
-    screens: @escaping () -> [ScreenGeometry] = ScreenGeometry.current, log: @escaping (String) -> Void = { _ in }
+    screens: @escaping () -> [ScreenGeometry] = ScreenGeometry.current,
+    notchScreen: @escaping () -> NotchScreen? = NotchScreen.current, log: @escaping (String) -> Void = { _ in }
   ) {
     self.clock = clock
     self.settings = settings
@@ -82,9 +86,12 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
     menuBar = MenuBar(statusBar: statusBar)
     endSheet = EndSheet(clock: clock)
     floating = FloatingPanel(scheduler: scheduler, screens: screens)
+    notch = NotchPanel(scheduler: scheduler, screen: notchScreen)
     completion = Completion(scheduler: scheduler, sound: sound)
     floating.actions = self
+    notch.actions = self
     menuBar.onMoveToPanel = { [weak self] in self?.setDisplay(.panel) }
+    menuBar.onMoveToNotch = { [weak self] in self?.setDisplay(.notch) }
     endSheet.onEngage = { [weak self] in self?.endCardEngaged() }
     endSheet.onHide = { [weak self] in self?.stopEndCard() }
     endSheet.onPointer = { [weak self] inside in self?.endCardPointerMoved(inside: inside) }
@@ -148,27 +155,31 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
     onMain { [self] in refresh(view) }
   }
 
-  /// Shows `view` on the display config asks for and hides the other.
+  /// Shows `view` on the display config asks for and hides the others.
   private func refresh(_ view: SessionView?) {
     lastView = view
     let config = currentConfig()
-    let usePanel = config.countdownDisplay == .panel
-    menuBar.update(usePanel ? nil : view)
+    let display = config.countdownDisplay
+    menuBar.update(display == .menuBar ? view : nil)
     followTimedPause(view)
     guard let view else {
       // No session left, so nothing for a sheet to ask about.
       liveSessionId = nil
       floating.hide()
+      notch.hide()
       if endSheet.isVisible { endSheet.dismiss() }
       return
     }
     if view.state == "running" || view.state == "paused" { liveSessionId = view.id }
-    // The panel is for a live session: hidden at the end sheet.
-    if usePanel && view.state != "ending" {
+    // The panel and the notch are for a live session: hidden at the end
+    // sheet (the menu bar item stays, with its Extend menu).
+    let live = view.state != "ending"
+    if display == .panel && live {
       floating.show(view, saved: config.panelPosition)
     } else {
       floating.hide()
     }
+    if display == .notch && live { notch.show(view) } else { notch.hide() }
     // Back to running or paused (extended from the menu, say): the
     // question is answered.
     if endSheet.isVisible, endSheet.session?.id == view.id, view.state != "ending", view.remainingSeconds > 0 {
@@ -183,8 +194,11 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
   func showEndSheet(_ view: SessionView) {
     onMain { [self] in
       lastView = view
-      menuBar.update(display == .panel ? nil : view)
+      menuBar.update(display == .menuBar ? view : nil)
       floating.hide()
+      // The card hangs right under the notch and says it all: the island
+      // steps aside rather than showing 00:00 above it.
+      notch.hide()
       if completionEnabled, liveSessionId == view.id, !endSheet.isVisible {
         liveSessionId = nil
         completion.play(screens: screens())
@@ -380,6 +394,12 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
   }
 
   func panelMoveToMenuBar() { setDisplay(.menuBar) }
+
+  func panelMoveToNotch() { setDisplay(.notch) }
+
+  // MARK: NotchPanelActions (the rest are shared with the panel)
+
+  func notchMove(to display: CountdownDisplay) { setDisplay(display) }
 
   func panelResetPosition() {
     positionWrite?.cancel()
@@ -586,6 +606,8 @@ final class UIDemo: SessionPresenterDelegate {
     let panel = ui.floating
     let scale = panel.panel.screen?.backingScaleFactor ?? 2
     if panel.isVisible { write(panel.chrome, "panel.png", scale: scale, background: grey, pad: 12) }
+    let notch = ui.notch
+    if notch.isVisible { write(notch.root, "notch.png", scale: notch.window.screen?.backingScaleFactor ?? 2, background: grey, pad: 0) }
     if ui.completion.isGlowVisible, let window = ui.completion.glowWindows.first,
       let glow = GlowImageView.image(for: window.frame.size)
     {
@@ -599,6 +621,9 @@ final class UIDemo: SessionPresenterDelegate {
       "mouse \(NSStringFromPoint(mouse)) inside \(panel.panel.frame.contains(mouse))",
       "title \(panel.content?.titleText ?? "")", "progress \(panel.content?.progress ?? 0)",
       "pauseButton \(panel.pauseButton.title)", "menuBarVisible \(ui.menuBar.statusItem.isVisible)",
+      "notchVisible \(notch.isVisible) expanded \(notch.isExpanded) expansion \(notch.expansion)",
+      "notchWindow \(NSStringFromRect(notch.window.frame)) island \(NSStringFromRect(notch.islandRect)) hover \(NSStringFromRect(notch.hoverRect)) mouseInside \(notch.hoverRect.contains(mouse))",
+      "notchScreen \(notch.layoutScreen.map { "frame \(NSStringFromRect($0.frame)) notch \($0.notch.map(NSStringFromRect) ?? "none") bar \($0.barHeight)" } ?? "none")",
       "completion \(ui.completion.trace.joined(separator: ","))", "glowVisible \(ui.completion.isGlowVisible)",
       "glowFrames \(ui.completion.glowWindows.filter(\.isVisible).map { NSStringFromRect($0.frame) })",
       "sheetVisible \(ui.endSheet.isVisible) \(NSStringFromRect(ui.endSheet.frame)) alpha \(ui.endSheet.panel.alphaValue)",

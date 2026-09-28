@@ -6,14 +6,15 @@ import path from "node:path";
 // Everything Focus keeps on disk lives in ~/.raycast/focus (gitignored at the
 // repo root). The helper owns the socket and the database; config.json is
 // read by both sides and written by Focus Settings; the helper writes only
-// `countdownDisplay` and `panelPosition` (the floating panel's "Move to Menu
-// Bar" and a dragged panel), keeping every other key.
+// `countdownDisplay` and `panelPosition` (the countdown displays' "Move to …"
+// items and a dragged panel), keeping every other key.
 export const FOCUS_DIR = path.join(os.homedir(), ".raycast", "focus");
 export const CONFIG_PATH = path.join(FOCUS_DIR, "config.json");
 export const SOCKET_PATH = path.join(FOCUS_DIR, "focus.sock");
 
-// Where the countdown shows while a session runs.
-export type CountdownDisplay = "panel" | "menuBar";
+// Where the countdown shows while a session runs: the floating panel, the
+// menu bar item, or the island at the notch.
+export type CountdownDisplay = "panel" | "menuBar" | "notch";
 
 // The floating panel's top-left in screen points (AppKit's global
 // coordinates, y up); null puts it at the top right of the main screen.
@@ -95,7 +96,9 @@ function stringOrNull(value: unknown): string | null | undefined {
 }
 
 function countdownDisplay(value: unknown): CountdownDisplay | undefined {
-  return value === "panel" || value === "menuBar" ? value : undefined;
+  return value === "panel" || value === "menuBar" || value === "notch"
+    ? value
+    : undefined;
 }
 
 function panelPosition(value: unknown): PanelPosition | null {
