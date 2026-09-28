@@ -336,6 +336,18 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   timed pause leaves it paused until Resume.
 - When the timer runs out (not on a manual stop or Cancel), a sound plays
   and the screen edges glow green for 2.5 s.
+- Liquid glass (2026-09-28, Kai: "this liquid glass look ... prioritise the
+  liquid glass look, then the dynamic background"). The pill is a slab of
+  dark green glass: on macOS 26 a clear `NSGlassEffectView` behind it, with
+  the green painted on top rather than set as the glass's `tintColor`,
+  because AppKit greys a glass tint in a window that is not key and this
+  panel never is (checked on screen: the same tint is green in a key window
+  and grey in ours). The clear style over the regular one because the
+  regular one is a nearly opaque dark frost in dark mode, so the desktop
+  does not show through. The rim, top highlight, sheen and bottom shade are
+  drawn by the panel, over the pill and the hover row. Before macOS 26 the
+  HUD blur stays, with a denser tint. A lava lamp background behind the
+  glass comes next, as its own change.
 
 ## End card (2026-09-28)
 
