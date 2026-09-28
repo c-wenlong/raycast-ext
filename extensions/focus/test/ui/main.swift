@@ -1270,9 +1270,9 @@ if CommandLine.arguments.count > 1 {
     screenView.addSubview(cardView)
   }
   render(screenView, "card-over-glow.png", background: desktop, scale: 0.5, pad: 0)
-  // The card alone at 2x over the desktop grey, as it appears (0 s) and
-  // half way through its fade (2.5 s, alpha 0.5).
-  for (name, alpha) in [("card-0s.png", 1.0), ("card-2.5s.png", 0.5)] as [(String, CGFloat)] {
+  // The card alone at 2x over the desktop grey, as it appears (0 s) and at
+  // 2.5 s (1 s held, then 1.5 s of the 5 s fade: alpha 0.7).
+  for (name, alpha) in [("card-0s.png", 1.0), ("card-2.5s.png", 0.7)] as [(String, CGFloat)] {
     guard let cardRep = sheet.content.bitmapImageRepForCachingDisplay(in: sheet.content.bounds) else { continue }
     sheet.content.cacheDisplay(in: sheet.content.bounds, to: cardRep)
     let pad: CGFloat = 16
