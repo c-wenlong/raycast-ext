@@ -5,7 +5,7 @@ import Foundation
 //
 // The countdown as a small pill that floats over every window and space,
 // like Raycast Focus: a rounded time chip ("44:50", monospaced) and the goal
-// beside it. The chip fills with green from the left as the session runs
+// beside it. The pill fills with green from the left as the session runs
 // (elapsed over planned length; an extension lowers the fill). Paused shows
 // ⏸ before the digits on a dimmer chip.
 //
@@ -20,7 +20,8 @@ import Foundation
 // the screen edge it sits against: a pill on the right half grows to the
 // left. Its saved position is the idle pill's top-left.
 //
-// Main thread only. The look shares the end sheet's colours (EndSheet.swift).
+// The pill is dark green liquid glass (Glass.swift): the glass or HUD blur
+// behind, the tint and edges painted on. Main thread only.
 
 /// A screen's full frame and the part not covered by the menu bar and the Dock.
 struct ScreenGeometry: Equatable {
@@ -81,16 +82,10 @@ protocol FloatingPanelActions: AnyObject {
 }
 
 enum PanelStyle {
-  /// Over the blur: close to the end sheet's #1A1A1A, a touch lighter like Raycast's pill.
+  /// The end card's canvas over its blur (the pill itself is glass, see
+  /// GlassStyle): close to #1A1A1A, a touch lighter, with a 10 % hairline.
   static let canvas = NSColor(white: 0.115, alpha: 0.93)
   static let border = NSColor(white: 1, alpha: 0.10)
-  /// The chip is translucent so the green sweep reads through it; paused
-  /// stays dimmer than running.
-  static let chip = NSColor(white: 1, alpha: 0.16)
-  static let chipPaused = NSColor(white: 1, alpha: 0.09)
-  /// #34C759 toned down for a dark canvas, like Raycast's fill.
-  static let progress = NSColor(srgbRed: 0.19, green: 0.60, blue: 0.34, alpha: 1)
-  static let progressPaused = NSColor(srgbRed: 0.19, green: 0.60, blue: 0.34, alpha: 0.5)
   static let digits = NSColor(white: 1, alpha: 0.62)
   static let digitsPaused = NSColor(white: 1, alpha: 0.45)
   static let digitsOnProgress = NSColor(white: 1, alpha: 0.96)
@@ -222,21 +217,47 @@ final class CountdownPillView: NSView {
     return rect
   }
 
+  /// The sweep's lit leading edge: a 1 pt line at the fill's right end,
+  /// nil at no fill and at a full pill.
+  var progressEdgeRect: NSRect? {
+    let fill = progressRect
+    guard fill.width >= 1, fill.width < bounds.width else { return nil }
+    return NSRect(x: fill.maxX - 1, y: fill.minY, width: 1, height: fill.height)
+  }
+
+  /// The chip's 1 pt border, inside the chip.
+  var chipBorder: (rect: NSRect, radius: CGFloat) { GlassEdges.insetBorder(chipRect, radius: PanelStyle.chipRadius) }
+
   override func draw(_ dirtyRect: NSRect) {
     let chip = chipRect
     let pillPath = NSBezierPath(roundedRect: bounds, xRadius: PanelStyle.radius, yRadius: PanelStyle.radius)
     let fill = progressRect
     if fill.width > 0 {
+      // Green glass filling the slab: translucent, lighter at the top, with
+      // a lit leading edge, so the tint and the rim still read through it.
       NSGraphicsContext.saveGraphicsState()
       pillPath.addClip()
-      (content.paused ? PanelStyle.progressPaused : PanelStyle.progress).setFill()
-      fill.fill()
+      let alpha = content.paused ? GlassStyle.progressPausedAlpha : 1
+      NSGradient(
+        starting: GlassStyle.progressBottom.withAlphaComponent(GlassStyle.progressBottom.alphaComponent * alpha),
+        ending: GlassStyle.progressTop.withAlphaComponent(GlassStyle.progressTop.alphaComponent * alpha))?
+        .draw(in: fill, angle: 90)
+      if let edge = progressEdgeRect {
+        GlassStyle.progressEdge.withAlphaComponent(GlassStyle.progressEdge.alphaComponent * alpha).setFill()
+        edge.fill()
+      }
       NSGraphicsContext.restoreGraphicsState()
     }
-    // The chip sits on top, translucent, so the green reads through it.
+    // The chip: a lighter glass inset with a thin light border, translucent
+    // so the green reads through it.
     let chipPath = NSBezierPath(roundedRect: chip, xRadius: PanelStyle.chipRadius, yRadius: PanelStyle.chipRadius)
-    (content.paused ? PanelStyle.chipPaused : PanelStyle.chip).setFill()
+    (content.paused ? GlassStyle.chipFillPaused : GlassStyle.chipFill).setFill()
     chipPath.fill()
+    let border = chipBorder
+    let borderPath = NSBezierPath(roundedRect: border.rect, xRadius: border.radius, yRadius: border.radius)
+    borderPath.lineWidth = 1
+    (content.paused ? GlassStyle.chipBorderPaused : GlassStyle.chipBorder).setStroke()
+    borderPath.stroke()
 
     // Digits (and the pause glyph) centred in the chip; drawn once in grey,
     // then again in white over the green part so they stay readable.
@@ -377,15 +398,16 @@ final class PanelButton: NSButton {
   func resetHover() { hovering = false }
 
   override func draw(_ dirtyRect: NSRect) {
+    // A small glass pill: light fill, a lighter hairline.
     let box = bounds.insetBy(dx: 0.5, dy: 0.5)
     let path = NSBezierPath(roundedRect: box, xRadius: PanelStyle.chipRadius, yRadius: PanelStyle.chipRadius)
-    SheetStyle.fill.setFill()
+    GlassStyle.buttonFill.setFill()
     path.fill()
     if hovering || isHighlighted {
-      SheetStyle.hover.setFill()
+      GlassStyle.buttonHover.setFill()
       path.fill()
     }
-    SheetStyle.border.setStroke()
+    GlassStyle.buttonBorder.setStroke()
     path.lineWidth = 1
     path.stroke()
 
@@ -475,10 +497,13 @@ final class DragHandleView: NSView {
   }
 }
 
-/// The panel's shape: the translucent canvas and its hairline, and the hover
-/// tracking for the whole panel.
+/// The panel's tint (over the glass, or denser over the older HUD blur) and
+/// the hover tracking for the whole panel.
 final class PanelChromeView: NSView {
   weak var owner: FloatingPanel?
+  var canvas = GlassStyle.tint {
+    didSet { needsDisplay = true }
+  }
   private var trackingArea: NSTrackingArea?
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -503,13 +528,8 @@ final class PanelChromeView: NSView {
   override func mouseExited(with event: NSEvent) { owner?.pointerMoved(inside: false) }
 
   override func draw(_ dirtyRect: NSRect) {
-    let box = bounds.insetBy(dx: 0.5, dy: 0.5)
-    let path = NSBezierPath(roundedRect: box, xRadius: PanelStyle.radius - 0.5, yRadius: PanelStyle.radius - 0.5)
-    PanelStyle.canvas.setFill()
-    path.fill()
-    PanelStyle.border.setStroke()
-    path.lineWidth = 1
-    path.stroke()
+    canvas.setFill()
+    NSBezierPath(roundedRect: bounds, xRadius: PanelStyle.radius, yRadius: PanelStyle.radius).fill()
   }
 }
 
@@ -518,9 +538,14 @@ final class PanelChromeView: NSView {
 final class FloatingPanel: NSObject {
   weak var actions: FloatingPanelActions?
   let panel: CountdownPanel
-  let effect = NSVisualEffectView()
+  /// True when the backdrop is `NSGlassEffectView` (macOS 26), false for the HUD blur.
+  let usesGlass: Bool
+  /// The window's content view: the glass, or the HUD blur before macOS 26.
+  private(set) var backdrop = NSView()
   let chrome = PanelChromeView()
   let pill = CountdownPillView()
+  /// The glass's rim, highlight and sheen, over the pill and the controls.
+  let edges = GlassEdgesView()
   let controls = NSView()
   let pauseButton = PanelButton(title: "Pause", symbol: "pause")
   let completeButton = PanelButton(title: "Complete", symbol: "checkmark")
@@ -561,9 +586,14 @@ final class FloatingPanel: NSObject {
   /// non-activating panel of a background app.
   private var pointerTimer: Timer?
 
-  init(scheduler: UIScheduler, screens: @escaping () -> [ScreenGeometry] = ScreenGeometry.current) {
+  /// `glass` false forces the pre-macOS 26 backdrop (the tests cover both).
+  init(
+    scheduler: UIScheduler, screens: @escaping () -> [ScreenGeometry] = ScreenGeometry.current,
+    glass: Bool = GlassBackdrop.isAvailable
+  ) {
     self.scheduler = scheduler
     self.screens = screens
+    usesGlass = glass && GlassBackdrop.isAvailable
     panel = CountdownPanel(
       contentRect: NSRect(x: 0, y: 0, width: 160, height: PanelStyle.idleHeight),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -587,18 +617,15 @@ final class FloatingPanel: NSObject {
     panel.animationBehavior = .none
     panel.title = "Focus countdown"
 
-    // The blur behind the canvas, cut to the pill's shape by a stretchable mask.
-    effect.material = .hudWindow
-    effect.blendingMode = .behindWindow
-    effect.state = .active
-    effect.maskImage = Self.maskImage(radius: PanelStyle.radius)
-    effect.autoresizingMask = [.width, .height]
-    panel.contentView = effect
-
+    // Glass (or the HUD blur with the tint painted on) behind everything;
+    // the chrome holds the pill, the controls and the edges on top.
     chrome.owner = self
-    chrome.frame = effect.bounds
+    chrome.frame = NSRect(x: 0, y: 0, width: 160, height: PanelStyle.idleHeight)
     chrome.autoresizingMask = [.width, .height]
-    effect.addSubview(chrome)
+    chrome.canvas = usesGlass ? GlassStyle.tint : GlassStyle.fallbackCanvas
+    backdrop = GlassBackdrop.make(radius: PanelStyle.radius, content: chrome, glass: usesGlass)
+    backdrop.autoresizingMask = [.width, .height]
+    panel.contentView = backdrop
 
     pill.frame = chrome.bounds
     pill.autoresizingMask = [.width, .height]
@@ -629,6 +656,11 @@ final class FloatingPanel: NSObject {
     handle.setAccessibilityLabel("Move")
     controls.addSubview(handle)
     layoutControls()
+
+    edges.frame = chrome.bounds
+    edges.autoresizingMask = [.width, .height]
+    edges.radius = PanelStyle.radius
+    chrome.addSubview(edges)
 
     pauseMenu.autoenablesItems = false
     pauseMenu.appearance = NSAppearance(named: .darkAqua)
@@ -671,18 +703,6 @@ final class FloatingPanel: NSObject {
   static let pauseChoices: [(String, Int)] = [
     ("1 minute", 60), ("2 minutes", 120), ("5 minutes", 300), ("10 minutes", 600), ("", -1), ("Indefinitely", 0),
   ]
-
-  private static func maskImage(radius: CGFloat) -> NSImage {
-    let side = radius * 2 + 1
-    let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-      NSColor.black.setFill()
-      NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-      return true
-    }
-    image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-    image.resizingMode = .stretch
-    return image
-  }
 
   /// The controls row's width.
   var controlsWidth: CGFloat {
