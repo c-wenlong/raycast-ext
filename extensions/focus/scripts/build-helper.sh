@@ -5,9 +5,6 @@
 # identity). Run from anywhere.
 set -eu
 cd "$(dirname "$0")/.."
-swiftc -O -swift-version 5 -framework EventKit \
-  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/Info.plist \
-  -o assets/focus-daemon helper/*.swift
 # Signed with Kai's Apple Development identity by default, so the Calendar
 # and Automation grants key on the signature and survive rebuilds and
 # Raycast's copy of the binary. A Mac without that identity signs ad hoc
@@ -23,5 +20,10 @@ if [ "$identity" != "-" ] && ! security find-identity -v -p codesigning 2>/dev/n
   echo "signing identity \"$identity\" is not in the keychain; signing ad hoc" >&2
   identity="-"
 fi
+# The identity is settled before compiling, so a refused override never
+# leaves an unsigned binary behind.
+swiftc -O -swift-version 5 -framework EventKit \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/Info.plist \
+  -o assets/focus-daemon helper/*.swift
 codesign --force --sign "$identity" --identifier com.c-wenlong.focus-daemon assets/focus-daemon
 echo "built assets/focus-daemon"
