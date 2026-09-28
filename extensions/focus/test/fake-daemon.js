@@ -21,6 +21,12 @@
 // `stats` aggregates the sessions finished through it (plus a seeded history
 // when run by hand) with the helper's rules and writes a plain bar chart to
 // stats/week.svg next to the socket.
+// `deleteSession` follows the helper: the open session ends with no log
+// event and goes; a finished or waiting one goes with its log event, which
+// is removed only while its notes carry both marker lines (session id and
+// UTC start) and `state.calendarAccess` is "fullAccess" (otherwise the reply
+// warns). Log events are kept in `state.calendarEvents` ({id, calendarId,
+// sessionId, notes}) so tests can rewrite notes or check what was removed.
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -72,6 +78,9 @@ function createFakeDaemon(options) {
     // startedAt, endedAt, pauses: [{start, end}] (ms), rating, note,
     // endReason, blockedAttempts, snoozes, logPending}.
     history: options.seedHistory ? seedHistory(clock()) : [],
+    // Log events written by finish and movePending.
+    calendarEvents: [],
+    calendarAccess: "fullAccess",
     waiting: options.seedWaiting
       ? [
           {
@@ -146,6 +155,66 @@ function createFakeDaemon(options) {
       return { ok: false, error: `the session is at the end sheet; extend or finish it (cannot ${action})` };
     }
     return { ok: false, error: `the session is ${session.state}; cannot ${action}` };
+  }
+
+  // A log event whose notes end with the helper's two marker lines.
+  function writeLogEvent(item, calendarId) {
+    const id = `log-${item.id}`;
+    state.calendarEvents.push({
+      id,
+      calendarId,
+      sessionId: item.id,
+      notes: `Source: fake\n\n${markerLines(item.id, item.startedAt).join("\n")}`,
+    });
+    item.logEventId = id;
+    return id;
+  }
+
+  // The helper's two marker lines (LogText.marker, LogText.startedLine):
+  // the session id and the UTC start in whole seconds.
+  function markerLines(sessionId, startedAt) {
+    const utc = new Date(startedAt).toISOString().replace(/\.\d{3}Z$/, "Z");
+    return [`focus-session: ${sessionId}`, `focus-started: ${utc}`];
+  }
+
+  // Returns null when removed, else why the event was kept.
+  function removeLogEvent(eventId, sessionId, startedAt) {
+    if (state.calendarAccess !== "fullAccess") {
+      return `calendar access is ${state.calendarAccess}, so the log event was left in Calendar`;
+    }
+    const index = state.calendarEvents.findIndex((e) => e.id === eventId);
+    if (index < 0) return "the log event was not found in Calendar (deleted already, or its calendar is unavailable)";
+    // Both lines, as the helper checks: a reused id with another start is not ours.
+    const lines = state.calendarEvents[index].notes.split(/\r?\n/).map((line) => line.trim());
+    if (!markerLines(sessionId, startedAt).every((marker) => lines.includes(marker))) {
+      return "the log event's notes no longer carry this session's focus-session marker, so it was left in Calendar";
+    }
+    state.calendarEvents.splice(index, 1);
+    return null;
+  }
+
+  function deleteSession(request) {
+    const id = request.sessionId;
+    if (id === undefined || id === null) return { ok: false, error: "sessionId is required" };
+    if (!Number.isInteger(id)) return { ok: false, error: "sessionId must be a whole number" };
+    if (state.session && state.session.id === id) {
+      // Ended as Cancel ends it, but nothing is kept or logged.
+      state.session = null;
+      state.snoozes = [];
+      return { ok: true, deleted: true, logEventRemoved: false };
+    }
+    const index = state.history.findIndex((item) => item.id === id);
+    const waitingIndex = state.waiting.findIndex((item) => item.sessionId === id);
+    if (index < 0 && waitingIndex < 0) return { ok: false, error: `no session with id ${id}` };
+    const item = index >= 0 ? state.history.splice(index, 1)[0] : null;
+    if (waitingIndex >= 0) state.waiting.splice(waitingIndex, 1);
+    const reply = { ok: true, deleted: true, logEventRemoved: false };
+    if (item && item.logEventId) {
+      const warning = removeLogEvent(item.logEventId, id, item.startedAt);
+      if (warning) reply.warning = warning;
+      else reply.logEventRemoved = true;
+    }
+    return reply;
   }
 
   function today() {
@@ -276,7 +345,7 @@ function createFakeDaemon(options) {
         // A session filed under no calendar ("none") is never written to one.
         const skipped = session.calendarId === "none";
         const logCalendar = skipped ? null : CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
-        state.history.push({
+        const item = {
           id: session.id,
           goal: session.goal,
           calendarId: session.calendarId,
@@ -291,7 +360,9 @@ function createFakeDaemon(options) {
           snoozes: snoozed,
           logPending: !logCalendar && !skipped,
           logSkipped: skipped,
-        });
+          logEventId: null,
+        };
+        state.history.push(item);
         if (skipped) return { ok: true, session, logEventId: null, logPending: false, logSkipped: true };
         if (!logCalendar) {
           state.waiting.push({
@@ -302,7 +373,8 @@ function createFakeDaemon(options) {
           });
           return { ok: true, session, logEventId: null, logPending: true, logSkipped: false };
         }
-        return { ok: true, session, logEventId: `log-${session.id}`, logPending: false, logSkipped: false };
+        const logEventId = writeLogEvent(item, logCalendar.id);
+        return { ok: true, session: { ...session, logEventId }, logEventId, logPending: false, logSkipped: false };
       }
       case "blocking":
         return { ok: true, ...blockingStatus(now) };
@@ -320,6 +392,8 @@ function createFakeDaemon(options) {
       }
       case "stats":
         return stats(request, now);
+      case "deleteSession":
+        return deleteSession(request);
       case "pending":
         return { ok: true, waiting: state.waiting };
       case "retryPending": {
@@ -334,7 +408,9 @@ function createFakeDaemon(options) {
         const written = state.waiting.length;
         const moved = new Set(state.waiting.map((item) => item.sessionId));
         for (const item of state.history) {
-          if (moved.has(item.id)) item.logPending = false;
+          if (!moved.has(item.id)) continue;
+          item.logPending = false;
+          writeLogEvent(item, target.id);
         }
         state.waiting = [];
         return { ok: true, written, adopted: 0, stillWaiting: 0 };

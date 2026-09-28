@@ -36,6 +36,12 @@ protocol CalendarBackend: LogCalendarStore {
   func calendar(id: String) -> CalendarInfo?
   /// Occurrences overlapping [start, end); `calendarIds` nil means all.
   func events(from start: Date, to end: Date, calendarIds: [String]?) -> [CalendarEvent]
+  /// The event with this identifier (a log event), or nil when it is gone
+  /// or its calendar cannot be read.
+  func loggedEvent(id: String) -> LoggedEvent?
+  /// Deletes the event with this identifier. `deleteSession` only calls it
+  /// after `loggedEvent(id:)` showed the event carries the session's markers.
+  func removeEvent(id: String) throws
 }
 
 /// The presenter until a UI attaches (and in a headless daemon). Unlike
@@ -202,6 +208,7 @@ final class FocusCore: SessionPresenterDelegate {
       case "retryPending": return .ok(countsJSON(try runRecovery()))
       case "movePending": return try movePending(request)
       case "stats": return try statsReply(request)
+      case "deleteSession": return try deleteSession(request)
       case "blocking":
         _ = try current()
         return .ok(blocker.statusFields())
@@ -638,15 +645,11 @@ final class FocusCore: SessionPresenterDelegate {
       note: machine.note, logCalendarId: logCalendarId, logCalendarName: logCalendarName, logSkipped: skipsLog)
     let id = open.row.id
     guard try db.finish(id, close) else {
-      active = nil
-      stopTicking()
-      publish(.dismiss)
+      endActive()
       throw FocusError("the session had already ended")
     }
-    active = nil
-    stopTicking()
     log("session \(id): finished (\(close.endReason))")
-    publish(.dismiss)
+    endActive()
     if settings.raycastDeeplink { openURL(RaycastDeeplink.complete) }
     if skipsLog {
       log("session \(id): no calendar; no log event")
@@ -660,6 +663,89 @@ final class FocusCore: SessionPresenterDelegate {
     case .created(let eventId), .adopted(let eventId): return (id, eventId, false)
     case .waiting: return (id, nil, false)
     }
+  }
+
+  /// The open session is over (finished or discarded): the tick stops, the
+  /// panel and the end sheet go away, blocking turns off.
+  private func endActive() {
+    active = nil
+    stopTicking()
+    publish(.dismiss)
+  }
+
+  // MARK: Deleting
+
+  /// `deleteSession {sessionId}`: removes the row with its pauses and blocked
+  /// attempts in one transaction. The open session is ended as Cancel ends
+  /// it (no rating, panel and end sheet dismissed, blocking off, the Raycast
+  /// complete deeplink) but nothing is written for it: its row is deleted in
+  /// the same step, so no finished row is left for the 30-second tick to log.
+  /// A finished row's log event is removed only when its notes still carry
+  /// this session's markers; otherwise, or without calendar access, the
+  /// event stays and the reply carries a warning. The event is removed after
+  /// the row deletes have run and before they commit: a delete that fails
+  /// never touches Calendar, and a helper that dies after the event went
+  /// rolls the deletes back, leaving the row in Stats for a second delete to
+  /// finish (the event is then not found, which only warns).
+  private func deleteSession(_ request: Request) throws -> Reply {
+    guard let number = try request.int("sessionId") else { throw FocusError("sessionId is required") }
+    let id = Int64(number)
+    guard let row = try db.session(id: id) else { throw FocusError("no session with id \(id)") }
+    let wasOpen = try current()?.row.id == id
+    var fields: [String: JSONValue] = ["deleted": true, "logEventRemoved": false]
+    let found: Bool
+    do {
+      found = try db.deleteSession(id) {
+        // Only finished rows have a log event; the open one never does.
+        guard let eventId = row.logEventId else { return }
+        if let warning = removeLogEvent(eventId, of: row) {
+          log("session \(id): log event \(eventId) kept: \(warning)")
+          fields["warning"] = .string(warning)
+        } else {
+          log("session \(id): log event \(eventId) removed")
+          fields["logEventRemoved"] = true
+        }
+      }
+    } catch {
+      // Only the commit can fail after the event went.
+      guard fields["logEventRemoved"] == true else { throw error }
+      throw FocusError(
+        "the log event was removed but the session could not be deleted (\(error.localizedDescription)); delete it again")
+    }
+    guard found else { throw FocusError("no session with id \(id)") }
+    waitingReasons[id] = nil
+    if wasOpen {
+      log("session \(id): discarded")
+      endActive()
+      if config.load().raycastDeeplink { openURL(RaycastDeeplink.complete) }
+    } else {
+      log("session \(id): deleted")
+    }
+    return .ok(fields)
+  }
+
+  /// Removes a session's log event, before its row deletes commit, if it is still the one this
+  /// session wrote: its notes carry both marker lines (the session id and
+  /// the UTC start), the same test recovery adopts by, so an event Kai
+  /// rewrote or one a reused id points at is never touched. Returns nil when
+  /// removed, else why it was kept.
+  private func removeLogEvent(_ eventId: String, of row: SessionRow) -> String? {
+    let access = calendar.accessState
+    guard access == "fullAccess" else {
+      return "calendar access is \(access), so the log event was left in Calendar"
+    }
+    guard let event = calendar.loggedEvent(id: eventId) else {
+      return "the log event was not found in Calendar (deleted already, or its calendar is unavailable)"
+    }
+    guard LogText.notes(event.notes, identify: row.id, startedAt: row.startedAt) else {
+      return "the log event's notes no longer carry this session's focus-session marker, so it was left in Calendar"
+    }
+    do {
+      try calendar.removeEvent(id: eventId)
+    } catch {
+      return "removing the log event failed (\(error.localizedDescription)), so it was left in Calendar"
+    }
+    return nil
   }
 
   func logSummary(for row: SessionRow) throws -> LogSummary {
