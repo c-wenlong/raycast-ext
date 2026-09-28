@@ -1,8 +1,8 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
-  "name": "color-filter",
-  "title": "Color Filter",
-  "description": "Controls the macOS grayscale color filter intensity from Raycast.",
+  "name": "knobs",
+  "title": "Knobs",
+  "description": "macOS system switches from Raycast: the grayscale colour filter, lid sleep and caffeinate.",
   "icon": "extension-icon.png",
   "author": "c-wenlong",
   "platforms": [
@@ -16,7 +16,7 @@
     {
       "name": "set-grayscale",
       "title": "Set Grayscale",
-      "description": "Toggles grayscale, or sets its intensity to a given 0-100 level.",
+      "description": "Toggles the grayscale colour filter, or sets its intensity to a given 0-100 level.",
       "mode": "no-view",
       "arguments": [
         {
@@ -26,6 +26,30 @@
           "required": false
         }
       ]
+    },
+    {
+      "name": "toggle-lid-sleep",
+      "title": "Toggle Lid Sleep",
+      "description": "Toggles whether the Mac stays awake with the lid closed (pmset disablesleep).",
+      "mode": "no-view"
+    },
+    {
+      "name": "lid-sleep-status",
+      "title": "Lid Sleep Status",
+      "description": "Shows whether the Mac stays awake when the lid is closed.",
+      "mode": "no-view"
+    },
+    {
+      "name": "toggle-caffeinate",
+      "title": "Toggle Caffeinate",
+      "description": "Starts or stops caffeinate to prevent idle and display sleep.",
+      "mode": "no-view"
+    },
+    {
+      "name": "caffeinate-status",
+      "title": "Caffeinate Status",
+      "description": "Shows whether caffeinate is currently running.",
+      "mode": "no-view"
     }
   ],
   "tools": [],
