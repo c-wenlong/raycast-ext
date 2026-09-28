@@ -18,6 +18,9 @@
 // now once the deadline is behind and returns to running.
 // `blocking` and `snooze` follow the helper too, simplified: the profile's
 // own apps and hosts only (no category expansion), snoozes kept per session.
+// `stats` aggregates the sessions finished through it (plus a seeded history
+// when run by hand) with the helper's rules and writes a plain bar chart to
+// stats/week.svg next to the socket.
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -65,6 +68,10 @@ function createFakeDaemon(options) {
     nextId: 1,
     requests: [],
     snoozes: [],
+    // Finished sessions for `stats`: {id, goal, calendarId, sourceEventId,
+    // startedAt, endedAt, pauses: [{start, end}] (ms), rating, note,
+    // endReason, blockedAttempts, snoozes, logPending}.
+    history: options.seedHistory ? seedHistory(clock()) : [],
     waiting: options.seedWaiting
       ? [
           {
@@ -259,10 +266,26 @@ function createFakeDaemon(options) {
           note: request.note ?? null,
         };
         delete session.remainingSeconds;
+        const pauses = state.session._pauses.map((p) => ({ start: p.start, end: p.end === null ? now.getTime() : p.end }));
         state.session = null;
         state.snoozes = [];
         const config = readConfig(configPath);
         const logCalendar = CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
+        state.history.push({
+          id: session.id,
+          goal: session.goal,
+          calendarId: session.calendarId,
+          sourceEventId: session.sourceEventId,
+          startedAt: session.startedAt,
+          endedAt: session.endedAt,
+          pauses,
+          rating: session.rating,
+          note: session.note,
+          endReason: session.endReason,
+          blockedAttempts: 0,
+          snoozes: 0,
+          logPending: !logCalendar,
+        });
         if (!logCalendar) {
           state.waiting.push({
             sessionId: session.id,
@@ -288,6 +311,8 @@ function createFakeDaemon(options) {
         state.snoozes.push({ kind, target, until });
         return { ok: true, kind, target, until };
       }
+      case "stats":
+        return stats(request, now);
       case "pending":
         return { ok: true, waiting: state.waiting };
       case "retryPending": {
@@ -308,6 +333,127 @@ function createFakeDaemon(options) {
         return { ok: true };
       default:
         return { ok: false, error: `Unknown command: ${request.cmd}` };
+    }
+  }
+
+  // The helper's rules (helper/Stats.swift): local days, focused time split
+  // at midnight, pauses subtracted and clamped at zero, running sessions left
+  // out, ad-hoc sessions on an unknown calendar grouped as "Ad hoc".
+  function stats(request, now) {
+    const days = request.days === undefined || request.days === null ? 7 : request.days;
+    if (!Number.isInteger(days)) return { ok: false, error: "days must be a whole number" };
+    if (days < 1 || days > 90) return { ok: false, error: "days must be 1 to 90" };
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const intervals = [];
+    for (let back = days - 1; back >= 0; back--) {
+      const start = new Date(today);
+      start.setDate(start.getDate() - back);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      intervals.push({ start: start.getTime(), end: end.getTime() });
+    }
+    const window = { start: intervals[0].start, end: intervals[intervals.length - 1].end };
+    const overlap = (a, b, w) => Math.max(0, Math.min(b, w ? w.end : b) - Math.max(a, w ? w.start : a));
+    const focused = (s, w) => {
+      const a = Date.parse(s.startedAt);
+      const b = Date.parse(s.endedAt);
+      if (!(b > a)) return 0;
+      const paused = s.pauses.reduce((sum, p) => {
+        const from = Math.max(p.start, a);
+        const to = Math.min(p.end, b);
+        return to > from ? sum + overlap(from, to, w) : sum;
+      }, 0);
+      return Math.max(0, Math.round(overlap(a, b, w) / 1000) - Math.round(paused / 1000));
+    };
+    const belongs = (s, w) => {
+      const a = Date.parse(s.startedAt);
+      return a >= w.start ? a < w.end : Date.parse(s.endedAt) > w.start;
+    };
+    const totals = (w) => {
+      const members = state.history.filter((s) => belongs(s, w));
+      const ratings = members.map((s) => s.rating).filter((r) => typeof r === "number");
+      return {
+        focusedSeconds: members.reduce((sum, s) => sum + focused(s, w), 0),
+        sessions: members.length,
+        averageRating: ratings.length ? Math.round((ratings.reduce((x, y) => x + y, 0) / ratings.length) * 100) / 100 : null,
+      };
+    };
+    const bucket = (s) => {
+      const known = CALENDARS.find((c) => c.id === s.calendarId);
+      if (known) return { calendarId: known.id, calendarTitle: known.title };
+      if (!s.sourceEventId) return { calendarId: "adhoc", calendarTitle: "Ad hoc" };
+      return { calendarId: s.calendarId, calendarTitle: "Unknown calendar" };
+    };
+    const byCalendar = new Map();
+    for (const s of state.history.filter((item) => belongs(item, window))) {
+      const b = bucket(s);
+      const row = byCalendar.get(b.calendarId) || { ...b, focusedSeconds: 0, sessions: 0 };
+      row.focusedSeconds += focused(s, window);
+      row.sessions += 1;
+      byCalendar.set(b.calendarId, row);
+    }
+    const pad = (n) => String(n).padStart(2, "0");
+    const dayList = intervals.map((w) => {
+      const d = new Date(w.start);
+      return {
+        date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+        focusedSeconds: state.history.reduce((sum, s) => sum + focused(s, w), 0),
+      };
+    });
+    const recent = [...state.history]
+      .sort((x, y) => Date.parse(y.endedAt) - Date.parse(x.endedAt) || y.id - x.id)
+      .slice(0, 20)
+      .map((s) => ({
+        id: s.id,
+        goal: s.goal,
+        calendarTitle: bucket(s).calendarTitle,
+        startedAt: s.startedAt,
+        endedAt: s.endedAt,
+        focusedSeconds: focused(s, null),
+        rating: s.rating,
+        note: s.note,
+        endReason: s.endReason,
+        blockedAttempts: s.blockedAttempts,
+        snoozes: s.snoozes,
+        logPending: s.logPending,
+      }));
+    return {
+      ok: true,
+      today: totals(intervals[intervals.length - 1]),
+      week: totals(window),
+      perCalendar: [...byCalendar.values()].sort(
+        (x, y) => y.focusedSeconds - x.focusedSeconds || x.calendarTitle.localeCompare(y.calendarTitle),
+      ),
+      days: dayList,
+      recent,
+      waiting: state.waiting.map(({ sessionId, goal, logCalendarName, endedAt }) => ({ sessionId, goal, logCalendarName, endedAt })),
+      chartPath: writeChart(dayList),
+    };
+  }
+
+  // One grey-on-dark rect per day, scaled to the longest; enough to see the
+  // image path work in the Raycast view. The real chart is helper/Chart.swift.
+  function writeChart(dayList) {
+    if (!socketPath) return null;
+    const folder = path.join(path.dirname(socketPath), "stats");
+    const file = path.join(folder, "week.svg");
+    const max = Math.max(1, ...dayList.map((d) => d.focusedSeconds));
+    const slot = 608 / dayList.length;
+    const bars = dayList
+      .map((d, i) => {
+        const h = Math.max(2, (d.focusedSeconds / max) * 180);
+        return `<rect x="${(16 + i * slot + (slot - Math.min(24, slot - 2)) / 2).toFixed(1)}" y="${(210 - h).toFixed(1)}" width="${Math.min(24, slot - 2).toFixed(1)}" height="${h.toFixed(1)}" fill="#E85C54"/>`;
+      })
+      .join("");
+    try {
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(
+        file,
+        `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="240"><path d="M0 0H640V240H0Z" fill="#1A1A1A"/>${bars}</svg>\n`,
+      );
+      return file;
+    } catch {
+      return null;
     }
   }
 
@@ -387,6 +533,40 @@ function createFakeDaemon(options) {
   };
 }
 
+// A week of finished sessions for `npm run fake-daemon`, relative to `now`.
+function seedHistory(now) {
+  const day = (back, hour, minute) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back, hour, minute);
+    return d.getTime();
+  };
+  const session = (id, goal, calendarId, back, hour, minutes, extra = {}) => ({
+    id,
+    goal,
+    calendarId,
+    sourceEventId: calendarId === "cal-study" || calendarId === "cal-work" ? `ev-${id}` : null,
+    startedAt: new Date(day(back, hour, 0)).toISOString(),
+    endedAt: new Date(day(back, hour, minutes)).toISOString(),
+    pauses: [],
+    rating: 4,
+    note: null,
+    endReason: "timer",
+    blockedAttempts: 0,
+    snoozes: 0,
+    logPending: false,
+    ...extra,
+  });
+  return [
+    session(801, "CS3230 problem set", "cal-study", 6, 10, 90, { rating: 5, note: "Finished question 3" }),
+    session(802, "Review the Focus plan", "cal-work", 4, 14, 50, { blockedAttempts: 3, snoozes: 1 }),
+    session(803, "Inbox zero", "scratch", 3, 9, 25, { rating: 3, endReason: "manual" }),
+    session(804, "Deep work: focus helper", "cal-work", 1, 15, 120, {
+      pauses: [{ start: day(1, 15, 30), end: day(1, 15, 40) }],
+      note: "Stats view",
+    }),
+    session(805, "Reading", "cal-study", 0, 8, 12, { rating: null, endReason: "abandoned" }),
+  ];
+}
+
 module.exports = { createFakeDaemon, CALENDARS, fixtureEvents };
 
 function answers(socketPath) {
@@ -417,6 +597,7 @@ async function main() {
     socketPath,
     configPath: path.join(path.dirname(socketPath), "config.json"),
     seedWaiting: !args.includes("--no-waiting"),
+    seedHistory: true,
   });
   await daemon.listen();
   console.log(`fake focus-daemon listening on ${socketPath}`);

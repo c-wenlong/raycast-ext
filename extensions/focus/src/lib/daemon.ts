@@ -109,6 +109,70 @@ export interface SnoozeResult {
   until: string;
 }
 
+// The `stats` reply (HELPER.md "stats"). Focused seconds exclude pauses;
+// running sessions are left out; abandoned ones count, with no rating.
+export interface StatsTotals {
+  focusedSeconds: number;
+  sessions: number;
+  // Mean of the rated sessions, null when none is rated.
+  averageRating: number | null;
+}
+
+export interface CalendarStats {
+  // "adhoc" for the "Ad hoc" row.
+  calendarId: string;
+  calendarTitle: string;
+  focusedSeconds: number;
+  sessions: number;
+}
+
+export interface DayStats {
+  // Local date, "2026-09-22".
+  date: string;
+  focusedSeconds: number;
+}
+
+export interface RecentSession {
+  id: number;
+  goal: string;
+  calendarTitle: string;
+  startedAt: string;
+  endedAt: string;
+  focusedSeconds: number;
+  rating: number | null;
+  note: string | null;
+  // "timer", "manual" or "abandoned".
+  endReason: string | null;
+  // Every blocked attempt, snoozed ones included, as the log event counts them.
+  blockedAttempts: number;
+  snoozes: number;
+  // Finished but its log event is not written yet.
+  logPending: boolean;
+}
+
+export interface StatsWaiting {
+  sessionId: number;
+  goal: string;
+  logCalendarName: string | null;
+  endedAt?: string | null;
+}
+
+export interface Stats {
+  today: StatsTotals;
+  // The last `days` days, today included.
+  week: StatsTotals;
+  perCalendar: CalendarStats[];
+  // Every day of the window, oldest first.
+  days: DayStats[];
+  // The last 20 finished or abandoned sessions, newest first.
+  recent: RecentSession[];
+  waiting: StatsWaiting[];
+  // The bar chart of `days` as SVG, or null when the helper could not write it.
+  chartPath: string | null;
+}
+
+export const STATS_DAYS = { min: 1, max: 90, default: 7 } as const;
+
 export interface AdhocRequest {
   goal: string;
   durationSeconds: number;
@@ -603,6 +667,33 @@ export class FocusDaemon {
       kind: reply.kind === "app" ? "app" : "site",
       target: field<string>(reply, "target", isString),
       until: field<string>(reply, "until", isString),
+    };
+  }
+
+  // Totals for today and the last `days` days, per calendar and per day, the
+  // recent sessions, and the chart the helper just wrote.
+  async stats(days: number = STATS_DAYS.default): Promise<Stats> {
+    if (
+      !Number.isInteger(days) ||
+      days < STATS_DAYS.min ||
+      days > STATS_DAYS.max
+    ) {
+      throw new RangeError("stats takes whole days from 1 to 90.");
+    }
+    const reply = await this.request("stats", { days });
+    const totals = (key: string) => field<StatsTotals>(reply, key, isObject);
+    const chartPath = reply.chartPath;
+    return {
+      today: totals("today"),
+      week: totals("week"),
+      perCalendar: field<CalendarStats[]>(reply, "perCalendar", isArray),
+      days: field<DayStats[]>(reply, "days", isArray),
+      recent: field<RecentSession[]>(reply, "recent", isArray),
+      waiting: field<StatsWaiting[]>(reply, "waiting", isArray),
+      chartPath:
+        typeof chartPath === "string" && chartPath.startsWith("/")
+          ? chartPath
+          : null,
     };
   }
 

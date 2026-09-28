@@ -201,6 +201,7 @@ final class FocusCore: SessionPresenterDelegate {
       case "pending": return .ok(["waiting": try pendingJSON()])
       case "retryPending": return .ok(countsJSON(try runRecovery()))
       case "movePending": return try movePending(request)
+      case "stats": return try statsReply(request)
       case "blocking":
         _ = try current()
         return .ok(blocker.statusFields())
@@ -730,6 +731,52 @@ final class FocusCore: SessionPresenterDelegate {
 
   private func countsJSON(_ counts: RecoveryCounts) -> [String: JSONValue] {
     ["written": .int(counts.written), "adopted": .int(counts.adopted), "stillWaiting": .int(counts.stillWaiting)]
+  }
+
+  // MARK: Stats
+
+  /// `stats {days?}`: the aggregation in Stats.swift over sqlite, the
+  /// sessions waiting for their log event, and the chart (Chart.swift)
+  /// written to <focus dir>/stats/week.svg.
+  private func statsReply(_ request: Request) throws -> Reply {
+    let days = try request.int("days") ?? Stats.defaultDays
+    guard Stats.dayRange.contains(days) else { throw FocusError("days must be 1 to 90") }
+    let now = self.now
+    let window = Stats.window(days: days, now: now)
+    let statsRow = { (row: SessionRow) throws -> StatsRow in
+      let counts = try self.db.attemptCounts(row.id)
+      return StatsRow(row, pauses: try self.db.pauses(row.id), attempts: counts.all, snoozes: counts.snoozed)
+    }
+    let access = calendar.accessState == "fullAccess"
+    var titles: [String: String] = [:]
+    if access {
+      for info in calendar.calendars() { titles[info.id] = info.title }
+    }
+    let report = Stats.report(
+      windowRows: try db.finishedSessions(overlapping: window.start, window.end).map(statsRow),
+      recent: try db.recentSessions(limit: Stats.recentLimit).map(statsRow),
+      names: CalendarNames(access: access, titles: titles), days: days, now: now)
+    var fields = Stats.json(report)
+    fields["waiting"] = .array(
+      try db.waitingSessions().map {
+        [
+          "sessionId": .int(Int($0.id)), "goal": .string($0.goal), "logCalendarName": .optional($0.logCalendarName),
+          "endedAt": .optional($0.endedAt.map { ISO.local($0) }),
+        ]
+      })
+    // A chart that cannot be written leaves the numbers usable: chartPath is null.
+    let folder = (config.path as NSString).deletingLastPathComponent + "/stats"
+    let path = folder + "/week.svg"
+    do {
+      try FileManager.default.createDirectory(
+        atPath: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      try Data(Chart.svg(report.days).utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+      fields["chartPath"] = .string(path)
+    } catch {
+      log("could not write the stats chart to \(path): \(error.localizedDescription)")
+      fields["chartPath"] = .null
+    }
+    return .ok(fields)
   }
 
   // MARK: Session JSON

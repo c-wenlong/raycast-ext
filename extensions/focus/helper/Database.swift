@@ -328,6 +328,36 @@ final class Database {
     }
   }
 
+  // MARK: Stats reads
+
+  /// Finished (and abandoned) sessions that may overlap [start, end): started
+  /// before `end` and ended at or after `start`, oldest first.
+  func finishedSessions(overlapping start: Date, _ end: Date) throws -> [SessionRow] {
+    try rows(
+      """
+      select \(Database.sessionColumns) from sessions
+      where ended_at is not null and started_at < ? and ended_at >= ?
+      order by started_at, id
+      """, [SQLValue(end), SQLValue(start)], Database.session)
+  }
+
+  /// The newest finished (and abandoned) sessions, newest end first.
+  func recentSessions(limit: Int) throws -> [SessionRow] {
+    try rows(
+      """
+      select \(Database.sessionColumns) from sessions
+      where ended_at is not null order by ended_at desc, id desc limit ?
+      """, [.int(Int64(limit))], Database.session)
+  }
+
+  /// A session's blocked_attempts rows, and how many of them are snoozes.
+  func attemptCounts(_ sessionId: Int64) throws -> (all: Int, snoozed: Int) {
+    try rows(
+      "select count(*), coalesce(sum(outcome = 'snoozed'), 0) from blocked_attempts where session_id = ?",
+      [.int(sessionId)]
+    ) { (Int($0.int(0) ?? 0), Int($0.int(1) ?? 0)) }.first ?? (0, 0)
+  }
+
   // MARK: Plumbing
 
   private func failure(_ context: String) -> DatabaseError {

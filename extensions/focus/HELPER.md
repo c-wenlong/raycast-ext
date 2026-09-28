@@ -1,6 +1,6 @@
 # focus-daemon
 
-The Swift half of Focus ([PLAN.md](PLAN.md), build steps 1, 2 and the engine half of 3). Sources in `helper/`,
+The Swift half of Focus ([PLAN.md](PLAN.md), build steps 1 to 3 and the stats half of 4). Sources in `helper/`,
 compiled to `assets/focus-daemon` (committed). No Dock icon. The session logic
 (timer, pause, extend, end sheet state, recovery) is in `Session.swift` and
 `Core.swift`; the menu bar countdown and the end sheet draw it through the
@@ -52,6 +52,7 @@ sqlite stores UTC.
 | `movePending {calendarId}` | `moved`, `written`, `adopted`, `stillWaiting` |
 | `blocking` | `sessionId` (the open session, or null), `active` (bool: running or at the end sheet), `profile` (name, null when idle), `profileFallbackFrom` (the unknown name asked for, else null), `mode` ("blocklist", "allowlist" or null), `blockedApps`, `blockedHosts` (blocklist mode; sorted), `allowedApps`, `allowedHosts` (allowlist mode), `snoozeSeconds`, `snoozed: [{kind, target, until}]` |
 | `snooze {target, kind?}` | `kind` ("app" or "site"), `target` (hosts normalized), `until`. Lets an app (bundle id) or a host (and its subdomains) through for `snoozeSeconds`. Without `kind`: an app the session blocked or the profile lists, else a host the profile blocks, else an app when it reads as a bundle id (`com.`, `net.`, ... with three or more labels), else a host. No token, the socket is local and already trusted. Refused while blocking is off. |
+| `stats {days?}` | `today`, `week` (`{focusedSeconds, sessions, averageRating}`), `perCalendar: [{calendarId, calendarTitle, focusedSeconds, sessions}]`, `days: [{date, focusedSeconds}]`, `recent: [{id, goal, calendarTitle, startedAt, endedAt, focusedSeconds, rating, note, endReason, blockedAttempts, snoozes, logPending}]`, `waiting: [{sessionId, goal, logCalendarName, endedAt}]`, `chartPath`. `days` 1 to 90, default 7. See "Stats" below. |
 | `quit` | `{ok: true}`, then the daemon exits |
 
 A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sourceEventId, extendedSeconds, pausedSeconds}`.
@@ -143,6 +144,18 @@ Profiles live in `config.json` under `profiles`:
 - Apps (`AppBlocker.swift`): on `didActivateApplicationNotification` a blocked app is hidden (again after 0.3 s and 1 s while it still shows, since a launching app can ignore the first hide) and the block window appears. Snooze unhides the app and asks LaunchServices to bring it forward; Escape or a click anywhere off the button closes the page and leaves the app hidden; another app coming forward more than 0.75 s after the page appeared closes it too.
 - The block window (`BlockWindow.swift`): a borderless non-activating panel covering the screen with the mouse, at floating level (below the menu bar and the Dock, so the countdown's Stop stays reachable): black with a soft radial glow, the app's icon, "<App> has been blocked" at 28 pt semibold, one bordered button "Snooze for N minutes" (`Matching.snoozeLabel`: seconds under a minute, "2 minutes 30 seconds" for an odd length) and the footer "End your focus session to access this page". The daemon asks to activate when it shows the page so Escape reaches it; macOS can refuse that for a background app, and then a click closes it instead.
 
+## Stats
+
+Build step 4, stats half (`Stats.swift`, pure; `Chart.swift`, pure; the `stats` case in `Core.swift`).
+
+- The window is the last `days` local days, today included: local midnight `days - 1` days ago to the next local midnight, from `Calendar.current`, so a DST day is 23 or 25 hours. `week` covers the window, `today` its last day, `days` every day of it oldest first (zero-filled, `date` is the local `YYYY-MM-DD`).
+- Focused seconds = (ended_at − started_at) − closed pauses, never negative (an open pause on a closed row runs to the end), the same number as the log event's "Focused" line. Inside a window only the part of the session and of its pauses in the window counts, so a session across midnight splits between the two days.
+- A session belongs to a window (its `sessions`, `averageRating` and calendar row) when it started in it, or started before it and was still going when it began. A running session is left out everywhere; an abandoned one counts (it has no rating). `averageRating` is the mean of the rated sessions to two decimals, null when none is rated.
+- `perCalendar` is sorted by focused seconds, most first (ties by title). Titles come from EventKit when access is granted. An ad-hoc session filed under an id that is not a calendar (empty, or unknown to EventKit with access) is counted under `calendarId` "adhoc", title "Ad hoc". Without access (or for an event calendar that is gone) a session filed under its log calendar shows the stored `log_calendar_name`, anything else "Unknown calendar".
+- `recent` is the last 20 finished or abandoned sessions by end, newest first. `blockedAttempts` counts every `blocked_attempts` row (snoozes included, as the log event does), `snoozes` the snoozed ones; `logPending` is a finished, non-abandoned row with no log event yet. `waiting` is `pending` without the reason.
+- Every `stats` call writes the chart of `days` to `<focus dir>/stats/week.svg` (folder mode 0700, atomic write; `<focus dir>` is the folder of `config.json`) and returns its absolute path as `chartPath`, or null (and a log line) if it could not be written; the numbers still come back.
+- The chart (`Chart.svg`): 640 × 240, canvas `#1A1A1A`, one column per day in the accent `#E85C54` (at most 24 px wide, 4 px rounded top, square foot), a 2 px grey stub for a day with nothing, so there is exactly one `<rect>` per day. A heading and the total on top, hairline gridlines with minute ticks (steps from 5 min to a day, at most four), a value on each column and weekday labels ("Today" for the last) up to 14 days, a date on every few days beyond. `font-family="-apple-system, Helvetica, sans-serif"`, no script, no external reference, all text escaped.
+
 ## Log event and recovery
 
 Finish closes the sqlite row first, then writes the event (title = goal, real start
@@ -175,7 +188,7 @@ Rows are never re-pointed except by `movePending`.
 ## Build and test
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon` (ad-hoc unless `FOCUS_SIGN_IDENTITY` is set).
-- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, and all commands over a fake calendar and a recording presenter: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
+- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
 - `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the end sheet and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `menubar-*.png` and `block.png` there.
 
 ## Site blocking (block page and tab watcher)

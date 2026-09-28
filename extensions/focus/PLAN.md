@@ -287,6 +287,21 @@ A Raycast List with a Detail pane, data from the helper over the socket:
 - Recent sessions: goal, calendar, span, focused minutes, rating, blocked
   attempts, note.
 
+Decided while building step 4, stats half (2026-09-28):
+
+- The chart is focused time per day over the window (last 7 days by
+  default), one column per day; the per-calendar split is a table in the
+  same Detail and its own "By calendar" section, which reads better than a
+  second chart in a Raycast pane.
+- Days are local calendar days; a session across midnight splits its
+  focused time between the two days, and counts as a session in both.
+- Ad-hoc sessions filed under something that is not a calendar are grouped
+  as "Ad hoc". Without Calendar access titles fall back to the stored log
+  calendar name, else "Unknown calendar". No schema change: titles are looked
+  up when stats are asked for.
+- Blocked attempts in stats count every `blocked_attempts` row, snoozes
+  included, as the log event's description does.
+
 ## Build order
 
 Each step is its own PR through the normal loop, with tests before the window.
