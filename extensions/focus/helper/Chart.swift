@@ -125,7 +125,10 @@ enum Chart {
         text("No focused time yet", x: left + plotWidth / 2, y: top + plotHeight / 4 + 5, anchor: "middle", size: 15))
     }
 
-    let valueSize = days.count <= 7 ? 14 : 12
+    // A value over each column only while the slots are wide (about 80 px
+    // for a week) so "12h 30m" never runs into its neighbour; past a week
+    // the ticks carry the values.
+    let showValues = days.count <= 7
     let labelSize = days.count <= 7 ? 15 : 13
     for (index, day) in days.enumerated() {
       let x = left + slot * Double(index) + (slot - barWidth) / 2
@@ -137,9 +140,8 @@ enum Chart {
       parts.append(
         "<rect x=\"\(number(x))\" y=\"\(number(y))\" width=\"\(number(barWidth))\" height=\"\(number(barHeight + radius))\" rx=\"\(number(radius))\" fill=\"\(empty ? stub : accent)\" clip-path=\"url(#plot)\"><title>\(escape(title))</title></rect>"
       )
-      if !empty && days.count <= 14 {
-        parts.append(
-          text(compact(day.focusedSeconds), x: centre, y: y - 7, anchor: "middle", size: valueSize, color: ink))
+      if !empty && showValues {
+        parts.append(text(compact(day.focusedSeconds), x: centre, y: y - 7, anchor: "middle", size: 14, color: ink))
       }
       let isToday = index == days.count - 1
       if let name = label(day, index: index, count: days.count, calendar: calendar) {
