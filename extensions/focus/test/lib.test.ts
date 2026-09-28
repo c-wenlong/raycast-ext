@@ -37,6 +37,7 @@ import {
   EXTEND_MINUTES,
   FocusDaemon,
   calendarLabel,
+  deleteToastText,
   sendRequest,
 } from "../src/lib/daemon";
 import {
@@ -208,7 +209,10 @@ const cases: Case[] = [
       assert.deepEqual(config.panelPosition, { x: 1204, y: 870 });
       // Saving the Settings form (which never writes panelPosition) keeps
       // the helper's position, and switches the display.
-      await writeConfig({ countdownDisplay: "panel", snoozeSeconds: 180 }, file);
+      await writeConfig(
+        { countdownDisplay: "panel", snoozeSeconds: 180 },
+        file,
+      );
       const saved = JSON.parse(readFileSync(file, "utf8"));
       assert.equal(saved.countdownDisplay, "panel");
       assert.deepEqual(saved.panelPosition, { x: 1204, y: 870 });
@@ -222,15 +226,24 @@ const cases: Case[] = [
       ] as const) {
         writeFileSync(
           file,
-          JSON.stringify({ countdownDisplay: display, panelPosition: position }),
+          JSON.stringify({
+            countdownDisplay: display,
+            panelPosition: position,
+          }),
         );
         const fallback = await readConfig(file);
         assert.equal(fallback.countdownDisplay, "panel");
         assert.equal(fallback.panelPosition, null);
       }
       // Negative and fractional positions are fine (a screen left of the main one).
-      writeFileSync(file, JSON.stringify({ panelPosition: { x: -1500.5, y: 20 } }));
-      assert.deepEqual((await readConfig(file)).panelPosition, { x: -1500.5, y: 20 });
+      writeFileSync(
+        file,
+        JSON.stringify({ panelPosition: { x: -1500.5, y: 20 } }),
+      );
+      assert.deepEqual((await readConfig(file)).panelPosition, {
+        x: -1500.5,
+        y: 20,
+      });
     },
   ],
   [
@@ -265,7 +278,10 @@ const cases: Case[] = [
       const file = path.join(dir, "config.json");
       // Creates the folder when it is missing.
       await writeConfig({ startableCalendars: ["x"] }, file);
-      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).startableCalendars, ["x"]);
+      assert.deepEqual(
+        JSON.parse(readFileSync(file, "utf8")).startableCalendars,
+        ["x"],
+      );
 
       // Someone else (the helper, a hand edit) changes the file after the
       // form loaded; the next save must not lose it.
@@ -294,7 +310,10 @@ const cases: Case[] = [
       assert.deepEqual(saved.profiles, { deep: { categories: ["social"] } });
       assert.equal(saved.helperOnly, "keep me");
       // Known keys first in schema order, unknown keys after.
-      assert.deepEqual(Object.keys(saved), [...Object.keys(defaultConfig()), "helperOnly"]);
+      assert.deepEqual(Object.keys(saved), [
+        ...Object.keys(defaultConfig()),
+        "helperOnly",
+      ]);
       // Clearing the log calendar writes explicit nulls.
       await writeConfig({ logCalendarId: null, logCalendarName: null }, file);
       const cleared = JSON.parse(readFileSync(file, "utf8"));
@@ -316,7 +335,10 @@ const cases: Case[] = [
         assert.ok(error.message.includes(file));
         return true;
       });
-      await assert.rejects(writeConfig({ startableCalendars: [] }, file), ConfigError);
+      await assert.rejects(
+        writeConfig({ startableCalendars: [] }, file),
+        ConfigError,
+      );
       assert.equal(readFileSync(file, "utf8"), "{ not json");
       writeFileSync(file, "[1, 2]");
       await assert.rejects(readConfig(file), /must hold a JSON object/);
@@ -329,14 +351,49 @@ const cases: Case[] = [
     async () => {
       const now = new Date(2026, 8, 27, 14, 10, 0);
       const events = [
-        { id: "later", title: "later", start: at(now, 0.001), end: at(now, 3600) },
-        { id: "starts-now", title: "starts now", start: at(now, 0), end: at(now, 3600) },
-        { id: "ends-60", title: "ends in exactly 60 s", start: at(now, -600), end: at(now, 60) },
-        { id: "ends-61", title: "ends in 61 s", start: at(now, -600), end: at(now, 61) },
-        { id: "ended", title: "ended", start: at(now, -7200), end: at(now, -3600) },
+        {
+          id: "later",
+          title: "later",
+          start: at(now, 0.001),
+          end: at(now, 3600),
+        },
+        {
+          id: "starts-now",
+          title: "starts now",
+          start: at(now, 0),
+          end: at(now, 3600),
+        },
+        {
+          id: "ends-60",
+          title: "ends in exactly 60 s",
+          start: at(now, -600),
+          end: at(now, 60),
+        },
+        {
+          id: "ends-61",
+          title: "ends in 61 s",
+          start: at(now, -600),
+          end: at(now, 61),
+        },
+        {
+          id: "ended",
+          title: "ended",
+          start: at(now, -7200),
+          end: at(now, -3600),
+        },
         { id: "bad", title: "bad date", start: "garbage", end: at(now, 3600) },
-        { id: "overlap-b", title: "b", start: at(now, -600), end: at(now, 3000) },
-        { id: "overlap-a", title: "a", start: at(now, -600), end: at(now, 3000) },
+        {
+          id: "overlap-b",
+          title: "b",
+          start: at(now, -600),
+          end: at(now, 3000),
+        },
+        {
+          id: "overlap-a",
+          title: "a",
+          start: at(now, -600),
+          end: at(now, 3000),
+        },
       ];
       const groups = groupEvents(events, now);
       assert.deepEqual(
@@ -375,17 +432,26 @@ const cases: Case[] = [
       const start = new Date(2026, 8, 27, 9, 5);
       const end = new Date(2026, 8, 27, 15, 0);
       assert.equal(formatClock(start), "09:05");
-      assert.equal(formatTimeRange(start.toISOString(), end.toISOString()), "09:05–15:00");
+      assert.equal(
+        formatTimeRange(start.toISOString(), end.toISOString()),
+        "09:05–15:00",
+      );
       const late = new Date(2026, 8, 27, 23, 0);
       const nextDay = new Date(2026, 8, 28, 1, 30); // a Monday
-      assert.equal(formatTimeRange(late.toISOString(), nextDay.toISOString()), "23:00–Mon 01:30");
+      assert.equal(
+        formatTimeRange(late.toISOString(), nextDay.toISOString()),
+        "23:00–Mon 01:30",
+      );
       assert.equal(formatTimeRange("x", end.toISOString()), "?");
       assert.equal(stars(4), "★★★★☆");
       assert.equal(stars(5), "★★★★★");
       assert.equal(stars(1), "★☆☆☆☆");
       assert.equal(stars(9), "★★★★★");
       assert.equal(stars(0), "☆☆☆☆☆");
-      assert.equal(calendarLabel({ title: "Work", account: "kai@work.example" }), "Work (kai@work.example)");
+      assert.equal(
+        calendarLabel({ title: "Work", account: "kai@work.example" }),
+        "Work (kai@work.example)",
+      );
     },
   ],
 
@@ -396,7 +462,13 @@ const cases: Case[] = [
       const calendars = [
         { id: "w", title: "Work", account: "a", color: "#000", writable: true },
         { id: "w2", title: "Work", account: "a", color: null, writable: true },
-        { id: "ro", title: "Holidays", account: "b", color: null, writable: false },
+        {
+          id: "ro",
+          title: "Holidays",
+          account: "b",
+          color: null,
+          writable: false,
+        },
       ];
       const config = {
         ...defaultConfig(),
@@ -406,8 +478,14 @@ const cases: Case[] = [
       };
       const choices = settingsChoices(calendars, config);
       assert.deepEqual(choices.missingStartable, ["gone"]);
-      assert.deepEqual(choices.writable.map((c) => c.id), ["w", "w2"]);
-      assert.deepEqual(choices.unavailableLog, { id: "old-log", title: "Old Log (x) (unavailable)" });
+      assert.deepEqual(
+        choices.writable.map((c) => c.id),
+        ["w", "w2"],
+      );
+      assert.deepEqual(choices.unavailableLog, {
+        id: "old-log",
+        title: "Old Log (x) (unavailable)",
+      });
       // Keeping the unavailable log calendar keeps its stored name.
       assert.deepEqual(resolveLogCalendar("old-log", calendars, config), {
         logCalendarId: "old-log",
@@ -426,10 +504,20 @@ const cases: Case[] = [
         logCalendarName: null,
       });
       // A saved log calendar that became read-only is also flagged.
-      const readOnly = settingsChoices(calendars, { ...config, logCalendarId: "ro" });
+      const readOnly = settingsChoices(calendars, {
+        ...config,
+        logCalendarId: "ro",
+      });
       assert.equal(readOnly.unavailableLog?.id, "ro");
-      assert.equal(settingsChoices(calendars, { ...config, logCalendarId: "w" }).unavailableLog, null);
-      assert.equal(settingsChoices(calendars, defaultConfig()).unavailableLog, null);
+      assert.equal(
+        settingsChoices(calendars, { ...config, logCalendarId: "w" })
+          .unavailableLog,
+        null,
+      );
+      assert.equal(
+        settingsChoices(calendars, defaultConfig()).unavailableLog,
+        null,
+      );
     },
   ],
   [
@@ -438,13 +526,20 @@ const cases: Case[] = [
       assert.equal(moveTarget(defaultConfig()), null);
       // Two calendars can share "Work (a)"; the target is the id.
       assert.deepEqual(
-        moveTarget({ ...defaultConfig(), logCalendarId: "w2", logCalendarName: "Work (a)" }),
+        moveTarget({
+          ...defaultConfig(),
+          logCalendarId: "w2",
+          logCalendarName: "Work (a)",
+        }),
         { id: "w2", name: "Work (a)" },
       );
-      assert.deepEqual(moveTarget({ ...defaultConfig(), logCalendarId: "w2" }), {
-        id: "w2",
-        name: "the log calendar",
-      });
+      assert.deepEqual(
+        moveTarget({ ...defaultConfig(), logCalendarId: "w2" }),
+        {
+          id: "w2",
+          name: "the log calendar",
+        },
+      );
     },
   ],
 
@@ -460,16 +555,32 @@ const cases: Case[] = [
         setTimeout(() => socket.write('ion":null}'), 20);
         setTimeout(() => socket.end("\ntrailing junk"), 40);
       });
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
-      assert.equal(await daemon.start("e1", "2026-09-27T14:00:00+08:00").catch((error) => error.message), 'The Focus helper\'s reply is missing a valid "session".');
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      assert.equal(
+        await daemon
+          .start("e1", "2026-09-27T14:00:00+08:00")
+          .catch((error) => error.message),
+        'The Focus helper\'s reply is missing a valid "session".',
+      );
       assert.equal(await daemon.status(), null);
       assert.equal(server.received.length, 2);
       for (const raw of server.received) {
         assert.ok(raw.endsWith("\n"));
-        assert.equal(raw.indexOf("\n"), raw.length - 1, "exactly one newline, at the end");
+        assert.equal(
+          raw.indexOf("\n"),
+          raw.length - 1,
+          "exactly one newline, at the end",
+        );
       }
       // Recurring occurrences share an id, so the occurrence start goes along.
-      assert.deepEqual(JSON.parse(server.received[0]), { eventId: "e1", start: "2026-09-27T14:00:00+08:00", cmd: "start" });
+      assert.deepEqual(JSON.parse(server.received[0]), {
+        eventId: "e1",
+        start: "2026-09-27T14:00:00+08:00",
+        cmd: "start",
+      });
       assert.deepEqual(JSON.parse(server.received[1]), { cmd: "status" });
       await server.close();
     },
@@ -491,9 +602,18 @@ const cases: Case[] = [
     async () => {
       const socketPath = path.join(freshDir(), "s.sock");
       let reply = '{"ok":false,"error":"A session is already running."}\n';
-      const server = await scriptedServer(socketPath, (_raw, socket) => socket.end(reply));
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
-      await rejectsWith(daemon.start("e1"), "daemon", /^A session is already running\.$/);
+      const server = await scriptedServer(socketPath, (_raw, socket) =>
+        socket.end(reply),
+      );
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      await rejectsWith(
+        daemon.start("e1"),
+        "daemon",
+        /^A session is already running\.$/,
+      );
       reply = '{"ok":false}\n';
       await rejectsWith(daemon.status(), "daemon", /without a message/);
       await server.close();
@@ -510,13 +630,29 @@ const cases: Case[] = [
         else if (mode === "array") socket.end("[true]\n");
         else socket.end();
       });
-      await rejectsWith(sendRequest(socketPath, { cmd: "status" }, 1000), "protocol", /not JSON/);
+      await rejectsWith(
+        sendRequest(socketPath, { cmd: "status" }, 1000),
+        "protocol",
+        /not JSON/,
+      );
       mode = "no-ok";
-      await rejectsWith(sendRequest(socketPath, { cmd: "status" }, 1000), "protocol", /"ok"/);
+      await rejectsWith(
+        sendRequest(socketPath, { cmd: "status" }, 1000),
+        "protocol",
+        /"ok"/,
+      );
       mode = "array";
-      await rejectsWith(sendRequest(socketPath, { cmd: "status" }, 1000), "protocol", /"ok"/);
+      await rejectsWith(
+        sendRequest(socketPath, { cmd: "status" }, 1000),
+        "protocol",
+        /"ok"/,
+      );
       mode = "silent";
-      await rejectsWith(sendRequest(socketPath, { cmd: "status" }, 1000), "protocol", /without answering "status"/);
+      await rejectsWith(
+        sendRequest(socketPath, { cmd: "status" }, 1000),
+        "protocol",
+        /without answering "status"/,
+      );
       await server.close();
     },
   ],
@@ -525,7 +661,11 @@ const cases: Case[] = [
     async () => {
       const socketPath = path.join(freshDir(), "s.sock");
       const server = await scriptedServer(socketPath, () => undefined);
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent", timeoutMs: 150 });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+        timeoutMs: 150,
+      });
       await rejectsWith(daemon.today(), "timeout", /did not answer "today"/);
       await server.close();
     },
@@ -536,12 +676,18 @@ const cases: Case[] = [
       const locked = path.join(freshDir(), "locked");
       mkdirSync(locked);
       const socketPath = path.join(locked, "s.sock");
-      const server = await scriptedServer(socketPath, (_raw, socket) => socket.end('{"ok":true}\n'));
+      const server = await scriptedServer(socketPath, (_raw, socket) =>
+        socket.end('{"ok":true}\n'),
+      );
       chmodSync(locked, 0o000);
       try {
         const binary = path.join(freshDir(), "must-not-run");
         const daemon = new FocusDaemon({ socketPath, binaryPath: binary });
-        await rejectsWith(daemon.status(), "access-denied", /Permission denied/);
+        await rejectsWith(
+          daemon.status(),
+          "access-denied",
+          /Permission denied/,
+        );
       } finally {
         chmodSync(locked, 0o755);
         await server.close();
@@ -577,7 +723,11 @@ const cases: Case[] = [
       );
       // Not executable yet: the client sets the bit, like notes does.
       chmodSync(binary, 0o644);
-      const daemon = new FocusDaemon({ socketPath, binaryPath: binary, launchTimeoutMs: 10_000 });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: binary,
+        launchTimeoutMs: 10_000,
+      });
       try {
         const [session, waiting, calendars] = await Promise.all([
           daemon.status(),
@@ -630,7 +780,11 @@ const cases: Case[] = [
         `#!/bin/sh\n(sleep 0.3; exec "${process.execPath}" "${fake}" --socket "${socketPath}" --no-waiting) >/dev/null 2>&1 &\nexit 0\n`,
       );
       chmodSync(binary, 0o755);
-      const daemon = new FocusDaemon({ socketPath, binaryPath: binary, launchTimeoutMs: 10_000 });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: binary,
+        launchTimeoutMs: 10_000,
+      });
       try {
         assert.equal(await daemon.status(), null);
       } finally {
@@ -663,9 +817,16 @@ net.createServer((socket) => {
 }).listen(${JSON.stringify(socketPath)});
 `,
       );
-      writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
+      writeFileSync(
+        binary,
+        `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`,
+      );
       chmodSync(binary, 0o755);
-      const daemon = new FocusDaemon({ socketPath, binaryPath: binary, launchTimeoutMs: 10_000 });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: binary,
+        launchTimeoutMs: 10_000,
+      });
       try {
         assert.equal(await daemon.status(), null);
       } finally {
@@ -820,9 +981,16 @@ net.createServer((socket) => {
       const socketPath = path.join(dir, "s.sock");
       const configPath = path.join(dir, "config.json");
       const clock = new Date(2026, 8, 27, 14, 10, 0);
-      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
       await fake.listen();
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
       try {
         const calendars = await daemon.calendars();
         assert.deepEqual(
@@ -830,15 +998,24 @@ net.createServer((socket) => {
           ["Work (kai@work.example)", "Work (kai@school.example)"],
         );
 
-        await writeConfig({ startableCalendars: ["cal-work", "cal-study"] }, configPath);
+        await writeConfig(
+          { startableCalendars: ["cal-work", "cal-study"] },
+          configPath,
+        );
         const events = await daemon.today();
         assert.deepEqual(
           events.map((e) => e.id),
           ["ev-review", "ev-pset", "ev-deep"],
         );
         const groups = groupEvents(events, clock);
-        assert.deepEqual(groups.now.map((e) => e.id), ["ev-pset", "ev-review"]);
-        assert.deepEqual(groups.later.map((e) => e.id), ["ev-deep"]);
+        assert.deepEqual(
+          groups.now.map((e) => e.id),
+          ["ev-pset", "ev-review"],
+        );
+        assert.deepEqual(
+          groups.later.map((e) => e.id),
+          ["ev-deep"],
+        );
         assert.equal(events[0].remainingSeconds, 3000);
 
         const session = await daemon.start("ev-review");
@@ -846,7 +1023,11 @@ net.createServer((socket) => {
         assert.equal(session.plannedEnd, at(clock, 3000));
         assert.equal((await daemon.status())?.id, session.id);
         // Starting while one is open sends that one to the end sheet.
-        await rejectsWith(daemon.start("ev-pset"), "daemon", /already running.*end sheet/);
+        await rejectsWith(
+          daemon.start("ev-pset"),
+          "daemon",
+          /already running.*end sheet/,
+        );
         assert.equal((await daemon.status())?.state, "ending");
 
         // Rating and note are checked before anything is sent.
@@ -856,7 +1037,10 @@ net.createServer((socket) => {
         assert.equal(fake.state.requests.length, sent);
 
         // No log calendar yet: the session waits.
-        const finished = await daemon.finish({ rating: 4, note: "  good\n run \n" });
+        const finished = await daemon.finish({
+          rating: 4,
+          note: "  good\n run \n",
+        });
         assert.equal(finished.logPending, true);
         assert.equal(finished.logEventId, null);
         // No reason unless asked: the helper knows why the session ended.
@@ -867,20 +1051,59 @@ net.createServer((socket) => {
         });
         assert.equal(await daemon.status(), null);
         const waiting = await daemon.pending();
-        assert.deepEqual(waiting.map((w) => w.goal), ["Review the Focus plan"]);
+        assert.deepEqual(
+          waiting.map((w) => w.goal),
+          ["Review the Focus plan"],
+        );
 
-        assert.deepEqual(await daemon.retryPending(), { written: 0, adopted: 0, stillWaiting: 1 });
-        await rejectsWith(daemon.movePending("cal-holidays"), "daemon", /not writable/);
-        assert.deepEqual(await daemon.movePending("cal-log"), { written: 1, adopted: 0, stillWaiting: 0 });
-        assert.deepEqual(fake.state.requests.at(-1), { calendarId: "cal-log", cmd: "movePending" });
+        assert.deepEqual(await daemon.retryPending(), {
+          written: 0,
+          adopted: 0,
+          stillWaiting: 1,
+        });
+        await rejectsWith(
+          daemon.movePending("cal-holidays"),
+          "daemon",
+          /not writable/,
+        );
+        assert.deepEqual(await daemon.movePending("cal-log"), {
+          written: 1,
+          adopted: 0,
+          stillWaiting: 0,
+        });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          calendarId: "cal-log",
+          cmd: "movePending",
+        });
         assert.deepEqual(await daemon.pending(), []);
 
         // With a log calendar the event is written at once; an empty note
         // and no rating are left out of the request.
-        await writeConfig({ logCalendarId: "cal-log", logCalendarName: "Focus Log (Google)" }, configPath);
-        await assert.rejects(daemon.startAdhoc({ goal: "  ", durationSeconds: 60, calendarId: "cal-work" }), RangeError);
-        await assert.rejects(daemon.startAdhoc({ goal: "x", durationSeconds: 0, calendarId: "cal-work" }), RangeError);
-        const adhoc = await daemon.startAdhoc({ goal: " Read ", durationSeconds: 1500, calendarId: "cal-study" });
+        await writeConfig(
+          { logCalendarId: "cal-log", logCalendarName: "Focus Log (Google)" },
+          configPath,
+        );
+        await assert.rejects(
+          daemon.startAdhoc({
+            goal: "  ",
+            durationSeconds: 60,
+            calendarId: "cal-work",
+          }),
+          RangeError,
+        );
+        await assert.rejects(
+          daemon.startAdhoc({
+            goal: "x",
+            durationSeconds: 0,
+            calendarId: "cal-work",
+          }),
+          RangeError,
+        );
+        const adhoc = await daemon.startAdhoc({
+          goal: " Read ",
+          durationSeconds: 1500,
+          calendarId: "cal-study",
+        });
         assert.deepEqual(fake.state.requests.at(-1), {
           goal: "Read",
           durationSeconds: 1500,
@@ -893,11 +1116,20 @@ net.createServer((socket) => {
         assert.equal(logged.logEventId, `log-${adhoc.id}`);
         assert.deepEqual(fake.state.requests.at(-1), { cmd: "finish" });
 
-        await daemon.startAdhoc({ goal: "Deep", durationSeconds: 60, calendarId: "cal-work", profile: "deep" });
+        await daemon.startAdhoc({
+          goal: "Deep",
+          durationSeconds: 60,
+          calendarId: "cal-work",
+          profile: "deep",
+        });
         assert.equal(fake.state.requests.at(-1).profile, "deep");
         await daemon.finish({ reason: "timer" });
 
-        await rejectsWith(daemon.request("nonsense"), "daemon", /Unknown command/);
+        await rejectsWith(
+          daemon.request("nonsense"),
+          "daemon",
+          /Unknown command/,
+        );
       } finally {
         await fake.close();
       }
@@ -907,10 +1139,34 @@ net.createServer((socket) => {
   [
     "session: actions follow the state",
     async () => {
-      assert.deepEqual(sessionActions({ state: "running" }), { pause: true, resume: false, extend: true, stop: true, finish: true });
-      assert.deepEqual(sessionActions({ state: "paused" }), { pause: false, resume: true, extend: true, stop: true, finish: true });
-      assert.deepEqual(sessionActions({ state: "ending" }), { pause: false, resume: false, extend: true, stop: false, finish: true });
-      assert.deepEqual(sessionActions({ state: "finished" }), { pause: false, resume: false, extend: false, stop: false, finish: false });
+      assert.deepEqual(sessionActions({ state: "running" }), {
+        pause: true,
+        resume: false,
+        extend: true,
+        stop: true,
+        finish: true,
+      });
+      assert.deepEqual(sessionActions({ state: "paused" }), {
+        pause: false,
+        resume: true,
+        extend: true,
+        stop: true,
+        finish: true,
+      });
+      assert.deepEqual(sessionActions({ state: "ending" }), {
+        pause: false,
+        resume: false,
+        extend: true,
+        stop: false,
+        finish: true,
+      });
+      assert.deepEqual(sessionActions({ state: "finished" }), {
+        pause: false,
+        resume: false,
+        extend: false,
+        stop: false,
+        finish: false,
+      });
       assert.deepEqual([...EXTEND_MINUTES], [5, 10, 15, 25]);
     },
   ],
@@ -919,15 +1175,65 @@ net.createServer((socket) => {
     async () => {
       const now = new Date(2026, 8, 27, 14, 10, 0);
       const plannedEnd = at(now, 1190);
-      assert.equal(sessionStatusText({ state: "running", plannedEnd, endReason: null }, now), "20 min left");
-      assert.equal(sessionStatusText({ state: "paused", plannedEnd, endReason: null }, now), "paused, 20 min left");
-      assert.equal(sessionStatusText({ state: "running", plannedEnd: at(now, -5), endReason: null }, now), "ending");
-      assert.equal(sessionStatusText({ state: "ending", plannedEnd, endReason: "timer" }, now), "time's up");
-      assert.equal(sessionStatusText({ state: "ending", plannedEnd, endReason: "manual" }, now), "stopped");
-      assert.equal(sessionStatusText({ state: "running", plannedEnd: null, endReason: null }, now), "ending");
+      assert.equal(
+        sessionStatusText(
+          { state: "running", plannedEnd, endReason: null },
+          now,
+        ),
+        "20 min left",
+      );
+      assert.equal(
+        sessionStatusText(
+          { state: "paused", plannedEnd, endReason: null },
+          now,
+        ),
+        "paused, 20 min left",
+      );
+      assert.equal(
+        sessionStatusText(
+          { state: "running", plannedEnd: at(now, -5), endReason: null },
+          now,
+        ),
+        "ending",
+      );
+      assert.equal(
+        sessionStatusText(
+          { state: "ending", plannedEnd, endReason: "timer" },
+          now,
+        ),
+        "time's up",
+      );
+      assert.equal(
+        sessionStatusText(
+          { state: "ending", plannedEnd, endReason: "manual" },
+          now,
+        ),
+        "stopped",
+      );
+      assert.equal(
+        sessionStatusText(
+          { state: "running", plannedEnd: null, endReason: null },
+          now,
+        ),
+        "ending",
+      );
       const fetchedAt = new Date(now.getTime() - 90_000);
-      assert.equal(pausedSecondsNow({ state: "paused", pausedSeconds: 30 }, fetchedAt, now), 120);
-      assert.equal(pausedSecondsNow({ state: "running", pausedSeconds: 30 }, fetchedAt, now), 30);
+      assert.equal(
+        pausedSecondsNow(
+          { state: "paused", pausedSeconds: 30 },
+          fetchedAt,
+          now,
+        ),
+        120,
+      );
+      assert.equal(
+        pausedSecondsNow(
+          { state: "running", pausedSeconds: 30 },
+          fetchedAt,
+          now,
+        ),
+        30,
+      );
       assert.equal(pausedSecondsNow({ state: "running" }, fetchedAt, now), 0);
       assert.equal(pausedText(0), null);
       assert.equal(pausedText(0.5), null);
@@ -935,20 +1241,60 @@ net.createServer((socket) => {
       assert.equal(pausedText(61), "paused 2 min");
       // A reply from before the deadline is read as the end sheet after it.
       // Paused since before the reply: the paused time runs on to the deadline.
-      const past = { state: "paused" as const, plannedEnd: at(now, -1), endReason: null, pausedSeconds: 30 };
+      const past = {
+        state: "paused" as const,
+        plannedEnd: at(now, -1),
+        endReason: null,
+        pausedSeconds: 30,
+      };
       const fetched = new Date(now.getTime() - 120_000);
-      assert.deepEqual(effectiveSession(past, fetched, now), { ...past, state: "ending", endReason: "timer", pausedSeconds: 149 });
-      assert.equal(pausedSecondsNow(effectiveSession(past, fetched, now), fetched, now), 149);
-      assert.deepEqual(sessionActions(effectiveSession(past, fetched, now)).pause, false);
-      const runningPast = { state: "running" as const, plannedEnd: at(now, -1), endReason: null, pausedSeconds: 30 };
-      assert.equal(effectiveSession(runningPast, fetched, now).pausedSeconds, 30);
-      const exact = { state: "running" as const, plannedEnd: at(now, 0), endReason: null };
+      assert.deepEqual(effectiveSession(past, fetched, now), {
+        ...past,
+        state: "ending",
+        endReason: "timer",
+        pausedSeconds: 149,
+      });
+      assert.equal(
+        pausedSecondsNow(effectiveSession(past, fetched, now), fetched, now),
+        149,
+      );
+      assert.deepEqual(
+        sessionActions(effectiveSession(past, fetched, now)).pause,
+        false,
+      );
+      const runningPast = {
+        state: "running" as const,
+        plannedEnd: at(now, -1),
+        endReason: null,
+        pausedSeconds: 30,
+      };
+      assert.equal(
+        effectiveSession(runningPast, fetched, now).pausedSeconds,
+        30,
+      );
+      const exact = {
+        state: "running" as const,
+        plannedEnd: at(now, 0),
+        endReason: null,
+      };
       assert.equal(effectiveSession(exact, now, now).state, "ending");
-      const ahead = { state: "running" as const, plannedEnd: at(now, 1), endReason: null };
+      const ahead = {
+        state: "running" as const,
+        plannedEnd: at(now, 1),
+        endReason: null,
+      };
       assert.equal(effectiveSession(ahead, now, now), ahead);
-      const stopped = { state: "ending" as const, plannedEnd: at(now, 600), endReason: "manual" };
+      const stopped = {
+        state: "ending" as const,
+        plannedEnd: at(now, 600),
+        endReason: "manual",
+      };
       assert.equal(effectiveSession(stopped, now, now), stopped);
-      const unknown = { state: "running" as const, plannedEnd: null, endReason: null };
+      const unknown = {
+        state: "running" as const,
+        plannedEnd: null,
+        endReason: null,
+      };
       assert.equal(effectiveSession(unknown, now, now), unknown);
     },
   ],
@@ -959,13 +1305,24 @@ net.createServer((socket) => {
       const socketPath = path.join(dir, "s.sock");
       const configPath = path.join(dir, "config.json");
       let clock = new Date(2026, 8, 27, 10, 0, 0);
-      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
       await fake.listen();
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
       const start = clock;
       try {
         await rejectsWith(daemon.pause(), "daemon", /^no session is running$/);
-        const session = await daemon.startAdhoc({ goal: "Draft", durationSeconds: 600, calendarId: "cal-work" });
+        const session = await daemon.startAdhoc({
+          goal: "Draft",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+        });
         assert.equal(session.state, "running");
         assert.equal(session.remainingSeconds, 600);
 
@@ -989,7 +1346,10 @@ net.createServer((socket) => {
         await assert.rejects(daemon.extend(90.5), RangeError);
         assert.equal(fake.state.requests.length, sent);
         const extended = await daemon.extend(300);
-        assert.deepEqual(fake.state.requests.at(-1), { seconds: 300, cmd: "extend" });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          seconds: 300,
+          cmd: "extend",
+        });
         assert.equal(extended.plannedEnd, at(start, 900));
         assert.equal(extended.extendedSeconds, 300);
 
@@ -1015,7 +1375,10 @@ net.createServer((socket) => {
         assert.equal(finished.session.state, "finished");
         assert.equal(finished.session.endReason, "timer");
         assert.equal(finished.session.extendedSeconds, 900);
-        assert.deepEqual(fake.state.requests.at(-1), { rating: 5, cmd: "finish" });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          rating: 5,
+          cmd: "finish",
+        });
         assert.equal(await daemon.status(), null);
         await rejectsWith(daemon.stop(), "daemon", /no session is running/);
       } finally {
@@ -1027,24 +1390,45 @@ net.createServer((socket) => {
   [
     "profiles: categories mirror helper/Categories.swift (ids, titles, order)",
     async () => {
-      const swift = readFileSync(path.resolve("helper/Categories.swift"), "utf8");
+      const swift = readFileSync(
+        path.resolve("helper/Categories.swift"),
+        "utf8",
+      );
       const defs = new Map<string, string>();
-      for (const match of swift.matchAll(/static let (\w+) = BlockCategory\(\s*id: "([^"]+)", title: "([^"]+)"/g)) {
+      for (const match of swift.matchAll(
+        /static let (\w+) = BlockCategory\(\s*id: "([^"]+)", title: "([^"]+)"/g,
+      )) {
         defs.set(match[1], JSON.stringify({ id: match[2], title: match[3] }));
       }
-      const order = /static let all: \[BlockCategory\] = \[([^\]]+)\]/.exec(swift);
+      const order = /static let all: \[BlockCategory\] = \[([^\]]+)\]/.exec(
+        swift,
+      );
       assert.ok(order, "Categories.all not found");
-      const swiftCategories = order[1].split(",").map((name) => JSON.parse(defs.get(name.trim()) ?? "null"));
-      assert.deepEqual(CATEGORIES.map((c) => ({ id: c.id, title: c.title })), swiftCategories);
+      const swiftCategories = order[1]
+        .split(",")
+        .map((name) => JSON.parse(defs.get(name.trim()) ?? "null"));
+      assert.deepEqual(
+        CATEGORIES.map((c) => ({ id: c.id, title: c.title })),
+        swiftCategories,
+      );
       assert.equal(swiftCategories.length, 6);
     },
   ],
   [
     "profiles: entries are read like the helper reads them",
     async () => {
-      assert.deepEqual(parseProfile("deep"), { ok: false, problem: "is not an object" });
-      assert.deepEqual(parseProfile({ categories: "social" }), { ok: false, problem: "categories is not a list" });
-      assert.deepEqual(parseProfile({ hosts: { a: 1 } }), { ok: false, problem: "hosts is not a list" });
+      assert.deepEqual(parseProfile("deep"), {
+        ok: false,
+        problem: "is not an object",
+      });
+      assert.deepEqual(parseProfile({ categories: "social" }), {
+        ok: false,
+        problem: "categories is not a list",
+      });
+      assert.deepEqual(parseProfile({ hosts: { a: 1 } }), {
+        ok: false,
+        problem: "hosts is not a list",
+      });
       // Every key optional.
       assert.deepEqual(parseProfile({}), {
         ok: true,
@@ -1059,36 +1443,87 @@ net.createServer((socket) => {
         extra: true,
       });
       assert.ok(parsed.ok);
-      assert.deepEqual(parsed.spec, { mode: "allowlist", categories: ["social", "sports"], apps: ["com.a.b"], hosts: [] });
+      assert.deepEqual(parsed.spec, {
+        mode: "allowlist",
+        categories: ["social", "sports"],
+        apps: ["com.a.b"],
+        hosts: [],
+      });
       assert.deepEqual(parsed.problems, ['unknown category "sports"']);
       const badMode = parseProfile({ mode: "strict" });
       assert.ok(badMode.ok);
       assert.equal(badMode.spec.mode, "blocklist");
-      assert.deepEqual(badMode.problems, ['mode "strict" is not blocklist or allowlist']);
+      assert.deepEqual(badMode.problems, [
+        'mode "strict" is not blocklist or allowlist',
+      ]);
     },
   ],
   [
     "profiles: the app picker lists installed apps by name, then saved ids that are not installed",
     async () => {
       const installed = [
-        { name: "Slack", path: "/Applications/Slack.app", bundleId: "com.tinyspeck.slackmacgap" },
-        { name: "Music", path: "/System/Applications/Music.app", bundleId: "com.apple.Music" },
+        {
+          name: "Slack",
+          path: "/Applications/Slack.app",
+          bundleId: "com.tinyspeck.slackmacgap",
+        },
+        {
+          name: "Music",
+          path: "/System/Applications/Music.app",
+          bundleId: "com.apple.Music",
+        },
         { name: "No Id", path: "/Applications/NoId.app" },
-        { name: "Music copy", path: "/Applications/Music copy.app", bundleId: "COM.APPLE.MUSIC" },
-        { name: "Chess", path: "/System/Applications/Chess.app", bundleId: "com.apple.Chess" },
+        {
+          name: "Music copy",
+          path: "/Applications/Music copy.app",
+          bundleId: "COM.APPLE.MUSIC",
+        },
+        {
+          name: "Chess",
+          path: "/System/Applications/Chess.app",
+          bundleId: "com.apple.Chess",
+        },
       ];
-      const items = appPickerItems(installed, ["com.spotify.client", " COM.apple.music ", "", "com.spotify.client"]);
-      assert.deepEqual(items, [
-        { value: "com.apple.Chess", title: "Chess", path: "/System/Applications/Chess.app" },
-        { value: "com.apple.Music", title: "Music", path: "/System/Applications/Music.app" },
-        { value: "com.tinyspeck.slackmacgap", title: "Slack", path: "/Applications/Slack.app" },
-        { value: "com.spotify.client", title: "Not installed: com.spotify.client" },
-      ]);
-      // The selection takes the picker's spelling and drops ids the picker lacks.
-      assert.deepEqual(alignSelection([" COM.apple.music ", "com.spotify.client", "nope", "com.apple.Music"], items), [
-        "com.apple.Music",
+      const items = appPickerItems(installed, [
+        "com.spotify.client",
+        " COM.apple.music ",
+        "",
         "com.spotify.client",
       ]);
+      assert.deepEqual(items, [
+        {
+          value: "com.apple.Chess",
+          title: "Chess",
+          path: "/System/Applications/Chess.app",
+        },
+        {
+          value: "com.apple.Music",
+          title: "Music",
+          path: "/System/Applications/Music.app",
+        },
+        {
+          value: "com.tinyspeck.slackmacgap",
+          title: "Slack",
+          path: "/Applications/Slack.app",
+        },
+        {
+          value: "com.spotify.client",
+          title: "Not installed: com.spotify.client",
+        },
+      ]);
+      // The selection takes the picker's spelling and drops ids the picker lacks.
+      assert.deepEqual(
+        alignSelection(
+          [
+            " COM.apple.music ",
+            "com.spotify.client",
+            "nope",
+            "com.apple.Music",
+          ],
+          items,
+        ),
+        ["com.apple.Music", "com.spotify.client"],
+      );
       assert.deepEqual(appPickerItems([], []), []);
     },
   ],
@@ -1100,8 +1535,14 @@ net.createServer((socket) => {
       assert.equal(none[0].name, "default");
       assert.equal(none[0].builtIn, true);
       assert.deepEqual(none[0].spec, builtInDefault());
-      assert.deepEqual(builtInDefault().categories, CATEGORIES.map((c) => c.id));
-      assert.equal(entrySummary(none[0]), "Blocklist · all categories (built in)");
+      assert.deepEqual(
+        builtInDefault().categories,
+        CATEGORIES.map((c) => c.id),
+      );
+      assert.equal(
+        entrySummary(none[0]),
+        "Blocklist · all categories (built in)",
+      );
 
       const entries = profileEntries({
         zeta: { mode: "allowlist" },
@@ -1110,31 +1551,56 @@ net.createServer((socket) => {
         "  ": {},
         alpha: {},
       });
-      assert.deepEqual(entries.map((e) => e.name), ["default", "alpha", "deep", "zeta"]);
+      assert.deepEqual(
+        entries.map((e) => e.name),
+        ["default", "alpha", "deep", "zeta"],
+      );
       assert.equal(entries[0].builtIn, false);
       assert.equal(entries[2].malformed, "categories is not a list");
-      assert.equal(entrySummary(entries[2]), "Not readable (categories is not a list); sessions asking for it use default");
+      assert.equal(
+        entrySummary(entries[2]),
+        "Not readable (categories is not a list); sessions asking for it use default",
+      );
       // A malformed entry cannot be picked for a session.
-      assert.deepEqual(profileNames({ zeta: {}, deep: { apps: "x" } }), ["default", "zeta"]);
+      assert.deepEqual(profileNames({ zeta: {}, deep: { apps: "x" } }), [
+        "default",
+        "zeta",
+      ]);
 
       const brokenDefault = profileEntries({ default: [] });
       assert.equal(brokenDefault[0].malformed, "is not an object");
       assert.deepEqual(brokenDefault[0].spec, builtInDefault());
-      assert.equal(entrySummary(brokenDefault[0]), "Not readable (is not an object); the built-in default is used");
+      assert.equal(
+        entrySummary(brokenDefault[0]),
+        "Not readable (is not an object); the built-in default is used",
+      );
       assert.deepEqual(profileNames({ default: [] }), ["default"]);
     },
   ],
   [
     "profiles: summary line names the mode, categories and extra counts",
     async () => {
-      assert.equal(profileSummary(builtInDefault()), "Blocklist · all categories");
       assert.equal(
-        profileSummary({ mode: "allowlist", categories: [], apps: ["com.microsoft.VSCode"], hosts: ["github.com"] }),
+        profileSummary(builtInDefault()),
+        "Blocklist · all categories",
+      );
+      assert.equal(
+        profileSummary({
+          mode: "allowlist",
+          categories: [],
+          apps: ["com.microsoft.VSCode"],
+          hosts: ["github.com"],
+        }),
         "Allowlist · no categories · 1 extra app · 1 extra host",
       );
       // Canonical order, unknown ids left out of the names.
       assert.equal(
-        profileSummary({ mode: "blocklist", categories: ["news", "social", "sports"], apps: ["a.b", "c.d"], hosts: ["x.com", "y.com", "z.com"] }),
+        profileSummary({
+          mode: "blocklist",
+          categories: ["news", "social", "sports"],
+          apps: ["a.b", "c.d"],
+          hosts: ["x.com", "y.com", "z.com"],
+        }),
         "Blocklist · Social, News · 2 extra apps · 3 extra hosts",
       );
       assert.equal(categoryTitle("gaming"), "Gaming");
@@ -1143,12 +1609,28 @@ net.createServer((socket) => {
   [
     "profiles: bundle id shape",
     async () => {
-      for (const good of ["com.tinyspeck.slackmacgap", "desktop.WhatsApp", "com.foo_bar.App-2", "net.battle.app"]) {
+      for (const good of [
+        "com.tinyspeck.slackmacgap",
+        "desktop.WhatsApp",
+        "com.foo_bar.App-2",
+        "net.battle.app",
+      ]) {
         assert.equal(bundleIdProblem(good), null, good);
       }
       assert.equal(bundleIdProblem("Slack"), '"Slack" is not a bundle id');
-      assert.equal(bundleIdProblem("com.tiny speck.x"), '"com.tiny speck.x" has a space');
-      for (const bad of [".com.a", "com..a", "com.a.", "https://com.a", "com/a.b", "-", "com.a!b"]) {
+      assert.equal(
+        bundleIdProblem("com.tiny speck.x"),
+        '"com.tiny speck.x" has a space',
+      );
+      for (const bad of [
+        ".com.a",
+        "com..a",
+        "com.a.",
+        "https://com.a",
+        "com/a.b",
+        "-",
+        "com.a!b",
+      ]) {
         assert.notEqual(bundleIdProblem(bad), null, bad);
       }
     },
@@ -1156,21 +1638,59 @@ net.createServer((socket) => {
   [
     "profiles: host shape (lowercase, no scheme, path, port, wildcard or spaces)",
     async () => {
-      for (const good of ["youtube.com", "m.youtube.com", "www.youtube.com", "a-b.co.uk", "news.ycombinator.com", "10.0.0.1"]) {
+      for (const good of [
+        "youtube.com",
+        "m.youtube.com",
+        "www.youtube.com",
+        "a-b.co.uk",
+        "news.ycombinator.com",
+        "10.0.0.1",
+      ]) {
         assert.equal(hostProblem(good), null, good);
       }
-      assert.equal(hostProblem("https://www.YouTube.com/watch?v=1"), "Write youtube.com (no scheme)");
-      assert.equal(hostProblem("youtube.com/feed"), "Write youtube.com (no path)");
+      assert.equal(
+        hostProblem("https://www.YouTube.com/watch?v=1"),
+        "Write youtube.com (no scheme)",
+      );
+      assert.equal(
+        hostProblem("youtube.com/feed"),
+        "Write youtube.com (no path)",
+      );
       assert.equal(hostProblem("YouTube.com"), "Write youtube.com (lowercase)");
-      assert.equal(hostProblem("you tube.com"), '"you tube.com" is not a host (no spaces)');
-      assert.equal(hostProblem("youtube.com:443"), "Write youtube.com (no port)");
-      assert.equal(hostProblem("*.youtube.com"), "Write youtube.com (it covers subdomains)");
-      assert.equal(hostProblem("youtube"), '"youtube" is not a host (like youtube.com)');
-      for (const bad of ["-x.com", "x-.com", "x..com", ".x.com", "x_y.com", "ex@mple.com"]) {
+      assert.equal(
+        hostProblem("you tube.com"),
+        '"you tube.com" is not a host (no spaces)',
+      );
+      assert.equal(
+        hostProblem("youtube.com:443"),
+        "Write youtube.com (no port)",
+      );
+      assert.equal(
+        hostProblem("*.youtube.com"),
+        "Write youtube.com (it covers subdomains)",
+      );
+      assert.equal(
+        hostProblem("youtube"),
+        '"youtube" is not a host (like youtube.com)',
+      );
+      for (const bad of [
+        "-x.com",
+        "x-.com",
+        "x..com",
+        ".x.com",
+        "x_y.com",
+        "ex@mple.com",
+      ]) {
         assert.notEqual(hostProblem(bad), null, bad);
       }
-      assert.deepEqual(normalizeHosts(["www.x.com", "x.com", "y.com"]), ["x.com", "y.com"]);
-      assert.deepEqual(dedupeApps(["com.A.b", "com.a.B", "com.c.d"]), ["com.A.b", "com.c.d"]);
+      assert.deepEqual(normalizeHosts(["www.x.com", "x.com", "y.com"]), [
+        "x.com",
+        "y.com",
+      ]);
+      assert.deepEqual(dedupeApps(["com.A.b", "com.a.B", "com.c.d"]), [
+        "com.A.b",
+        "com.c.d",
+      ]);
       assert.deepEqual(splitLines(" a \r\n\n b\n  "), ["a", "b"]);
     },
   ],
@@ -1178,42 +1698,107 @@ net.createServer((socket) => {
     "profiles: validation (name, duplicates, mode, categories, apps, hosts)",
     async () => {
       const names = ["default", "deep"];
-      const draft = { name: "reading", mode: "blocklist", categories: ["news", "social"], apps: [], hosts: "" };
-      const errorsOf = (result: ReturnType<typeof validateProfile>) => (result.ok ? {} : result.errors);
+      const draft = {
+        name: "reading",
+        mode: "blocklist",
+        categories: ["news", "social"],
+        apps: [],
+        hosts: "",
+      };
+      const errorsOf = (result: ReturnType<typeof validateProfile>) =>
+        result.ok ? {} : result.errors;
 
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, name: "   " }, null, names)), { name: "Give the profile a name" });
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, name: " Deep " }, null, names)), {
-        name: 'There is already a profile named "Deep"',
-      });
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, name: "DEFAULT" }, null, names)), {
-        name: 'There is already a profile named "DEFAULT"',
-      });
+      assert.deepEqual(
+        errorsOf(validateProfile({ ...draft, name: "   " }, null, names)),
+        { name: "Give the profile a name" },
+      );
+      assert.deepEqual(
+        errorsOf(validateProfile({ ...draft, name: " Deep " }, null, names)),
+        {
+          name: 'There is already a profile named "Deep"',
+        },
+      );
+      assert.deepEqual(
+        errorsOf(validateProfile({ ...draft, name: "DEFAULT" }, null, names)),
+        {
+          name: 'There is already a profile named "DEFAULT"',
+        },
+      );
       // Editing keeps its own name; renaming onto another is a duplicate.
       assert.ok(validateProfile({ ...draft, name: "deep" }, "deep", names).ok);
       assert.ok(validateProfile({ ...draft, name: "Deep" }, "deep", names).ok);
-      assert.equal(errorsOf(validateProfile({ ...draft, name: "default" }, "deep", names)).name, 'There is already a profile named "default"');
+      assert.equal(
+        errorsOf(validateProfile({ ...draft, name: "default" }, "deep", names))
+          .name,
+        'There is already a profile named "default"',
+      );
       // "default" cannot be renamed, whatever the draft says.
-      const kept = validateProfile({ ...draft, name: "renamed" }, "default", names);
+      const kept = validateProfile(
+        { ...draft, name: "renamed" },
+        "default",
+        names,
+      );
       assert.ok(kept.ok && kept.name === "default");
 
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, mode: "strict" }, null, names)), { mode: "Pick blocklist or allowlist" });
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, categories: ["social", "sports", "games"] }, null, names)), {
-        categories: 'Remove unknown categories "sports", "games"',
-      });
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, apps: ["com.a.b", "Slack"] }, null, names)), {
-        apps: '"Slack" is not a bundle id',
-      });
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, hosts: "x.com\nhttps://y.com/a" }, null, names)), {
-        hosts: "Write y.com (no scheme)",
-      });
+      assert.deepEqual(
+        errorsOf(validateProfile({ ...draft, mode: "strict" }, null, names)),
+        { mode: "Pick blocklist or allowlist" },
+      );
+      assert.deepEqual(
+        errorsOf(
+          validateProfile(
+            { ...draft, categories: ["social", "sports", "games"] },
+            null,
+            names,
+          ),
+        ),
+        {
+          categories: 'Remove unknown categories "sports", "games"',
+        },
+      );
+      assert.deepEqual(
+        errorsOf(
+          validateProfile(
+            { ...draft, apps: ["com.a.b", "Slack"] },
+            null,
+            names,
+          ),
+        ),
+        {
+          apps: '"Slack" is not a bundle id',
+        },
+      );
+      assert.deepEqual(
+        errorsOf(
+          validateProfile(
+            { ...draft, hosts: "x.com\nhttps://y.com/a" },
+            null,
+            names,
+          ),
+        ),
+        {
+          hosts: "Write y.com (no scheme)",
+        },
+      );
       // Several problems at once are all reported.
-      assert.deepEqual(Object.keys(errorsOf(validateProfile({ name: "", mode: "x", categories: ["nope"], apps: ["a"], hosts: "B.com" }, null, names))), [
-        "name",
-        "mode",
-        "categories",
-        "apps",
-        "hosts",
-      ]);
+      assert.deepEqual(
+        Object.keys(
+          errorsOf(
+            validateProfile(
+              {
+                name: "",
+                mode: "x",
+                categories: ["nope"],
+                apps: ["a"],
+                hosts: "B.com",
+              },
+              null,
+              names,
+            ),
+          ),
+        ),
+        ["name", "mode", "categories", "apps", "hosts"],
+      );
 
       const saved = validateProfile(
         {
@@ -1229,23 +1814,46 @@ net.createServer((socket) => {
       assert.deepEqual(saved, {
         ok: true,
         name: "reading",
-        spec: { mode: "allowlist", categories: ["social", "news"], apps: ["com.a.b", "com.c.d"], hosts: ["github.com", "docs.rs"] },
+        spec: {
+          mode: "allowlist",
+          categories: ["social", "news"],
+          apps: ["com.a.b", "com.c.d"],
+          hosts: ["github.com", "docs.rs"],
+        },
       });
       // A new profile starts as a blocklist of every category.
-      assert.deepEqual(draftFor(null), { name: "", mode: "blocklist", categories: CATEGORIES.map((c) => c.id), apps: [], hosts: "" });
-      assert.deepEqual(draftFor(profileEntries({ deep: { mode: "allowlist", apps: ["a.b", "c.d"], hosts: ["x.com"] } })[1]), {
-        name: "deep",
-        mode: "allowlist",
-        categories: [],
-        apps: ["a.b", "c.d"],
-        hosts: "x.com",
+      assert.deepEqual(draftFor(null), {
+        name: "",
+        mode: "blocklist",
+        categories: CATEGORIES.map((c) => c.id),
+        apps: [],
+        hosts: "",
       });
+      assert.deepEqual(
+        draftFor(
+          profileEntries({
+            deep: { mode: "allowlist", apps: ["a.b", "c.d"], hosts: ["x.com"] },
+          })[1],
+        ),
+        {
+          name: "deep",
+          mode: "allowlist",
+          categories: [],
+          apps: ["a.b", "c.d"],
+          hosts: "x.com",
+        },
+      );
     },
   ],
   [
     "profiles: save, rename and delete rewrite profiles and the calendars using them",
     async () => {
-      const spec = { mode: "allowlist" as const, categories: [], apps: ["com.a.b"], hosts: ["github.com"] };
+      const spec = {
+        mode: "allowlist" as const,
+        categories: [],
+        apps: ["com.a.b"],
+        hosts: ["github.com"],
+      };
       const current = {
         profiles: {
           default: { mode: "blocklist", categories: ["social"] },
@@ -1256,22 +1864,59 @@ net.createServer((socket) => {
       };
       // Add: appended, calendars untouched.
       const added = applyProfileSave(current, null, "new", spec);
-      assert.deepEqual(Object.keys(added.profiles), ["default", "deep", "study", "new"]);
+      assert.deepEqual(Object.keys(added.profiles), [
+        "default",
+        "deep",
+        "study",
+        "new",
+      ]);
       assert.deepEqual(added.calendarProfiles, current.calendarProfiles);
       // Edit in place keeps keys the helper does not read and the position.
       const edited = applyProfileSave(current, "deep", "deep", spec);
-      assert.deepEqual(Object.keys(edited.profiles), ["default", "deep", "study"]);
-      assert.deepEqual(edited.profiles.deep, { mode: "allowlist", note: "keep me", apps: ["com.a.b"], categories: [], hosts: ["github.com"] });
+      assert.deepEqual(Object.keys(edited.profiles), [
+        "default",
+        "deep",
+        "study",
+      ]);
+      assert.deepEqual(edited.profiles.deep, {
+        mode: "allowlist",
+        note: "keep me",
+        apps: ["com.a.b"],
+        categories: [],
+        hosts: ["github.com"],
+      });
       // Rename: same position, calendars follow.
       const renamed = applyProfileSave(current, "deep", "focus", spec);
-      assert.deepEqual(Object.keys(renamed.profiles), ["default", "focus", "study"]);
-      assert.equal((renamed.profiles.focus as { note?: string }).note, "keep me");
-      assert.deepEqual(renamed.calendarProfiles, { work: "focus", school: "study", home: "focus" });
+      assert.deepEqual(Object.keys(renamed.profiles), [
+        "default",
+        "focus",
+        "study",
+      ]);
+      assert.equal(
+        (renamed.profiles.focus as { note?: string }).note,
+        "keep me",
+      );
+      assert.deepEqual(renamed.calendarProfiles, {
+        work: "focus",
+        school: "study",
+        home: "focus",
+      });
       // Editing the built-in default (absent from config) writes it.
-      const defaulted = applyProfileSave({ profiles: {}, calendarProfiles: {} }, "default", "default", builtInDefault());
-      assert.deepEqual(defaulted.profiles, { default: { ...builtInDefault() } });
+      const defaulted = applyProfileSave(
+        { profiles: {}, calendarProfiles: {} },
+        "default",
+        "default",
+        builtInDefault(),
+      );
+      assert.deepEqual(defaulted.profiles, {
+        default: { ...builtInDefault() },
+      });
       // The input is not mutated.
-      assert.deepEqual(Object.keys(current.profiles), ["default", "deep", "study"]);
+      assert.deepEqual(Object.keys(current.profiles), [
+        "default",
+        "deep",
+        "study",
+      ]);
 
       const deleted = applyProfileDelete(current, "deep");
       assert.deepEqual(Object.keys(deleted.profiles), ["default", "study"]);
@@ -1281,36 +1926,83 @@ net.createServer((socket) => {
       // "__proto__" is an ordinary key in config.json (JSON.parse makes it
       // one); it must stay an own property through a save, never become the
       // object's prototype, and cannot be picked as a new name.
-      const withProto = JSON.parse('{"profiles": {"__proto__": {"mode": "allowlist"}, "deep": {}}, "calendarProfiles": {"work": "__proto__"}}');
+      const withProto = JSON.parse(
+        '{"profiles": {"__proto__": {"mode": "allowlist"}, "deep": {}}, "calendarProfiles": {"work": "__proto__"}}',
+      );
       const kept = applyProfileSave(withProto, "deep", "deep", spec);
       assert.deepEqual(Object.keys(kept.profiles), ["__proto__", "deep"]);
       assert.equal(Object.getPrototypeOf(kept.profiles), Object.prototype);
-      assert.deepEqual(JSON.parse(JSON.stringify(kept.profiles)).__proto__, { mode: "allowlist" });
-      const protoRenamed = applyProfileSave(withProto, "__proto__", "legacy", spec);
+      assert.deepEqual(JSON.parse(JSON.stringify(kept.profiles)).__proto__, {
+        mode: "allowlist",
+      });
+      const protoRenamed = applyProfileSave(
+        withProto,
+        "__proto__",
+        "legacy",
+        spec,
+      );
       assert.deepEqual(Object.keys(protoRenamed.profiles), ["legacy", "deep"]);
       assert.deepEqual(protoRenamed.calendarProfiles, { work: "legacy" });
-      const intoProto = applyProfileSave({ profiles: {}, calendarProfiles: {} }, null, "__proto__", spec);
+      const intoProto = applyProfileSave(
+        { profiles: {}, calendarProfiles: {} },
+        null,
+        "__proto__",
+        spec,
+      );
       assert.deepEqual(Object.keys(intoProto.profiles), ["__proto__"]);
       assert.deepEqual(
-        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: [], hosts: "" }, null, ["default"]),
+        validateProfile(
+          {
+            name: "__proto__",
+            mode: "blocklist",
+            categories: [],
+            apps: [],
+            hosts: "",
+          },
+          null,
+          ["default"],
+        ),
         { ok: false, errors: { name: "Pick another name" } },
       );
       // One already in config.json can still be edited under its own name.
       assert.ok(
-        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: [], hosts: "" }, "__proto__", ["default", "__proto__"]).ok,
+        validateProfile(
+          {
+            name: "__proto__",
+            mode: "blocklist",
+            categories: [],
+            apps: [],
+            hosts: "",
+          },
+          "__proto__",
+          ["default", "__proto__"],
+        ).ok,
       );
-      assert.deepEqual(pruneCalendarProfiles({}, ["__proto__", "toString"]), {});
+      assert.deepEqual(
+        pruneCalendarProfiles({}, ["__proto__", "toString"]),
+        {},
+      );
       assert.equal(calendarProfileValue({}, "toString"), "default");
-      assert.deepEqual(remapCalendarProfiles({ a: "x", b: "y" }, "x", "default"), { b: "y" });
+      assert.deepEqual(
+        remapCalendarProfiles({ a: "x", b: "y" }, "x", "default"),
+        { b: "y" },
+      );
     },
   ],
   // ---- settings, blocking half: the form's other fields ----
   [
     "settings: calendarProfiles are pruned to the calendars still selected",
     async () => {
-      const saved = { work: "deep", school: "study", gone: "deep", home: "default" };
+      const saved = {
+        work: "deep",
+        school: "study",
+        gone: "deep",
+        home: "default",
+      };
       // Deselecting school drops its entry; "default" is the fallback, so it is not written.
-      assert.deepEqual(pruneCalendarProfiles(saved, ["work", "home", "new"]), { work: "deep" });
+      assert.deepEqual(pruneCalendarProfiles(saved, ["work", "home", "new"]), {
+        work: "deep",
+      });
       assert.deepEqual(pruneCalendarProfiles(saved, []), {});
       assert.equal(calendarProfileValue(saved, "work"), "deep");
       assert.equal(calendarProfileValue(saved, "new"), "default");
@@ -1327,7 +2019,10 @@ net.createServer((socket) => {
       ];
       assert.deepEqual(snoozeOptions(180), standard);
       assert.deepEqual(snoozeOptions(600), standard);
-      assert.deepEqual(snoozeOptions(90), [...standard, { value: "90", title: "90 seconds" }]);
+      assert.deepEqual(snoozeOptions(90), [
+        ...standard,
+        { value: "90", title: "90 seconds" },
+      ]);
       assert.deepEqual(SNOOZE_MINUTES, [1, 3, 5, 10]);
     },
   ],
@@ -1339,7 +2034,10 @@ net.createServer((socket) => {
         { value: "menuBar", title: "Menu bar" },
       ]);
       // The default is the first choice, so a fresh form shows the panel.
-      assert.equal(COUNTDOWN_OPTIONS[0].value, defaultConfig().countdownDisplay);
+      assert.equal(
+        COUNTDOWN_OPTIONS[0].value,
+        defaultConfig().countdownDisplay,
+      );
       assert.ok(isCountdownDisplay("panel"));
       assert.ok(isCountdownDisplay("menuBar"));
       assert.ok(!isCountdownDisplay("menubar"));
@@ -1355,10 +2053,10 @@ net.createServer((socket) => {
       ];
       assert.deepEqual(browserOptions(defaultConfig().browsers), known);
       assert.deepEqual(browserOptions([]), known);
-      assert.deepEqual(browserOptions(["com.brave.Browser", "company.thebrowser.dia"]), [
-        ...known,
-        { value: "com.brave.Browser", title: "com.brave.Browser" },
-      ]);
+      assert.deepEqual(
+        browserOptions(["com.brave.Browser", "company.thebrowser.dia"]),
+        [...known, { value: "com.brave.Browser", title: "com.brave.Browser" }],
+      );
     },
   ],
   [
@@ -1371,7 +2069,10 @@ net.createServer((socket) => {
         file,
         JSON.stringify({
           startableCalendars: ["work"],
-          profiles: { default: { categories: ["social"], helperNote: 1 }, deep: { mode: "allowlist" } },
+          profiles: {
+            default: { categories: ["social"], helperNote: 1 },
+            deep: { mode: "allowlist" },
+          },
           futureKey: [1, { two: 2 }],
         }),
       );
@@ -1379,7 +2080,10 @@ net.createServer((socket) => {
       await writeConfig(
         {
           startableCalendars: ["work", "school"],
-          calendarProfiles: pruneCalendarProfiles({ work: "deep", school: "default", old: "deep" }, ["work", "school"]),
+          calendarProfiles: pruneCalendarProfiles(
+            { work: "deep", school: "default", old: "deep" },
+            ["work", "school"],
+          ),
           snoozeSeconds: 300,
           browsers: ["company.thebrowser.dia", "com.brave.Browser"],
           raycastDeeplink: true,
@@ -1389,15 +2093,33 @@ net.createServer((socket) => {
       const afterForm = await readConfig(file);
       assert.deepEqual(afterForm.calendarProfiles, { work: "deep" });
       assert.equal(afterForm.snoozeSeconds, 300);
-      assert.deepEqual(afterForm.browsers, ["company.thebrowser.dia", "com.brave.Browser"]);
+      assert.deepEqual(afterForm.browsers, [
+        "company.thebrowser.dia",
+        "com.brave.Browser",
+      ]);
       assert.equal(afterForm.raycastDeeplink, true);
-      assert.deepEqual(afterForm.profiles, { default: { categories: ["social"], helperNote: 1 }, deep: { mode: "allowlist" } });
+      assert.deepEqual(afterForm.profiles, {
+        default: { categories: ["social"], helperNote: 1 },
+        deep: { mode: "allowlist" },
+      });
       assert.deepEqual(afterForm.futureKey, [1, { two: 2 }]);
 
       // What Manage Profiles writes: computed from the file as it is now.
-      writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), laterKey: "hand edit" }));
+      writeFileSync(
+        file,
+        JSON.stringify({
+          ...JSON.parse(readFileSync(file, "utf8")),
+          laterKey: "hand edit",
+        }),
+      );
       const renamed = await updateConfig(
-        (current) => applyProfileSave(current, "deep", "focus", { mode: "allowlist", categories: [], apps: [], hosts: ["github.com"] }),
+        (current) =>
+          applyProfileSave(current, "deep", "focus", {
+            mode: "allowlist",
+            categories: [],
+            apps: [],
+            hosts: ["github.com"],
+          }),
         file,
       );
       const onDisk = JSON.parse(readFileSync(file, "utf8"));
@@ -1407,7 +2129,10 @@ net.createServer((socket) => {
       assert.equal(onDisk.laterKey, "hand edit");
       assert.deepEqual(onDisk.futureKey, [1, { two: 2 }]);
       assert.equal(onDisk.snoozeSeconds, 300);
-      const deleted = await updateConfig((current) => applyProfileDelete(current, "focus"), file);
+      const deleted = await updateConfig(
+        (current) => applyProfileDelete(current, "focus"),
+        file,
+      );
       assert.deepEqual(deleted.calendarProfiles, {});
       assert.deepEqual(Object.keys(deleted.profiles), ["default"]);
       assert.deepEqual(readdirSync(dir), ["config.json"]);
@@ -1419,47 +2144,134 @@ net.createServer((socket) => {
     async () => {
       assert.deepEqual(ADHOC_PRESET_MINUTES, [15, 25, 45, 60, 90]);
       assert.equal(DEFAULT_ADHOC_MINUTES, 45);
-      assert.deepEqual(resolveAdhocMinutes("25", ""), { ok: true, minutes: 25 });
-      assert.deepEqual(resolveAdhocMinutes("90", "   "), { ok: true, minutes: 90 });
-      assert.deepEqual(resolveAdhocMinutes("25", " 40 "), { ok: true, minutes: 40 });
-      assert.deepEqual(resolveAdhocMinutes("25", "1"), { ok: true, minutes: 1 });
-      assert.deepEqual(resolveAdhocMinutes("25", "1440"), { ok: true, minutes: 1440 });
-      assert.deepEqual(resolveAdhocMinutes("25", "007"), { ok: true, minutes: 7 });
-      for (const bad of ["0", "1441", "2.5", "-5", "1e3", "abc", "25 min", "+5"]) {
-        assert.deepEqual(resolveAdhocMinutes("25", bad), { ok: false, error: "Whole minutes from 1 to 1440" }, bad);
+      assert.deepEqual(resolveAdhocMinutes("25", ""), {
+        ok: true,
+        minutes: 25,
+      });
+      assert.deepEqual(resolveAdhocMinutes("90", "   "), {
+        ok: true,
+        minutes: 90,
+      });
+      assert.deepEqual(resolveAdhocMinutes("25", " 40 "), {
+        ok: true,
+        minutes: 40,
+      });
+      assert.deepEqual(resolveAdhocMinutes("25", "1"), {
+        ok: true,
+        minutes: 1,
+      });
+      assert.deepEqual(resolveAdhocMinutes("25", "1440"), {
+        ok: true,
+        minutes: 1440,
+      });
+      assert.deepEqual(resolveAdhocMinutes("25", "007"), {
+        ok: true,
+        minutes: 7,
+      });
+      for (const bad of [
+        "0",
+        "1441",
+        "2.5",
+        "-5",
+        "1e3",
+        "abc",
+        "25 min",
+        "+5",
+      ]) {
+        assert.deepEqual(
+          resolveAdhocMinutes("25", bad),
+          { ok: false, error: "Whole minutes from 1 to 1440" },
+          bad,
+        );
       }
-      assert.deepEqual(resolveAdhocMinutes("30", ""), { ok: false, error: "Pick a duration" });
-      assert.deepEqual(resolveAdhocMinutes("", ""), { ok: false, error: "Pick a duration" });
+      assert.deepEqual(resolveAdhocMinutes("30", ""), {
+        ok: false,
+        error: "Pick a duration",
+      });
+      assert.deepEqual(resolveAdhocMinutes("", ""), {
+        ok: false,
+        error: "Pick a duration",
+      });
     },
   ],
   [
     "adhoc: calendar and profile preselection",
     async () => {
       const calendars = [{ id: "a" }, { id: "b" }, { id: "c" }];
-      assert.equal(initialAdhocCalendar(calendars, "c", { startableCalendars: ["b"] }), "c");
+      assert.equal(
+        initialAdhocCalendar(calendars, "c", { startableCalendars: ["b"] }),
+        "c",
+      );
       // The last one is gone: the first startable one that exists, else the first.
-      assert.equal(initialAdhocCalendar(calendars, "gone", { startableCalendars: ["x", "b"] }), "b");
-      assert.equal(initialAdhocCalendar(calendars, undefined, { startableCalendars: ["x"] }), "a");
-      assert.equal(initialAdhocCalendar([], "a", { startableCalendars: ["a"] }), null);
+      assert.equal(
+        initialAdhocCalendar(calendars, "gone", {
+          startableCalendars: ["x", "b"],
+        }),
+        "b",
+      );
+      assert.equal(
+        initialAdhocCalendar(calendars, undefined, {
+          startableCalendars: ["x"],
+        }),
+        "a",
+      );
+      assert.equal(
+        initialAdhocCalendar([], "a", { startableCalendars: ["a"] }),
+        null,
+      );
 
       const config = { calendarProfiles: { a: "deep", b: "deleted" } };
       assert.equal(adhocProfileFor("a", config, ["default", "deep"]), "deep");
-      assert.equal(adhocProfileFor("b", config, ["default", "deep"]), "default");
-      assert.equal(adhocProfileFor("c", config, ["default", "deep"]), "default");
-      assert.equal(adhocProfileFor(null, config, ["default", "deep"]), "default");
+      assert.equal(
+        adhocProfileFor("b", config, ["default", "deep"]),
+        "default",
+      );
+      assert.equal(
+        adhocProfileFor("c", config, ["default", "deep"]),
+        "default",
+      );
+      assert.equal(
+        adhocProfileFor(null, config, ["default", "deep"]),
+        "default",
+      );
       // Inherited names are never read as a calendar's profile.
-      assert.equal(adhocProfileFor("toString", config, ["default", "deep"]), "default");
+      assert.equal(
+        adhocProfileFor("toString", config, ["default", "deep"]),
+        "default",
+      );
 
       // The calendar is checked again right before a start.
       assert.equal(adhocCalendarGone(calendars, "b"), false);
       // "(No Calendar)" is never gone and is remembered like any other choice.
       assert.equal(adhocCalendarGone(calendars, NO_CALENDAR), false);
       assert.equal(adhocCalendarGone(null, NO_CALENDAR), false);
-      assert.equal(initialAdhocCalendar(calendars, NO_CALENDAR, { startableCalendars: ["b"] }), NO_CALENDAR);
-      assert.equal(adhocProfileFor(NO_CALENDAR, { calendarProfiles: { none: "deep" } }, ["default", "deep"]), "deep");
+      assert.equal(
+        initialAdhocCalendar(calendars, NO_CALENDAR, {
+          startableCalendars: ["b"],
+        }),
+        NO_CALENDAR,
+      );
+      assert.equal(
+        adhocProfileFor(NO_CALENDAR, { calendarProfiles: { none: "deep" } }, [
+          "default",
+          "deep",
+        ]),
+        "deep",
+      );
       assert.deepEqual(
-        adhocStartedText({ goal: "Scratch", plannedEnd: null, profile: "default", calendarId: NO_CALENDAR }, 45),
-        { title: "Focusing: Scratch", message: "(45 min), default profile, no calendar" },
+        adhocStartedText(
+          {
+            goal: "Scratch",
+            plannedEnd: null,
+            profile: "default",
+            calendarId: NO_CALENDAR,
+          },
+          45,
+        ),
+        {
+          title: "Focusing: Scratch",
+          message: "(45 min), default profile, no calendar",
+        },
       );
       assert.equal(adhocCalendarGone(calendars, "removed"), true);
       assert.equal(adhocCalendarGone(null, "removed"), false);
@@ -1472,7 +2284,10 @@ net.createServer((socket) => {
       assert.equal(await lastAdhocCalendar(), undefined);
       await rememberAdhocCalendar("cal-study");
       assert.equal(await lastAdhocCalendar(), "cal-study");
-      assert.equal(await raycastStub.LocalStorage.getItem(LAST_CALENDAR_KEY), "cal-study");
+      assert.equal(
+        await raycastStub.LocalStorage.getItem(LAST_CALENDAR_KEY),
+        "cal-study",
+      );
       await raycastStub.LocalStorage.setItem(LAST_CALENDAR_KEY, "");
       assert.equal(await lastAdhocCalendar(), undefined);
       raycastStub.LocalStorage._reset();
@@ -1482,19 +2297,41 @@ net.createServer((socket) => {
     "adhoc: toasts for a start and for a refusal while a session is open",
     async () => {
       const plannedEnd = new Date(2026, 8, 28, 15, 40).toISOString();
-      assert.deepEqual(adhocStartedText({ goal: "Write the report", plannedEnd, profile: "deep" }, 25), {
-        title: "Focusing: Write the report",
-        message: "Until 15:40 (25 min), deep profile",
+      assert.deepEqual(
+        adhocStartedText(
+          { goal: "Write the report", plannedEnd, profile: "deep" },
+          25,
+        ),
+        {
+          title: "Focusing: Write the report",
+          message: "Until 15:40 (25 min), deep profile",
+        },
+      );
+      assert.deepEqual(
+        adhocStartedText(
+          { goal: "Read", plannedEnd: null, profile: "default" },
+          90,
+        ),
+        {
+          title: "Focusing: Read",
+          message: "(1 h 30 min), default profile",
+        },
+      );
+      assert.deepEqual(
+        adhocRefusedText("whatever", {
+          goal: "Review the plan",
+          state: "ending",
+        }),
+        {
+          title: "A session is already running",
+          message:
+            '"Review the plan" is at the end sheet: finish or extend it first',
+        },
+      );
+      assert.deepEqual(adhocRefusedText("calendar gone", null), {
+        title: "Could not start the session",
+        message: "calendar gone",
       });
-      assert.deepEqual(adhocStartedText({ goal: "Read", plannedEnd: null, profile: "default" }, 90), {
-        title: "Focusing: Read",
-        message: "(1 h 30 min), default profile",
-      });
-      assert.deepEqual(adhocRefusedText("whatever", { goal: "Review the plan", state: "ending" }), {
-        title: "A session is already running",
-        message: '"Review the plan" is at the end sheet: finish or extend it first',
-      });
-      assert.deepEqual(adhocRefusedText("calendar gone", null), { title: "Could not start the session", message: "calendar gone" });
     },
   ],
   [
@@ -1504,18 +2341,43 @@ net.createServer((socket) => {
       const socketPath = path.join(dir, "s.sock");
       const configPath = path.join(dir, "config.json");
       const clock = new Date(2026, 8, 28, 10, 0, 0);
-      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
       await fake.listen();
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
       try {
         const minutes = resolveAdhocMinutes("25", "");
         assert.ok(minutes.ok);
-        const first = await daemon.startAdhoc({ goal: "Write", durationSeconds: minutes.minutes * 60, calendarId: "cal-study", profile: "deep" });
-        assert.deepEqual(fake.state.requests.at(-1), { goal: "Write", durationSeconds: 1500, calendarId: "cal-study", profile: "deep", cmd: "startAdhoc" });
-        assert.equal(adhocStartedText(first, 25).message, "Until 10:25 (25 min), deep profile");
+        const first = await daemon.startAdhoc({
+          goal: "Write",
+          durationSeconds: minutes.minutes * 60,
+          calendarId: "cal-study",
+          profile: "deep",
+        });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          goal: "Write",
+          durationSeconds: 1500,
+          calendarId: "cal-study",
+          profile: "deep",
+          cmd: "startAdhoc",
+        });
+        assert.equal(
+          adhocStartedText(first, 25).message,
+          "Until 10:25 (25 min), deep profile",
+        );
 
         const refusal = await rejectsWith(
-          daemon.startAdhoc({ goal: "Another", durationSeconds: 900, calendarId: "cal-work" }),
+          daemon.startAdhoc({
+            goal: "Another",
+            durationSeconds: 900,
+            calendarId: "cal-work",
+          }),
           "daemon",
           /already running/,
         );
@@ -1567,7 +2429,10 @@ net.createServer((socket) => {
         "0 min over no sessions",
       );
       assert.equal(endReasonText("timer"), "when the timer ran out");
-      assert.equal(endReasonText("abandoned"), "abandoned (the helper stopped)");
+      assert.equal(
+        endReasonText("abandoned"),
+        "abandoned (the helper stopped)",
+      );
       assert.equal(endReasonText(null), "unknown");
     },
   ],
@@ -1581,7 +2446,10 @@ net.createServer((socket) => {
       assert.equal(dayLabel(iso(27, 23, 59), now), "Yesterday");
       assert.equal(dayLabel(iso(22, 10, 0), now), "Tue 22 Sep");
       assert.equal(dayLabel("nope", now), "?");
-      assert.equal(spanText(iso(28, 14, 10), iso(28, 15, 0), now), "Today 14:10–15:00");
+      assert.equal(
+        spanText(iso(28, 14, 10), iso(28, 15, 0), now),
+        "Today 14:10–15:00",
+      );
       assert.equal(
         spanText(iso(27, 23, 30), iso(28, 0, 30), now),
         "Yesterday 23:30–Mon 00:30",
@@ -1607,7 +2475,10 @@ net.createServer((socket) => {
         recentMarkdown(session),
         "## Write \\*the\\* report\n\nLine one \\# not a heading \\[link\\]\\(x\\)",
       );
-      assert.equal(recentMarkdown({ ...session, note: "  " }).endsWith("_No note_"), true);
+      assert.equal(
+        recentMarkdown({ ...session, note: "  " }).endsWith("_No note_"),
+        true,
+      );
       assert.equal(escapeMarkdown("a | b <script>"), "a \\| b \\<script\\>");
       assert.equal(
         chartMarkdown("/Users/kai/.raycast/focus/stats/week.svg"),
@@ -1619,8 +2490,18 @@ net.createServer((socket) => {
       );
       assert.equal(chartMarkdown(null), "_The chart could not be drawn._");
       const rows = [
-        { calendarId: "w", calendarTitle: "Work | Deep", focusedSeconds: 5100, sessions: 2 },
-        { calendarId: "adhoc", calendarTitle: "Ad hoc", focusedSeconds: 30, sessions: 1 },
+        {
+          calendarId: "w",
+          calendarTitle: "Work | Deep",
+          focusedSeconds: 5100,
+          sessions: 2,
+        },
+        {
+          calendarId: "adhoc",
+          calendarTitle: "Ad hoc",
+          focusedSeconds: 30,
+          sessions: 1,
+        },
       ];
       assert.equal(
         calendarTable(rows),
@@ -1646,8 +2527,16 @@ net.createServer((socket) => {
         windowLabel: "Last 7 days",
         perCalendar: rows,
       });
-      assert.ok(markdown.startsWith("**Today**: 1 h 25 min over 2 sessions\n\n![Focused minutes](file:///x/week.svg)"), markdown);
-      assert.ok(markdown.includes("### By calendar, last 7 days\n\n| Calendar |"), markdown);
+      assert.ok(
+        markdown.startsWith(
+          "**Today**: 1 h 25 min over 2 sessions\n\n![Focused minutes](file:///x/week.svg)",
+        ),
+        markdown,
+      );
+      assert.ok(
+        markdown.includes("### By calendar, last 7 days\n\n| Calendar |"),
+        markdown,
+      );
     },
   ],
 
@@ -1659,18 +2548,33 @@ net.createServer((socket) => {
       const socketPath = path.join(dir, "s.sock");
       const configPath = path.join(dir, "config.json");
       let clock = new Date(2026, 8, 27, 23, 30, 0);
-      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
       await fake.listen();
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
       try {
         writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
         const empty = await daemon.stats();
-        assert.deepEqual(empty.today, { focusedSeconds: 0, sessions: 0, averageRating: null });
+        assert.deepEqual(empty.today, {
+          focusedSeconds: 0,
+          sessions: 0,
+          averageRating: null,
+        });
         assert.equal(empty.days.length, 7);
         assert.deepEqual(fake.state.requests.at(-1), { days: 7, cmd: "stats" });
 
         // Across midnight, with a 5-minute pause after midnight.
-        await daemon.startAdhoc({ goal: "Late night", durationSeconds: 3600, calendarId: "cal-work" });
+        await daemon.startAdhoc({
+          goal: "Late night",
+          durationSeconds: 3600,
+          calendarId: "cal-work",
+        });
         clock = new Date(2026, 8, 28, 0, 10, 0);
         await daemon.pause();
         clock = new Date(2026, 8, 28, 0, 15, 0);
@@ -1678,27 +2582,53 @@ net.createServer((socket) => {
         clock = new Date(2026, 8, 28, 0, 30, 0);
         await daemon.finish({ rating: 4, note: "Wrapped up" });
         // Ad hoc on no calendar, and one still running.
-        await daemon.startAdhoc({ goal: "Inbox", durationSeconds: 600, calendarId: "none" });
+        await daemon.startAdhoc({
+          goal: "Inbox",
+          durationSeconds: 600,
+          calendarId: "none",
+        });
         clock = new Date(2026, 8, 28, 0, 40, 0);
         await daemon.finish({ rating: 2 });
-        await daemon.startAdhoc({ goal: "Running", durationSeconds: 600, calendarId: "cal-work" });
+        await daemon.startAdhoc({
+          goal: "Running",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+        });
 
         const stats = await daemon.stats();
-        assert.deepEqual(stats.today, { focusedSeconds: 1500 + 600, sessions: 2, averageRating: 3 });
-        assert.deepEqual(stats.week, { focusedSeconds: 1800 + 1500 + 600, sessions: 2, averageRating: 3 });
-        assert.deepEqual(
-          stats.days.slice(-2),
-          [
-            { date: "2026-09-27", focusedSeconds: 1800 },
-            { date: "2026-09-28", focusedSeconds: 2100 },
-          ],
-        );
+        assert.deepEqual(stats.today, {
+          focusedSeconds: 1500 + 600,
+          sessions: 2,
+          averageRating: 3,
+        });
+        assert.deepEqual(stats.week, {
+          focusedSeconds: 1800 + 1500 + 600,
+          sessions: 2,
+          averageRating: 3,
+        });
+        assert.deepEqual(stats.days.slice(-2), [
+          { date: "2026-09-27", focusedSeconds: 1800 },
+          { date: "2026-09-28", focusedSeconds: 2100 },
+        ]);
         assert.equal(stats.days[0].date, "2026-09-22");
         assert.deepEqual(stats.perCalendar, [
-          { calendarId: "cal-work", calendarTitle: "Work", focusedSeconds: 3300, sessions: 1 },
-          { calendarId: "adhoc", calendarTitle: "Ad hoc", focusedSeconds: 600, sessions: 1 },
+          {
+            calendarId: "cal-work",
+            calendarTitle: "Work",
+            focusedSeconds: 3300,
+            sessions: 1,
+          },
+          {
+            calendarId: "adhoc",
+            calendarTitle: "Ad hoc",
+            focusedSeconds: 600,
+            sessions: 1,
+          },
         ]);
-        assert.deepEqual(stats.recent.map((s) => s.goal), ["Inbox", "Late night"]);
+        assert.deepEqual(
+          stats.recent.map((s) => s.goal),
+          ["Inbox", "Late night"],
+        );
         assert.equal(stats.recent[1].note, "Wrapped up");
         assert.equal(stats.recent[1].focusedSeconds, 3300);
         assert.equal(stats.recent[1].logPending, false);
@@ -1706,15 +2636,28 @@ net.createServer((socket) => {
         assert.equal(stats.chartPath, path.join(dir, "stats", "week.svg"));
         assert.ok(existsSync(stats.chartPath as string));
         assert.equal(
-          (readFileSync(stats.chartPath as string, "utf8").match(/<rect/g) ?? []).length,
+          (
+            readFileSync(stats.chartPath as string, "utf8").match(/<rect/g) ??
+            []
+          ).length,
           7,
         );
 
         // A snooze during a session counts; a waiting session moved to a
         // writable calendar stops being pending.
-        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-gone", logCalendarName: "Gone (x)" }));
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            logCalendarId: "cal-gone",
+            logCalendarName: "Gone (x)",
+          }),
+        );
         await daemon.finish({});
-        await daemon.startAdhoc({ goal: "Snoozy", durationSeconds: 600, calendarId: "cal-work" });
+        await daemon.startAdhoc({
+          goal: "Snoozy",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+        });
         await daemon.snooze("x.com");
         await daemon.snooze("com.apple.Calculator");
         clock = new Date(2026, 8, 28, 0, 50, 0);
@@ -1724,15 +2667,24 @@ net.createServer((socket) => {
         assert.equal(snoozy?.snoozes, 2);
         assert.equal(snoozy?.blockedAttempts, 2);
         assert.equal(snoozy?.logPending, true);
-        assert.deepEqual(waiting.waiting.map((w) => w.goal), ["Running", "Snoozy"]);
+        assert.deepEqual(
+          waiting.waiting.map((w) => w.goal),
+          ["Running", "Snoozy"],
+        );
         await daemon.movePending("cal-log");
         const moved = await daemon.stats();
         assert.deepEqual(moved.waiting, []);
-        assert.equal(moved.recent.some((s) => s.logPending), false);
+        assert.equal(
+          moved.recent.some((s) => s.logPending),
+          false,
+        );
 
         const month = await daemon.stats(30);
         assert.equal(month.days.length, 30);
-        assert.deepEqual(fake.state.requests.at(-1), { days: 30, cmd: "stats" });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          days: 30,
+          cmd: "stats",
+        });
 
         // Checked before anything is sent.
         const sent = fake.state.requests.length;
@@ -1752,12 +2704,23 @@ net.createServer((socket) => {
       const socketPath = path.join(dir, "s.sock");
       const configPath = path.join(dir, "config.json");
       let clock = new Date(2026, 8, 28, 9, 0, 0);
-      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
       await fake.listen();
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
       try {
         writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
-        await daemon.startAdhoc({ goal: "Scratch", durationSeconds: 1500, calendarId: NO_CALENDAR });
+        await daemon.startAdhoc({
+          goal: "Scratch",
+          durationSeconds: 1500,
+          calendarId: NO_CALENDAR,
+        });
         clock = new Date(2026, 8, 28, 9, 25, 0);
         const finished = await daemon.finish({ rating: 3 });
         assert.equal(finished.logSkipped, true);
@@ -1787,11 +2750,17 @@ net.createServer((socket) => {
         recent: [],
         waiting: [],
       };
-      let reply: Record<string, unknown> = { ...base, chartPath: "relative/week.svg" };
+      let reply: Record<string, unknown> = {
+        ...base,
+        chartPath: "relative/week.svg",
+      };
       const server = await scriptedServer(socketPath, (_raw, socket) => {
         socket.end(`${JSON.stringify(reply)}\n`);
       });
-      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
       try {
         assert.equal((await daemon.stats()).chartPath, null);
         reply = { ...base, chartPath: null };
@@ -1803,6 +2772,319 @@ net.createServer((socket) => {
       } finally {
         await server.close();
       }
+    },
+  ],
+
+  // ---- deleteSession: client, fake daemon and toast text ----
+  [
+    "daemon: deleteSession round-trips against the fake daemon",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      let clock = new Date(2026, 8, 28, 9, 0, 0);
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
+      await fake.listen();
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      const finishOne = async (goal: string, calendarId = "cal-work") => {
+        const started = await daemon.startAdhoc({
+          goal,
+          durationSeconds: 600,
+          calendarId,
+        });
+        clock = new Date(clock.getTime() + 10 * 60 * 1000);
+        const done = await daemon.finish({ rating: 3 });
+        return { id: started.id, logEventId: done.logEventId };
+      };
+      try {
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
+
+        // A finished session with a log event: both go.
+        const logged = await finishOne("Logged");
+        const kept = await finishOne("Kept");
+        assert.equal(fake.state.calendarEvents.length, 2);
+        const removed = await daemon.deleteSession(logged.id);
+        assert.deepEqual(removed, {
+          deleted: true,
+          logEventRemoved: true,
+          warning: null,
+        });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          sessionId: logged.id,
+          cmd: "deleteSession",
+        });
+        assert.deepEqual(
+          fake.state.calendarEvents.map((e: { id: string }) => e.id),
+          [kept.logEventId],
+        );
+        assert.deepEqual(
+          (await daemon.stats()).recent.map((r) => r.goal),
+          ["Kept"],
+        );
+        await rejectsWith(
+          daemon.deleteSession(logged.id),
+          "daemon",
+          /no session with id/,
+        );
+
+        // Notes rewritten: the row goes, the event stays, with a warning.
+        const rewritten = await finishOne("Rewritten");
+        const event = fake.state.calendarEvents.find(
+          (e: { sessionId: number }) => e.sessionId === rewritten.id,
+        );
+        event.notes = "My own notes";
+        const warned = await daemon.deleteSession(rewritten.id);
+        assert.equal(warned.logEventRemoved, false);
+        assert.match(warned.warning ?? "", /focus-session marker/);
+        assert.ok(fake.state.calendarEvents.includes(event));
+        assert.equal(
+          (await daemon.stats()).recent.some((r) => r.id === rewritten.id),
+          false,
+        );
+
+        // The id marker with another start (a reused id): not ours, kept.
+        const reused = await finishOne("Reused");
+        const reusedEvent = fake.state.calendarEvents.find(
+          (e: { sessionId: number }) => e.sessionId === reused.id,
+        );
+        reusedEvent.notes = `focus-session: ${reused.id}\nfocus-started: 2026-01-01T00:00:00Z`;
+        const reusedReply = await daemon.deleteSession(reused.id);
+        assert.equal(reusedReply.logEventRemoved, false);
+        assert.match(reusedReply.warning ?? "", /focus-session marker/);
+        assert.ok(fake.state.calendarEvents.includes(reusedEvent));
+
+        // No calendar access: the same.
+        const blind = await finishOne("Blind");
+        fake.state.calendarAccess = "denied";
+        const denied = await daemon.deleteSession(blind.id);
+        assert.equal(denied.logEventRemoved, false);
+        assert.match(denied.warning ?? "", /calendar access is denied/);
+        fake.state.calendarAccess = "fullAccess";
+
+        // No calendar: nothing to remove, no warning.
+        const scratch = await finishOne("Scratch", NO_CALENDAR);
+        assert.equal(scratch.logEventId, null);
+        assert.deepEqual(await daemon.deleteSession(scratch.id), {
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        });
+
+        // Waiting for a log calendar: deleted, and pending and stats are clean.
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            logCalendarId: "cal-gone",
+            logCalendarName: "Gone (x)",
+          }),
+        );
+        const waiting = await finishOne("Waiting");
+        assert.equal((await daemon.pending()).length, 1);
+        assert.deepEqual(await daemon.deleteSession(waiting.id), {
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        });
+        assert.deepEqual(await daemon.pending(), []);
+        assert.deepEqual((await daemon.stats()).waiting, []);
+
+        // The open session (at the end sheet here) ends with nothing logged and goes.
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
+        const open = await daemon.startAdhoc({
+          goal: "Discard",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+        });
+        await daemon.stop();
+        const events = fake.state.calendarEvents.length;
+        const history = fake.state.history.length;
+        assert.deepEqual(await daemon.deleteSession(open.id), {
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        });
+        assert.equal(await daemon.status(), null);
+        assert.deepEqual(await daemon.pending(), []);
+        assert.equal(fake.state.calendarEvents.length, events);
+        assert.equal(fake.state.history.length, history);
+        await rejectsWith(daemon.finish({}), "daemon", /no session is running/);
+
+        // Checked before anything is sent.
+        const sent = fake.state.requests.length;
+        await assert.rejects(daemon.deleteSession(0), RangeError);
+        await assert.rejects(daemon.deleteSession(-3), RangeError);
+        await assert.rejects(daemon.deleteSession(1.5), RangeError);
+        assert.equal(fake.state.requests.length, sent);
+        await rejectsWith(
+          daemon.deleteSession(4242),
+          "daemon",
+          /no session with id 4242/,
+        );
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  [
+    "daemon: the fake's seeded waiting session can be deleted and a movePending event removed",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        seedWaiting: true,
+        seedHistory: true,
+      });
+      await fake.listen();
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      try {
+        assert.deepEqual(
+          (await daemon.pending()).map((w) => w.sessionId),
+          [900],
+        );
+        assert.deepEqual(await daemon.deleteSession(900), {
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        });
+        assert.deepEqual(await daemon.pending(), []);
+        // A seeded history row has no log event.
+        assert.deepEqual(await daemon.deleteSession(801), {
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        });
+        // A session moved to a writable calendar gets an event, which delete removes.
+        writeFileSync(
+          configPath,
+          JSON.stringify({ logCalendarId: "cal-gone" }),
+        );
+        const started = await daemon.startAdhoc({
+          goal: "Moved",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+        });
+        await daemon.finish({});
+        await daemon.movePending("cal-log");
+        assert.equal(fake.state.calendarEvents.length, 1);
+        assert.equal(
+          (await daemon.deleteSession(started.id)).logEventRemoved,
+          true,
+        );
+        assert.deepEqual(fake.state.calendarEvents, []);
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  [
+    "daemon: deleteSession rejects a malformed reply and drops an empty warning",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      let reply: Record<string, unknown> = { ok: true };
+      const server = await scriptedServer(socketPath, (_raw, socket) => {
+        socket.end(`${JSON.stringify(reply)}\n`);
+      });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      try {
+        await rejectsWith(daemon.deleteSession(3), "protocol", /"deleted"/);
+        reply = {
+          ok: true,
+          deleted: true,
+          logEventRemoved: false,
+          warning: "  ",
+        };
+        assert.deepEqual(await daemon.deleteSession(3), {
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        });
+        reply = { ok: true, deleted: true, logEventRemoved: "yes" };
+        assert.equal((await daemon.deleteSession(3)).logEventRemoved, false);
+        reply = { ok: false, error: "unknown command: deleteSession" };
+        await rejectsWith(daemon.deleteSession(3), "daemon", /unknown command/);
+        assert.deepEqual(JSON.parse(server.received[0]), {
+          sessionId: 3,
+          cmd: "deleteSession",
+        });
+      } finally {
+        await server.close();
+      }
+    },
+  ],
+  [
+    "deleteToastText: says whether the calendar event went",
+    async () => {
+      assert.deepEqual(
+        deleteToastText({
+          deleted: true,
+          logEventRemoved: true,
+          warning: null,
+        }),
+        {
+          title: "Session deleted",
+          message: "Its calendar event was removed too",
+        },
+      );
+      assert.deepEqual(
+        deleteToastText({
+          deleted: true,
+          logEventRemoved: false,
+          warning:
+            "calendar access is denied, so the log event was left in Calendar",
+        }),
+        {
+          title: "Session deleted, calendar event kept",
+          message:
+            "calendar access is denied, so the log event was left in Calendar",
+        },
+      );
+      assert.deepEqual(
+        deleteToastText({
+          deleted: true,
+          logEventRemoved: false,
+          warning: null,
+        }),
+        {
+          title: "Session deleted",
+          message: "It had no calendar event",
+        },
+      );
+      assert.deepEqual(
+        deleteToastText(
+          { deleted: true, logEventRemoved: false, warning: null },
+          "discarded",
+        ),
+        {
+          title: "Session discarded",
+        },
+      );
+      assert.deepEqual(
+        deleteToastText(
+          { deleted: true, logEventRemoved: false, warning: "x" },
+          "discarded",
+        ),
+        {
+          title: "Session discarded, calendar event kept",
+          message: "x",
+        },
+      );
     },
   ],
 ];

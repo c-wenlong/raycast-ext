@@ -14,6 +14,7 @@ import {
   STATS_DAYS,
   Stats,
   StatsWaiting,
+  deleteToastText,
   errorMessage,
   getDaemon,
 } from "./lib/daemon";
@@ -121,6 +122,39 @@ export default function FocusStatsCommand() {
       toast.message = errorMessage(moveError);
     }
   }
+
+  // No confirmation (the notes extension's ⌃X convention): the toast says
+  // whether the calendar event went too.
+  async function handleDelete(sessionId: number) {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Deleting session",
+    });
+    try {
+      const result = await getDaemon().deleteSession(sessionId);
+      const text = deleteToastText(result);
+      toast.style = Toast.Style.Success;
+      toast.title = text.title;
+      toast.message = text.message;
+    } catch (deleteError) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Could not delete the session";
+      toast.message = errorMessage(deleteError);
+    }
+    await reload();
+  }
+
+  const deleteAction = (sessionId: number) => (
+    <ActionPanel.Section>
+      <Action
+        title="Delete Session"
+        icon={Icon.Trash}
+        style={Action.Style.Destructive}
+        shortcut={{ modifiers: ["ctrl"], key: "x" }}
+        onAction={() => handleDelete(sessionId)}
+      />
+    </ActionPanel.Section>
+  );
 
   const refresh = (
     <Action
@@ -278,6 +312,7 @@ export default function FocusStatsCommand() {
           <ActionPanel>
             <Action.CopyToClipboard title="Copy Goal" content={session.goal} />
             {refresh}
+            {deleteAction(session.id)}
           </ActionPanel>
         }
       />
@@ -311,6 +346,7 @@ export default function FocusStatsCommand() {
               />
             ) : null}
             {refresh}
+            {deleteAction(item.sessionId)}
           </ActionPanel>
         }
       />

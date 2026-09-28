@@ -71,6 +71,34 @@ export interface FinishResult {
   logSkipped: boolean;
 }
 
+// The `deleteSession` reply. The row (with its pauses and blocked attempts)
+// is always gone when this comes back; the log event is removed only when
+// its notes still carry the session's marker, and `warning` says why not
+// otherwise (no calendar access, the calendar unavailable, notes rewritten).
+export interface DeleteResult {
+  deleted: true;
+  logEventRemoved: boolean;
+  warning: string | null;
+}
+
+// The toast after Delete Session (Focus Stats) or Discard Session (Focus
+// Today): says whether the session's calendar event went too.
+export function deleteToastText(
+  result: DeleteResult,
+  verb: "deleted" | "discarded" = "deleted",
+): { title: string; message?: string } {
+  const title = `Session ${verb}`;
+  if (result.logEventRemoved) {
+    return { title, message: "Its calendar event was removed too" };
+  }
+  if (result.warning) {
+    return { title: `${title}, calendar event kept`, message: result.warning };
+  }
+  return verb === "discarded"
+    ? { title }
+    : { title, message: "It had no calendar event" };
+}
+
 export interface WaitingSession {
   sessionId: number;
   goal: string;
@@ -698,6 +726,30 @@ export class FocusDaemon {
       chartPath:
         typeof chartPath === "string" && chartPath.startsWith("/")
           ? chartPath
+          : null,
+    };
+  }
+
+  // Deletes a session for good: a finished one (and its log event, when it
+  // is still ours) or the open one, which ends with no rating and no log
+  // event. An unknown id is refused by the helper.
+  async deleteSession(sessionId: number): Promise<DeleteResult> {
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      throw new RangeError("deleteSession takes a positive whole session id.");
+    }
+    const reply = await this.request("deleteSession", { sessionId });
+    if (reply.deleted !== true) {
+      throw new DaemonError(
+        "protocol",
+        'The Focus helper\'s reply is missing a valid "deleted".',
+      );
+    }
+    return {
+      deleted: true,
+      logEventRemoved: reply.logEventRemoved === true,
+      warning:
+        typeof reply.warning === "string" && reply.warning.trim()
+          ? reply.warning
           : null,
     };
   }

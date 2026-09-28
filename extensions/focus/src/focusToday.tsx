@@ -22,6 +22,7 @@ import {
   Session,
   TodayEvent,
   WaitingSession,
+  deleteToastText,
   errorMessage,
   getDaemon,
 } from "./lib/daemon";
@@ -234,6 +235,28 @@ export default function FocusTodayCommand() {
     }
   }
 
+  // Ends the open session with no rating and deletes it, log event and all
+  // (none is written for it). No confirmation, as ⌃X deletes in Notes.
+  async function handleDiscard(session: Session) {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Discarding session",
+    });
+    try {
+      const result = await getDaemon().deleteSession(session.id);
+      const text = deleteToastText(result, "discarded");
+      toast.style = Toast.Style.Success;
+      toast.title = text.title;
+      toast.message = text.message;
+      await reload();
+    } catch (discardError) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Could not discard the session";
+      toast.message = errorMessage(discardError);
+      await reload({ quiet: true });
+    }
+  }
+
   async function handleRetryPending() {
     const toast = await showToast({
       style: Toast.Style.Animated,
@@ -421,6 +444,15 @@ export default function FocusTodayCommand() {
                 target={finishForm}
               />
             ) : null}
+            <ActionPanel.Section>
+              <Action
+                title="Discard Session"
+                icon={Icon.Trash}
+                style={Action.Style.Destructive}
+                shortcut={{ modifiers: ["ctrl"], key: "x" }}
+                onAction={() => handleDiscard(session)}
+              />
+            </ActionPanel.Section>
             {commonActions}
           </ActionPanel>
         }

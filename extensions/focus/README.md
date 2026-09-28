@@ -20,7 +20,9 @@ end-of-session sheet, app and site blocking, stats), is
   its state (running, paused, or ending at the end sheet), the time left and
   the time paused, and actions Pause or Resume (`⌘⇧P`), Extend by 5, 10, 15
   or 25 minutes (`⌘E`), Stop (`⌘⇧S`, goes to the end sheet), and "Finish
-  (Rating and Note)" (`⌘⇧F`), the fallback for the helper's native end sheet.
+  (Rating and Note)" (`⌘⇧F`), the fallback for the helper's native end sheet,
+  and Discard Session (`⌃X`, no confirmation): the session ends with no
+  rating and is deleted, and no log event is written for it.
   The row also shows the session's blocking profile and its mode ("default ·
   blocklist"; blocking is off while paused).
   Starting another event while a session is open sends that one to the end
@@ -58,7 +60,11 @@ end-of-session sheet, app and site blocking, stats), is
   not filed under a calendar count as "Ad hoc"). **Recent sessions** shows
   the last 20 with calendar, span, focused time, rating, blocked attempts and
   the note in the detail ("Copy Goal"). Sessions whose log event is still
-  waiting get the same Retry and Move actions as Focus Today. `⌘R` refreshes.
+  waiting get the same Retry and Move actions as Focus Today. Every recent
+  and waiting session has Delete Session (`⌃X`, no confirmation, as in
+  Notes): the session and its pauses and blocked attempts are deleted, and
+  so is its calendar event while that still carries the session's marker;
+  the toast says whether the event went. `⌘R` refreshes.
 
 ## Where data lives
 
