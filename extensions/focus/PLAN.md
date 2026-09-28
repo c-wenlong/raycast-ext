@@ -6,7 +6,9 @@ pause, resume, extend, stop, heartbeat recovery, deeplink, socket commands and
 Focus Today actions) and the native menu bar countdown and end sheet. Step 3
 is in two PRs: the blocking engine (profiles, categories, matching, app
 blocking and the block window) and the site half (loopback block page, Chrome
-and Dia tab watcher). Step 4 is still to do. Written 2026-09-27 from an interview with Kai.
+and Dia tab watcher). Step 4 is in two PRs: the settings half (profiles, per-calendar default
+profile, browsers, snooze length, the Raycast deeplink toggle, and the Ad-hoc
+Session form) and the stats half. Written 2026-09-27 from an interview with Kai.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
 
@@ -161,6 +163,21 @@ Rules:
     that is still in front is hidden again.
   - Categories are fixed in code for now (`Categories.swift`); editing them
     in Settings is step 4.
+- Decided while building step 4, settings half (2026-09-28):
+  - Settings edits which categories a profile uses, not what a category
+    contains: the six category lists stay in `Categories.swift`, and the TS
+    side mirrors only their ids, titles and order (a test reads the Swift
+    file to keep the two in step).
+  - Manage Profiles saves each profile change straight to `config.json`;
+    the Settings form never writes `profiles`, so neither side can overwrite
+    the other's unsaved edits. Renaming or deleting a profile rewrites
+    `calendarProfiles` in the same write (deleted means back to default).
+  - `calendarProfiles` only keeps selected startable calendars whose profile
+    is not "default".
+  - Host lines must already be bare hosts (lowercase, no scheme, path, port,
+    wildcard or spaces); the error names the fix ("Write youtube.com (no
+    scheme)"). A leading `www.` is dropped on save, as the helper does.
+  - Ad-hoc Session remembers the last calendar used in Raycast LocalStorage.
 
 Built-in categories, each a list of bundle ids and hosts that Kai can edit in
 Settings. All on by default in the default profile:

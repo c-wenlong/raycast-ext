@@ -31,7 +31,23 @@ end-of-session sheet, app and site blocking, stats), is
 - **Focus Settings**: pick the startable calendars and the log calendar.
   Every calendar Calendar.app knows about is listed as `title (account)`, so a
   calendar reachable through two accounts can be told apart; only writable
-  calendars can be the log calendar. Saving writes `config.json`.
+  calendars can be the log calendar. Below them: a blocking profile for each
+  selected startable calendar (default "default"), the snooze length (1, 3, 5
+  or 10 minutes), the browsers whose tabs are watched (Google Chrome, Dia),
+  "Also start Raycast Focus", and a summary line per profile. Saving writes
+  `config.json` (unknown keys kept) and applies to the next session.
+  **Manage Profiles** (`⌘⇧P`) lists the profiles with Edit, Add (`⌘N`) and
+  Delete (`⌃X`; "default" can be edited, never deleted or renamed). A profile
+  is a mode (blocklist or allowlist), any of the six built-in categories
+  (Social, Messaging, Gaming, Entertainment, News, Shopping), extra bundle ids
+  and extra hosts, one per line. Profile changes are saved at once; renaming
+  or deleting one updates the calendars that used it, and a running session
+  picks a change up within seconds.
+- **Ad-hoc Session**: start a session with no calendar event: a goal, a
+  length (15, 25, 45, 60 or 90 minutes, or custom minutes from 1 to 1440), a
+  calendar to file it under (the last one used is preselected), and a
+  blocking profile (the calendar's default is preselected). Starting while a
+  session is open sends that one to the end sheet, and the toast says so.
 
 ## Where data lives
 
@@ -62,8 +78,8 @@ when the helper died with it open, and can fire the Raycast Focus deeplink.
 The menu bar countdown and the native end sheet arrive with the step 2 UI PR;
 until then Focus Today's Finish form
 ([src/components/FinishSessionForm.tsx](src/components/FinishSessionForm.tsx))
-is the way to finish. Ad-hoc sessions, stats and the rest of Settings are
-step 4; the client library already has `startAdhoc`.
+is the way to finish. Ad-hoc sessions and the rest of Settings arrived in step
+4 (see Commands above).
 
 ## Development
 

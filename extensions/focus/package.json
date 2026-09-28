@@ -21,6 +21,12 @@
       "title": "Focus Settings",
       "description": "Pick the calendars you can start sessions from and the calendar sessions are logged to",
       "mode": "view"
+    },
+    {
+      "name": "adhocSession",
+      "title": "Ad-hoc Session",
+      "description": "Start a focus session with a goal and a length, filed under a calendar of your choice",
+      "mode": "view"
     }
   ],
   "scripts": {
