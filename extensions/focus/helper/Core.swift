@@ -282,16 +282,21 @@ final class FocusCore: SessionPresenterDelegate {
   /// died with the session open (quit, crash, the Mac slept through it): the
   /// row closes as abandoned at its last heartbeat, with no rating and no
   /// log event. A fresh one means a quick restart: the session carries on as
-  /// running, paused or at the end sheet.
+  /// running, paused or at the end sheet. An ad-hoc row's stored deadline
+  /// already holds its closed pauses (`extended_end`), so a restart during a
+  /// pause keeps the time left frozen at the pause's start.
   private func recover(_ row: SessionRow) throws {
     let pauses = try db.pauses(row.id)
     var machine = SessionMachine(
       restoring: row.startedAt, plannedEnd: row.deadline ?? row.startedAt, extendedSeconds: row.extendedSeconds,
-      pauses: pauses, endingReason: row.endReason.flatMap(EndReason.init(rawValue:)))
+      pauses: pauses, endingReason: row.endReason.flatMap(EndReason.init(rawValue:)),
+      pauseStopsClock: row.sourceEventId == nil)
     let now = self.now
     if now.timeIntervalSince(row.lastHeartbeat) > FocusCore.abandonAfter {
       _ = try machine.apply(.abandon(at: row.lastHeartbeat)).get()
-      let close = SessionClose(endedAt: machine.endedAt ?? row.lastHeartbeat, endReason: EndReason.abandoned.rawValue)
+      let close = SessionClose(
+        endedAt: machine.endedAt ?? row.lastHeartbeat, endReason: EndReason.abandoned.rawValue,
+        extendedEnd: FocusCore.movedEnd(machine, from: row))
       if try db.finish(row.id, close) {
         log("session \(row.id): abandoned; last heartbeat \(ISO.local(row.lastHeartbeat))")
       }
@@ -302,6 +307,13 @@ final class FocusCore: SessionPresenterDelegate {
     log("session \(row.id): resumed as \(machine.state.rawValue)")
     startTicking()
     publish(machine.state == .ending ? .show : .keep)
+  }
+
+  /// The planned end to store when a session closes, if closing moved it
+  /// (an ad-hoc session finished or abandoned while paused); nil otherwise.
+  private static func movedEnd(_ machine: SessionMachine, from row: SessionRow) -> Date? {
+    guard let end = machine.plannedEnd, end != row.deadline else { return nil }
+    return end
   }
 
   /// Checks the deadline. Returns true when the session just reached it (and
@@ -316,7 +328,9 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   /// Applies an input to the open session and persists what changed, in one
-  /// transaction; memory changes only once sqlite has. Not for finish.
+  /// transaction; memory changes only once sqlite has. Not for finish. A
+  /// changed planned end (an extension, or an ad-hoc pause closing) goes to
+  /// `extended_end`; `extended_seconds` stays the extensions asked for.
   private func commit(_ input: SessionInput) throws -> SessionTransition {
     guard var current = try current() else { throw FocusError("no session is running") }
     let before = current.machine
@@ -417,9 +431,12 @@ final class FocusCore: SessionPresenterDelegate {
         let plannedEnd = current.machine.plannedEnd
       else { return nil }
       let now = self.now
+      // A paused ad-hoc session reports the end it would have if resumed
+      // now, so `plannedEnd - now` stays at the frozen time left.
       return SessionView(
         id: Int(current.row.id), goal: current.row.goal, state: current.machine.state.rawValue, startedAt: startedAt,
-        plannedEnd: plannedEnd, remainingSeconds: current.machine.remainingSeconds(at: now),
+        plannedEnd: current.machine.effectiveEnd(at: now) ?? plannedEnd,
+        remainingSeconds: current.machine.remainingSeconds(at: now),
         pausedSeconds: current.machine.pausedSeconds(at: now), calendarTitle: current.calendarTitle,
         extendOptions: SessionMachine.extendOptions)
     }
@@ -533,7 +550,7 @@ final class FocusCore: SessionPresenterDelegate {
     } else {
       publish(.show)
     }
-    let until = open.machine.plannedEnd.map { " until \(ISO.local($0))" } ?? ""
+    let until = open.machine.effectiveEnd(at: now).map { " until \(ISO.local($0))" } ?? ""
     throw FocusError(
       "a session is already running: \"\(open.row.goal)\" (id \(open.row.id))\(until); it is at the end sheet, finish or extend it first",
       extra: ["session": activeJSON()])
@@ -584,7 +601,8 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   private func begin(_ new: NewSession, calendarTitle: String, settings: FocusConfig) throws -> Reply {
-    var machine = SessionMachine()
+    // An ad-hoc session asked for a length: a pause stops its clock.
+    var machine = SessionMachine(pauseStopsClock: new.sourceEventId == nil)
     _ = try machine.apply(.start(at: new.startedAt, plannedEnd: new.plannedEnd ?? new.startedAt)).get()
     let id = try db.insertSession(new)
     guard let row = try db.session(id: id) else { throw FocusError("session \(id) vanished") }
@@ -639,7 +657,8 @@ final class FocusCore: SessionPresenterDelegate {
     let destination = skipsLog ? nil : logDestination(for: open.row, settings: settings)
     let close = SessionClose(
       endedAt: machine.endedAt ?? now, endReason: (machine.endReason ?? .manual).rawValue, rating: machine.rating,
-      note: machine.note, logCalendarId: destination?.id, logCalendarName: destination?.name, logSkipped: skipsLog)
+      note: machine.note, logCalendarId: destination?.id, logCalendarName: destination?.name, logSkipped: skipsLog,
+      extendedEnd: FocusCore.movedEnd(machine, from: open.row))
     let id = open.row.id
     guard try db.finish(id, close) else {
       endActive()
@@ -964,13 +983,15 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   /// The open session from memory: state running, paused or ending, the
-  /// extended planned end, and the live numbers. Null when idle.
+  /// planned end as it stands now (extensions, and for an ad-hoc session its
+  /// pauses, the open one up to now), and the live numbers. Null when idle.
   private func activeJSON() -> JSONValue {
     guard let current = active else { return .null }
     let now = self.now
     var fields = baseJSON(current.row)
     fields["state"] = .string(current.machine.state.rawValue)
-    fields["plannedEnd"] = .optional(current.machine.plannedEnd.map { ISO.local($0) })
+    fields["plannedEnd"] = .optional(current.machine.effectiveEnd(at: now).map { ISO.local($0) })
+    fields["pauseStopsClock"] = .bool(current.machine.pauseStopsClock)
     fields["extendedSeconds"] = .int(current.machine.extendedSeconds)
     fields["remainingSeconds"] = .int(current.machine.remainingSeconds(at: now))
     fields["pausedSeconds"] = .int(current.machine.pausedSeconds(at: now))

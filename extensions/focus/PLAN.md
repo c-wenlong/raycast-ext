@@ -38,7 +38,8 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 | Blocking configuration | Built-in categories (social, gaming, and the rest below) on by default, a default profile per startable calendar, and an allowlist mode. |
 | What a block looks like | Like Raycast Focus: a dark block page saying "<host> has been blocked", one "Snooze for 3 minutes" button, and the footer "End your focus session to access this page". Snoozes are logged. Apps get the same page as a native window. |
 | Overlapping events | Both are listed in Focus Today; Kai picks, and the session runs until the planned end of the one picked. |
-| Paused past planned end | A paused session goes straight to the end sheet when its planned end passes, same as a running one. |
+| Paused past planned end | A paused calendar session goes straight to the end sheet when its planned end passes, same as a running one. An ad-hoc session's pause stops its clock instead, so it never passes its end while paused. (Changed 2026-09-28; it was every session.) |
+| What pause means | A calendar session (it has a source event) takes a break inside the event: the end stays at the event's end and the countdown keeps falling. An ad-hoc session asked for a length, so pause stops the clock: the time left holds while paused and the planned end (with any extension) moves later by the pause on resume. Timed pauses resume the same way. (Kai, 2026-09-28.) |
 | Browsers | Chrome and Dia for now. Both expose tab URLs over AppleScript (checked on this Mac: Dia's dictionary has `active tab`, `URL`, `title`). |
 | Calendar access | EventKit through Calendar.app, which already syncs the Google account (41 CalDAV calendars found in `Calendar.sqlitedb` on 2026-09-27). No OAuth, works offline, one permission prompt. |
 | Surfaces in v1 | Countdown (floating panel by default, or the menu bar), full-screen block overlay, stats view, end-of-session sheet. |
@@ -65,7 +66,8 @@ idle ──start(event | ad hoc)──▶ running ◀──resume── paused
                                   ├── timer ends ──▶ ending (sheet: Extend +5/+10/+15/+25 or Finish)
                                   ├── manual stop ─▶ ending (same sheet)
                                   └── helper dies ─▶ abandoned (marked on next launch)
-paused ── planned end passes ──▶ ending (same sheet; the deadline is checked every second while paused too)
+paused ── planned end passes ──▶ ending (calendar sessions only; the deadline is checked every second while paused too)
+paused ── resume ──────────────▶ running (ad hoc: the planned end moves later by the pause)
 paused ── manual stop ─────────▶ ending
 ending ──Finish (rating, note)──▶ finished: sqlite row closed, log event written
 ```
@@ -74,6 +76,11 @@ Rules:
 
 - Blocking is on while running and off while paused. Pauses are logged with
   their length; "focused minutes" excludes them.
+- A calendar session's pause is a break inside the event: the planned end
+  stays put and the countdown keeps falling. An ad-hoc session's pause stops
+  the clock: the time left holds, and closing the pause (resume, stop,
+  finish) moves the planned end, and any extended end, later by its length.
+  An extension during an ad-hoc pause adds to that end. (Kai, 2026-09-28.)
 - Extend keeps the same session and the same log row; the log event's end
   time is whatever the real end was.
 - The end sheet keeps blocking on until Kai answers, so the timer running out
@@ -83,8 +90,9 @@ Rules:
   The helper writes a heartbeat to sqlite every 30 seconds for this.
 - If Kai starts a session while one is running, the current one goes to the
   end sheet first.
-- A session still paused when its planned end passes goes to the end sheet
-  at that moment, exactly as if it had been running.
+- A calendar session still paused when its planned end passes goes to the
+  end sheet at that moment, exactly as if it had been running. A paused
+  ad-hoc session never reaches the end sheet by time.
 - Focus Today lists every startable event whose planned end is still ahead,
   overlapping ones included; the session length follows the event picked.
 - Decided while building step 2a (2026-09-27):
@@ -95,7 +103,11 @@ Rules:
     behind: the new end is `max(planned end, now) + extension`. The log's
     "after extending N min" is the sum asked for.
   - The extended end is stored in a new column `extended_end` (schema 2);
-    `planned_end` keeps the planned end. An open row at the end sheet carries
+    `planned_end` keeps the planned end. Since 2026-09-28 it also carries an
+    ad-hoc session's closed pauses (no new column: it already held "the end
+    the timer runs to"), while `extended_seconds` stays the extensions asked
+    for. A restart mid-pause rebuilds the frozen time left from it and the
+    open pause row. An open row at the end sheet carries
     its `end_reason` ("timer" or "manual") so a quick restart brings the sheet
     back; Finish records that reason unless the client names one.
   - Abandoned means a heartbeat more than 90 s old at launch (three missed
@@ -279,7 +291,7 @@ create table sessions (
   ended_at text,
   end_reason text,             -- timer, manual, abandoned; on an open row: at the end sheet, and why
   extended_seconds integer not null default 0,
-  extended_end text,           -- planned_end plus extensions, null until extended (schema 2)
+  extended_end text,           -- the end the timer runs to when not planned_end: extensions, plus an ad-hoc session's closed pauses (schema 2)
   rating integer,              -- 1 to 5
   note text,
   log_calendar_id text,        -- EKCalendar the log event was (or will be) written to, fixed at Finish
@@ -378,9 +390,13 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   time; I'd like the meter to move smoothly, and the speed would be
   inversely proportional to the time allocated"): the fill moves on with
   the wall clock between the once-a-second updates at 1 / total per second.
-  It keeps moving while paused, because a pause does not move the planned
-  end and the digits keep counting down; freezing it would leave it behind
-  the digits and jump at resume.
+  It keeps moving while a calendar session is paused, because that pause
+  does not move the planned end and the digits keep counting down; freezing
+  it would leave it behind the digits and jump at resume. While an ad-hoc
+  session is paused (2026-09-28) the digits hold and the reported end moves
+  on with the clock, so the sweep re-anchors at the same time left each
+  second; the fill is the span so far over the whole span, so it edges
+  forward during the pause and never jumps at resume.
 - Lava lamp (2026-09-28, the second half of that ask): soft pale-green
   blobs drift slowly inside the pill so it looks alive. They are drawn in
   the glass's content, over the tint and under the sweep, text and edges,

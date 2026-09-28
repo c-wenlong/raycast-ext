@@ -60,6 +60,9 @@ struct SessionClose: Equatable {
   var logCalendarId: String?
   var logCalendarName: String?
   var logSkipped: Bool = false
+  /// A new `extended_end`, when closing moved it (an ad-hoc session closed
+  /// while paused); nil keeps the stored one.
+  var extendedEnd: Date? = nil
 }
 
 private enum SQLValue {
@@ -247,13 +250,13 @@ final class Database {
       let changed = try run(
         """
         update sessions set ended_at = ?, end_reason = ?, rating = ?, note = ?, log_calendar_id = ?,
-          log_calendar_name = ?, log_skipped = ?, last_heartbeat = ?
+          log_calendar_name = ?, log_skipped = ?, last_heartbeat = ?, extended_end = coalesce(?, extended_end)
         where id = ? and ended_at is null
         """,
         [
           SQLValue(close.endedAt), .text(close.endReason), SQLValue(close.rating), SQLValue(close.note),
           SQLValue(close.logCalendarId), SQLValue(close.logCalendarName), .int(close.logSkipped ? 1 : 0),
-          SQLValue(close.endedAt), .int(id),
+          SQLValue(close.endedAt), SQLValue(close.extendedEnd), .int(id),
         ])
       guard changed == 1 else { return false }
       try run(
