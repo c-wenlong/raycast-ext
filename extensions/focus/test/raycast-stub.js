@@ -5,6 +5,7 @@ exports.environment = { assetsPath: "/nonexistent/focus-assets" };
 exports.getPreferenceValues = () => ({});
 exports.getApplications = async () => [];
 exports.closeMainWindow = async () => undefined;
+exports.PopToRootType = { Default: "default", Immediate: "immediate", Suspended: "suspended" };
 
 // In-memory LocalStorage with the async API Raycast has; `_reset` is for tests.
 const localStore = new Map();
