@@ -5,6 +5,7 @@ import {
   Icon,
   Image,
   Toast,
+  closeMainWindow,
   showToast,
 } from "@raycast/api";
 import { useCallback, useEffect, useState } from "react";
@@ -151,6 +152,9 @@ export default function AdhocSessionCommand() {
       setLoaded({ ...loaded, open: session });
       setGoal("");
       setCustom("");
+      // Like Raycast Focus: the window goes away and the countdown takes over.
+      // A failure to close is not a failed start: the session is running.
+      await closeMainWindow({ clearRootSearch: true }).catch(() => undefined);
     } catch (error) {
       // A refusal because a session is open has already sent that session
       // to the end sheet; ask for it so the toast can name it.
