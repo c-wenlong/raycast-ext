@@ -45,8 +45,6 @@ import { durationText } from "./lib/time";
 interface Loaded {
   calendars: Calendar[];
   config: FocusConfig;
-  // The open session, if any, for the note at the top.
-  open: Session | null;
 }
 
 interface Errors {
@@ -76,14 +74,13 @@ export default function AdhocSessionCommand() {
     setIsLoading(true);
     try {
       const daemon = getDaemon();
-      const [config, calendars, lastUsed, open] = await Promise.all([
+      const [config, calendars, lastUsed] = await Promise.all([
         readConfig(),
         daemon.calendars(),
         lastAdhocCalendar().catch(() => undefined),
-        daemon.status().catch((): Session | null => null),
       ]);
       const initial = initialAdhocCalendar(calendars, lastUsed, config);
-      setLoaded({ calendars, config, open });
+      setLoaded({ calendars, config });
       setCalendarId(initial ?? "");
       setProfile(
         adhocProfileFor(initial, config, profileNames(config.profiles)),
@@ -149,7 +146,6 @@ export default function AdhocSessionCommand() {
       toast.style = Toast.Style.Success;
       toast.title = text.title;
       toast.message = text.message;
-      setLoaded({ ...loaded, open: session });
       setGoal("");
       setCustom("");
       // Like Raycast Focus: the window goes away and the countdown takes over.
