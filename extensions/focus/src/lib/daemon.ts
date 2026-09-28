@@ -76,14 +76,19 @@ export interface FinishResult {
 }
 
 // The toast after Finish from Raycast. The helper fixes the destination at
-// Finish and returns it on the session; the config's override name is only
-// a fallback for an older helper.
+// Finish and returns it on the session, its name null when it could not be
+// looked up (no Calendar access); the config's override name is only a
+// fallback for an older helper that leaves the field out, never for that
+// null, since the override may have changed since the view loaded.
 export function finishToastText(
   result: FinishResult,
   logCalendarName: string | null,
 ): string {
   if (result.logSkipped) return "Not logged: the session had no calendar";
-  const name = result.session.logCalendarName ?? logCalendarName;
+  const name =
+    result.session.logCalendarName === undefined
+      ? logCalendarName
+      : result.session.logCalendarName;
   if (!result.logPending) return name ? `Logged to ${name}` : "Logged";
   return name
     ? `The log event is waiting for ${name}`

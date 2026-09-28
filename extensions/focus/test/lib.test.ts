@@ -679,6 +679,15 @@ const cases: Case[] = [
         finishToastText(result({ logPending: true }), null),
         "The log event is waiting; see Focus Today",
       );
+      // The helper returned the destination without a name (no access): the
+      // config's override name, which may be stale, is not used.
+      assert.equal(
+        finishToastText(
+          result({ logPending: true }, { logCalendarName: null }),
+          "Old override (x)",
+        ),
+        "The log event is waiting; see Focus Today",
+      );
       assert.equal(
         finishToastText(result({ logSkipped: true }), "Log (x)"),
         "Not logged: the session had no calendar",

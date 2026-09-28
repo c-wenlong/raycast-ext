@@ -306,7 +306,7 @@ export default function FocusStatsCommand() {
                 {session.logPending ? (
                   <List.Item.Detail.Metadata.Label
                     title="Log event"
-                    text="waiting for its calendar"
+                    text="waiting to be written"
                   />
                 ) : null}
               </List.Item.Detail.Metadata>
