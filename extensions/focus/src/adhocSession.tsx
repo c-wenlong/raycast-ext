@@ -167,7 +167,6 @@ export default function AdhocSessionCommand() {
       toast.style = Toast.Style.Failure;
       toast.title = text.title;
       toast.message = text.message;
-      setLoaded({ ...loaded, open });
     } finally {
       setIsLoading(false);
     }
