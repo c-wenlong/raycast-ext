@@ -118,10 +118,13 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   one level above `.floating` (so the block window, which is `.floating`,
   never covers it; the end sheet is above both). Shown while a session is
   running or paused; hidden at the end sheet.
-  Idle it is a 34 pt pill: a 22 pt chip (radius 8) with the time in 13 pt
-  monospaced digits, then the goal in 13 pt semibold (cut at 220 pt). The
-  chip fills green from the left with `1 - remaining / (plannedEnd - start)`,
-  so an extension lowers the fill; digits over the green are drawn white.
+  The pill has one size in both states, the controls row's (40 pt tall and
+  as wide as Pause, Complete, "…" and the handle), so hovering never resizes
+  it: a 28 pt chip (radius 8) with the time in 13 pt monospaced digits, then
+  the goal in 13 pt semibold, truncated to fit. The whole pill fills green
+  from the left with `1 - remaining / (plannedEnd - start)` (the chip sits
+  translucent on top), so an extension lowers the fill; digits over the
+  green are drawn white.
   Paused shows a pause glyph before the digits, a dimmer chip and fill.
   Canvas `white 0.115 @ 93 %` over a HUD blur, 1 px border `white 10 %`,
   radius 14.
