@@ -352,18 +352,19 @@ no rating or note when left alone. Decided while building it:
   128 pt, the banner's type (14 pt semibold goal over 13 pt grey status),
   stars and note on one row, extend and Finish as small pills on the next.
   Every control still works (stars, note, extend, Finish, 1 to 5, Return).
-- Left alone for 5 s it finishes the session as Finish would with nothing
-  filled in (no rating, no note). It fades slowly over the whole 5 s, from
-  the moment it appears, in one linear animation (Kai: no hold then a
-  one-second cliff). Hovering holds it at full opacity; leaving starts the
-  5 s fade again from opaque.
-- Using it (a star, 1 to 5, typing a note, Extend, Finish, Return) cancels
-  the auto-finish; it then waits for Finish or Extend as before, with
+- Left alone it stays opaque for 1 s, then fades slowly and linearly to
+  clear over 5 s, and at 6 s finishes the session as Finish would with
+  nothing filled in (no rating, no note). Kai asked for a slow fade over 5 s
+  rather than a hold and a one-second cliff, then for the 1 s lag first so
+  it is not abrupt. Hovering holds it at full opacity; leaving starts the
+  1 s hold and the fade again.
+- Using it (a click anywhere on it, a star, 1 to 5, typing a note, Extend,
+  Finish, Return) cancels the auto-finish; it then waits for Finish or Extend as before, with
   blocking on. Keys in its first 0.8 s are swallowed and do not count.
 - The same session's card back after an extend keeps its stars and note, and
   its auto-finish sends them (as Finish would) rather than dropping them.
 - The countdown, hover and "used" flag are presenter state, not session
-  state; a helper restart at the sheet shows a fresh card with a fresh 5 s.
+  state; a helper restart at the sheet shows a fresh card with a fresh 6 s.
 
 ## Open questions
 

@@ -11,11 +11,11 @@ import Foundation
 //
 // It shows at once, top centre of the main screen, one level above the
 // completion glow, and UIPresenter finishes the session by itself (as Finish
-// with nothing filled in) when it is left alone for `autoFinishAfter`,
-// fading from opaque to clear over that whole time. Hovering holds it
-// opaque and starts the time again on leaving; using it (`onEngage`: a
-// star, a key, the note) cancels it, and the card then waits for Finish or
-// Extend.
+// with nothing filled in) when it is left alone for `autoFinishAfter`: it
+// holds opaque for `holdBeforeFade`, then fades to clear over
+// `fadeDuration`. Hovering holds it opaque and starts that again on
+// leaving; using it (`onEngage`: a click anywhere on it, a key, the note)
+// cancels it, and the card then waits for Finish or Extend.
 //
 // The type follows the completion banner it replaced (14 pt semibold over
 // 13 pt grey), the canvas and blur the floating panel's, and the controls
@@ -62,10 +62,17 @@ enum SheetStyle {
 
 /// Borderless; becomes key without activating the app, and ignores Escape.
 final class EndSheetPanel: NSPanel {
+  /// Any mouse button pressed anywhere on the card, before the view under
+  /// it (a star, a button, the note, or bare canvas) sees it.
+  var onMouseDown: (() -> Void)?
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
   /// Escape never dismisses: the sheet waits for Extend or Finish.
   override func cancelOperation(_ sender: Any?) {}
+  override func sendEvent(_ event: NSEvent) {
+    if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) { onMouseDown?() }
+    super.sendEvent(event)
+  }
 }
 
 /// The sheet's background view; first responder while the note is not being
@@ -357,8 +364,8 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
   /// The session the sheet is (or was last) asking about.
   private(set) var session: SessionView?
-  /// Something on the card was used: a star, a key, the note. UIPresenter
-  /// stops the auto-finish for good.
+  /// Something on the card was used: a click anywhere on it, a key, the
+  /// note. UIPresenter stops the auto-finish for good.
   var onEngage: (() -> Void)?
   /// The card went away (answered, hidden or dismissed).
   var onHide: (() -> Void)?
@@ -380,9 +387,13 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   var headless = false
 
   static let width: CGFloat = 360
-  /// Left alone this long, the card finishes the session by itself; it
-  /// fades from opaque to clear over all of it.
-  static let autoFinishAfter: TimeInterval = 5
+  /// Left alone, the card stays opaque this long (so it does not start
+  /// fading the moment it appears),
+  static let holdBeforeFade: TimeInterval = 1
+  /// then fades linearly to clear over this long,
+  static let fadeDuration: TimeInterval = 5
+  /// and then finishes the session by itself.
+  static let autoFinishAfter: TimeInterval = holdBeforeFade + fadeDuration
   /// One above the completion glow (and so above the floating panel and
   /// the block window).
   static let level = NSWindow.Level(rawValue: CompletionStyle.glowLevel.rawValue + 1)
@@ -446,6 +457,7 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
   private func buildPanel() {
     panel.title = "Focus"
+    panel.onMouseDown = { [weak self] in self?.onEngage?() }
     panel.appearance = NSAppearance(named: .darkAqua)
     panel.backgroundColor = .clear
     panel.isOpaque = false

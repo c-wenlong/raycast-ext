@@ -202,7 +202,7 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
 
   // MARK: End card (auto-finish)
 
-  /// A new card: opaque, fading out and finishing by itself over `autoFinishAfter`.
+  /// A new card: opaque, then fading out and finishing by itself (`autoFinishAfter`).
   private func startEndCard(_ id: Int) {
     stopEndCard()
     endCard = (id, false, false)
@@ -223,30 +223,37 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
     endCardTasks = []
   }
 
-  /// The whole 5 s again, from now: opaque, then one continuous linear fade
-  /// to clear over `autoFinishAfter` (an animation live, 60 steps a second
-  /// on the scheduler headless), then the finish. Only showing the card and
-  /// the pointer leaving it start this; `update` never does.
+  /// The whole countdown again, from now: opaque for `holdBeforeFade`,
+  /// then one continuous linear fade to clear over `fadeDuration` (an
+  /// animation live, 60 steps a second on the scheduler headless), then the
+  /// finish at `autoFinishAfter`. Only showing the card and the pointer
+  /// leaving it start this; `update` never does.
   private func armEndCard() {
     cancelEndCardCountdown()
+    setEndCardOpaque()
+    endCardTasks.append(scheduler.after(EndSheet.holdBeforeFade) { [weak self] in self?.fadeEndCard() })
+    endCardTasks.append(scheduler.after(EndSheet.autoFinishAfter) { [weak self] in self?.autoFinish() })
+  }
+
+  private func fadeEndCard() {
+    guard let card = endCard, !card.engaged, !card.pointerInside else { return }
     let window = endSheet.panel
-    let life = EndSheet.autoFinishAfter
+    let fade = EndSheet.fadeDuration
     window.alphaValue = 1
     if endSheet.headless {
-      let steps = Int(life * 60)
+      let steps = Int(fade * 60)
       for step in 1...steps {
         let alpha = 1 - CGFloat(step) / CGFloat(steps)
-        endCardTasks.append(scheduler.after(life * Double(step) / Double(steps)) { window.alphaValue = alpha })
+        endCardTasks.append(scheduler.after(fade * Double(step) / Double(steps)) { window.alphaValue = alpha })
       }
     } else {
       // Replaces any snap back to opaque still running.
       NSAnimationContext.runAnimationGroup { context in
-        context.duration = life
+        context.duration = fade
         context.timingFunction = CAMediaTimingFunction(name: .linear)
         window.animator().alphaValue = 0
       }
     }
-    endCardTasks.append(scheduler.after(life) { [weak self] in self?.autoFinish() })
   }
 
   /// Left alone: the same as Finish with nothing filled in (EndSheet.finish
@@ -434,9 +441,8 @@ func installEditMenu() {
 /// capture, FOCUS_UI_DEMO_COMPLETE=1 to play the completion (sound, edge
 /// glow) with the card, as when a real timer runs out,
 /// FOCUS_UI_DEMO_HOVER=<from>-<to> (seconds after the card shows) to report
-/// the pointer over the card in that window and far from it otherwise (a
-/// synthetic hover through the real poll; the real pointer's crossings are
-/// only logged), and FOCUS_UI_DEMO_CAPTURE=<folder> to write what the live
+/// the pointer over the card in that window (a synthetic hover through the
+/// real poll; the real pointer works as usual outside it), and FOCUS_UI_DEMO_CAPTURE=<folder> to write what the live
 /// windows draw every half second (panel.png, glow.png at a quarter size,
 /// state.txt) and, while the card shows, every quarter second: card-<ms>.png
 /// (the card at its current alpha over grey), screen-<ms>.png (the main
@@ -484,20 +490,23 @@ final class UIDemo: SessionPresenterDelegate {
     let hover = (environment["FOCUS_UI_DEMO_HOVER"] ?? "").split(separator: "-").compactMap { TimeInterval($0) }
     hoverWindow = hover.count == 2 && hover[0] <= hover[1] ? hover[0]...hover[1] : nil
     ui.delegate = self
-    // Tracking-area crossings go to stderr; with a synthetic hover they are
-    // not passed on, so the real pointer cannot disturb a capture.
-    let synthetic = hoverWindow != nil
+    // Tracking-area crossings and clicks on the card go to stderr too.
     ui.endSheet.onPointer = { [weak self, weak ui] inside in
-      self?.say("tracking area: pointer \(inside ? "entered" : "left") the card\(synthetic ? " (ignored)" : "")")
-      if !synthetic { ui?.endCardPointerMoved(inside: inside) }
+      self?.say("tracking area: pointer \(inside ? "entered" : "left") the card")
+      ui?.endCardPointerMoved(inside: inside)
+    }
+    let engage = ui.endSheet.onEngage
+    ui.endSheet.onEngage = { [weak self] in
+      self?.say("the card was used: no auto-finish")
+      engage?()
     }
     if let hoverWindow {
       // The poll asks where the pointer is: over the card's middle inside
-      // the window, far away otherwise.
+      // the window, the real pointer otherwise.
       ui.pointerLocation = { [weak self, weak ui] in
         guard let self, let ui, let shown = self.cardShownAt,
           hoverWindow.contains(Date().timeIntervalSince(shown))
-        else { return NSPoint(x: -100_000, y: -100_000) }
+        else { return NSEvent.mouseLocation }
         let frame = ui.endSheet.frame
         return NSPoint(x: frame.midX, y: frame.midY)
       }

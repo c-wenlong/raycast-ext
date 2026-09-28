@@ -98,9 +98,9 @@ Position) and a handle to drag it; where you leave it is remembered. When the
 timer runs out a sound plays and the screen edges glow green, and the end
 card (a compact notification with the rating, note, Extend and Finish)
 shows top centre at once. The card also shows for Complete and Stop. It
-fades out slowly over 5 seconds and then finishes the session with no rating
-or note; hovering it holds it, and clicking a star or typing a note keeps it
-until you press Finish or Extend.
+stays for a second, fades out slowly over the next 5 seconds and then
+finishes the session with no rating or note; hovering it holds it, and
+clicking it or typing a note keeps it until you press Finish or Extend.
 Focus Settings' Countdown field (or the menu bar item's "Move to Floating
 Panel") switches between the panel and the menu bar.
 
