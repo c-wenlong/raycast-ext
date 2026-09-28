@@ -101,9 +101,10 @@ the session goes, and the goal. Hover it for Pause (1, 2, 5 or 10 minutes, or
 until Resume), Complete (goes to the end sheet), "…" (Edit opens Focus Today,
 Cancel ends the session with no rating, Move to Menu Bar, Reset Panel
 Position) and a handle to drag it; where you leave it is remembered. When the
-timer runs out a sound plays and the screen edges glow green, and the end
-card (a compact notification with the rating, note, Extend and Finish)
-shows top centre at once. The card also shows for Complete and Stop. It
+session ends (the timer runs out, or you press Complete or Stop) a sound
+plays and the screen edges glow green, and the end card (a compact
+notification with the rating, note, Extend and Finish) shows top centre at
+once. It
 stays for a second, fades out slowly over the next 5 seconds and then
 finishes the session with no rating or note; hovering it holds it, and
 clicking it or typing a note keeps it until you press Finish or Extend.

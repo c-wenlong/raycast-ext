@@ -208,8 +208,9 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   the wider, taller controls row both fit in the visible frame (below the
   menu bar, clear of the Dock) of the screen it overlaps most.
 - **Completion** (`Completion.swift`): when `showEndSheet` gets a session
-  whose timer ran out (`EndSheet.headline` reads "Time's up") and this UI saw
-  that session running or paused, it plays `NSSound(named: "Glass")` and
+  this UI saw running or paused (the timer ran out, the planned end passed
+  while paused, or Complete/Stop was pressed; Cancel never reaches the card),
+  it plays `NSSound(named: "Glass")` and
   orders a click-through `.screenSaver` window over every screen with a soft
   green vignette (`#2ECC71` at 85 % right at the edge, easing to nothing
   170 pt in, its inner boundary rounded to about 120 pt at the corners; nested

@@ -1022,6 +1022,8 @@ func sessionFinished() {
 }
 
 fake.calls.removeAll()
+// Earlier sheet tests already played the completion (any arrival at the card does), so count from here.
+sound.plays = 0
 check("no sound yet", sound.plays == 0)
 let startTime = scheduler.time
 let over = timerRunsOut(40)
@@ -1291,14 +1293,16 @@ scheduler.advance(6)
 check("left alone, it finishes with the kept rating", fake.calls == ["extend 300", "finish 4 nil"], "\(fake.calls)")
 sessionFinished()
 
-// Manual stop: no sound or glow, the same card and timer.
+// Manual stop: the sound and glow play too (Kai: Complete and Finish felt
+// silent), the same card and timer.
 fake.calls.removeAll()
 let soundsBefore = sound.plays
 ui.update(session(id: 60, remaining: 600, started: -900))
 let stopped = session(id: 60, state: "ending", remaining: 0, started: -900, plannedEnd: 600)
 ui.update(stopped)
 ui.showEndSheet(stopped)
-check("manual stop: no sound, the card at once", sound.plays == soundsBefore && sheet.isVisible && sheet.statusLabel.stringValue.hasPrefix("Stopped"))
+check("manual stop: the sound plays and the card is at once", sound.plays == soundsBefore + 1 && sheet.isVisible && sheet.statusLabel.stringValue.hasPrefix("Stopped"))
+check("manual stop: the glow shows", ui.completion.isGlowVisible)
 check("manual stop: top centre too", sheet.frame == cardFrame, "\(sheet.frame)")
 scheduler.advance(5.99)
 check("manual stop: nothing before 6 s", finishes().isEmpty)
@@ -1312,14 +1316,14 @@ ui.update(session(id: 61, state: "paused", remaining: 1, started: -1499))
 let pausedOver = session(id: 61, state: "ending", remaining: 0, started: -1500, plannedEnd: 0)
 ui.update(pausedOver)
 ui.showEndSheet(pausedOver)
-check("paused past the end: sound and card at once", sound.plays == soundsBefore + 1 && sheet.isVisible)
+check("paused past the end: sound and card at once", sound.plays == soundsBefore + 2 && sheet.isVisible)
 sheet.finishButton.performClick(nil)
 sessionFinished()
 
 // A daemon restarted at the end sheet: no sound, the card and its timer.
 fake.calls.removeAll()
 ui.showEndSheet(session(id: 62, state: "ending", remaining: 0, plannedEnd: -60))
-check("restart at the sheet: no sound, the card at once", sound.plays == soundsBefore + 1 && sheet.isVisible)
+check("restart at the sheet: no sound, the card at once", sound.plays == soundsBefore + 2 && sheet.isVisible)
 scheduler.advance(6)
 check("restart at the sheet: finished at 6 s", fake.calls == ["finish nil nil"], "\(fake.calls)")
 sessionFinished()

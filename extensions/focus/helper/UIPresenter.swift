@@ -177,15 +177,15 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
   }
 
   /// The sheet shows at once as the end card, top centre of the main screen
-  /// (the glow's screen rule). When the timer ran out on a session this UI
-  /// saw live, the sound and glow play with it.
+  /// (the glow's screen rule). The sound and glow play with it whenever a
+  /// session this UI saw live reaches the card, whether the timer ran out or
+  /// Kai pressed Complete or Stop (Cancel never reaches the card).
   func showEndSheet(_ view: SessionView) {
     onMain { [self] in
       lastView = view
       menuBar.update(display == .panel ? nil : view)
       floating.hide()
-      let timerRanOut = EndSheet.headline(view, now: clock()) == "Time's up"
-      if completionEnabled, timerRanOut, liveSessionId == view.id, !endSheet.isVisible {
+      if completionEnabled, liveSessionId == view.id, !endSheet.isVisible {
         liveSessionId = nil
         completion.play(screens: screens())
       }
