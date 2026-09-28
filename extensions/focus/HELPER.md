@@ -157,7 +157,8 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   if the pill lies fully inside some screen vertically and at least 40 pt
   across; otherwise, and when its screen goes away mid-session, the default.
   A restored or dropped panel then slides just far enough that the pill and
-  the wider, taller controls row both fit on the screen it overlaps most.
+  the wider, taller controls row both fit in the visible frame (below the
+  menu bar, clear of the Dock) of the screen it overlaps most.
 - **Completion** (`Completion.swift`): when `showEndSheet` gets a session
   whose timer ran out (`EndSheet.headline` reads "Time's up") and this UI saw
   that session running or paused, it plays `NSSound(named: "Glass")`, orders

@@ -709,7 +709,8 @@ final class FloatingPanel: NSObject {
   }
 
   /// `idle` moved just enough that both the pill and the wider, taller
-  /// controls row laid out from it lie on the screen it overlaps most, so a
+  /// controls row laid out from it lie in the visible frame (below the menu
+  /// bar, clear of the Dock) of the screen it overlaps most, so a
   /// panel parked half off an edge still shows every control on hover.
   static func fitted(_ idle: NSRect, controlsWidth: CGFloat, anchoredRight: Bool, screens: [ScreenGeometry]) -> NSRect {
     let hover = resized(idle, to: NSSize(width: controlsWidth, height: PanelStyle.hoverHeight), anchoredRight: anchoredRight)
@@ -719,7 +720,9 @@ final class FloatingPanel: NSObject {
       return overlap.isNull ? 0 : overlap.width * overlap.height
     }
     guard let screen = screens.max(by: { area($0) < area($1) }), area(screen) > 0 else { return idle }
-    let bounds = screen.frame
+    // The visible frame: the panel sits below the menu bar's level, so any
+    // part under the menu bar (or the Dock) could not be reached.
+    let bounds = screen.visibleFrame
     var dx: CGFloat = 0
     var dy: CGFloat = 0
     if envelope.minX < bounds.minX { dx = bounds.minX - envelope.minX }
