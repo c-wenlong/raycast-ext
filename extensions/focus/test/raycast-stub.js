@@ -3,6 +3,7 @@
 // never used to find a real binary.
 exports.environment = { assetsPath: "/nonexistent/focus-assets" };
 exports.getPreferenceValues = () => ({});
+exports.getApplications = async () => [];
 
 // In-memory LocalStorage with the async API Raycast has; `_reset` is for tests.
 const localStore = new Map();

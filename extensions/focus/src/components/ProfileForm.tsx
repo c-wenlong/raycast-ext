@@ -4,10 +4,11 @@ import {
   Form,
   Icon,
   Toast,
+  getApplications,
   showToast,
   useNavigation,
 } from "@raycast/api";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../lib/daemon";
 import {
   CATEGORIES,
@@ -16,6 +17,9 @@ import {
   ProfileEntry,
   ProfileErrors,
   ProfileSpec,
+  InstalledApp,
+  alignSelection,
+  appPickerItems,
   draftFor,
   validateProfile,
 } from "../lib/profiles";
@@ -47,6 +51,47 @@ export function ProfileForm(props: {
   const [draft, setDraft] = useState<ProfileDraft>(() => draftFor(props.entry));
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [isSaving, setIsSaving] = useState(false);
+  // Installed apps for the Extra Apps picker; null until loaded. `appsLoad`
+  // counts loads so "Reload Installed Apps" can run the lookup again after a
+  // failure (or after installing an app) without closing the form.
+  const [installed, setInstalled] = useState<InstalledApp[] | null>(null);
+  const [appsLoad, setAppsLoad] = useState(0);
+  const [appsFailed, setAppsFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setInstalled(null);
+    getApplications()
+      .then((apps) => {
+        if (cancelled) return;
+        setInstalled(apps);
+        setAppsFailed(false);
+      })
+      .catch(async (error) => {
+        if (cancelled) return;
+        setInstalled([]);
+        setAppsFailed(true);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Could not list installed apps",
+          message: `${errorMessage(error)}. Use Reload Installed Apps (⌘R) to try again.`,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [appsLoad]);
+
+  // Rebuilt only when the installed list or the chosen apps change, not on
+  // every keystroke in another field.
+  const appItems = useMemo(
+    () => appPickerItems(installed ?? [], draft.apps),
+    [installed, draft.apps],
+  );
+  const appValue = useMemo(
+    () => alignSelection(draft.apps, appItems),
+    [draft.apps, appItems],
+  );
 
   function update<K extends keyof ProfileDraft>(
     key: K,
@@ -102,6 +147,12 @@ export function ProfileForm(props: {
             title="Save Profile"
             icon={Icon.CheckCircle}
             onSubmit={handleSubmit}
+          />
+          <Action
+            title="Reload Installed Apps"
+            icon={Icon.ArrowClockwise}
+            shortcut={{ modifiers: ["cmd"], key: "r" }}
+            onAction={() => setAppsLoad((n) => n + 1)}
           />
         </ActionPanel>
       }
@@ -169,15 +220,30 @@ export function ProfileForm(props: {
           />
         ))}
       </Form.TagPicker>
-      <Form.TextArea
+      <Form.TagPicker
         id="apps"
         title="Extra Apps"
-        placeholder={"com.apple.Music\ncom.spotify.client"}
-        info={`One bundle id per line. Find an app's with: osascript -e 'id of app "Slack"'`}
-        value={draft.apps}
+        placeholder={
+          installed === null
+            ? "Loading installed apps…"
+            : appsFailed
+              ? "Installed apps did not load: press ⌘R to try again"
+              : "Pick apps"
+        }
+        info="Installed apps, on top of the categories. An app saved by hand that is not installed shows as Not installed so it can be removed."
+        value={appValue}
         error={errors.apps}
         onChange={(value) => update("apps", value)}
-      />
+      >
+        {appItems.map((item) => (
+          <Form.TagPicker.Item
+            key={item.value}
+            value={item.value}
+            title={item.title}
+            icon={item.path ? { fileIcon: item.path } : Icon.Warning}
+          />
+        ))}
+      </Form.TagPicker>
       <Form.TextArea
         id="hosts"
         title="Extra Hosts"

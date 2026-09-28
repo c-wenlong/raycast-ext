@@ -292,7 +292,9 @@ export interface ProfileDraft {
   name: string;
   mode: string;
   categories: string[];
-  apps: string;
+  // Bundle ids picked in the app picker (installed apps, plus any saved id
+  // that is not installed, kept so it can be removed).
+  apps: string[];
   hosts: string;
 }
 
@@ -339,7 +341,7 @@ export function validateProfile(
   if (unknown.length > 0) {
     errors.categories = `Remove unknown ${unknown.length === 1 ? "category" : "categories"} ${unknown.map((id) => `"${id}"`).join(", ")}`;
   }
-  const apps = splitLines(draft.apps);
+  const apps = draft.apps.map((app) => app.trim()).filter(Boolean);
   const appProblem = apps.map(bundleIdProblem).find((p) => p !== null);
   if (appProblem) errors.apps = appProblem;
   const hosts = splitLines(draft.hosts);
@@ -365,7 +367,7 @@ export function draftFor(entry: ProfileEntry | null): ProfileDraft {
       name: "",
       mode: "blocklist",
       categories: [...CATEGORY_IDS],
-      apps: "",
+      apps: [],
       hosts: "",
     };
   }
@@ -373,7 +375,7 @@ export function draftFor(entry: ProfileEntry | null): ProfileDraft {
     name: entry.name,
     mode: entry.spec.mode,
     categories: [...entry.spec.categories],
-    apps: entry.spec.apps.join("\n"),
+    apps: [...entry.spec.apps],
     hosts: entry.spec.hosts.join("\n"),
   };
 }
@@ -498,4 +500,68 @@ export function calendarProfileValue(
   calendarId: string,
 ): string {
   return ownValue(calendarProfiles, calendarId) || DEFAULT_PROFILE;
+}
+
+// One installed app as Raycast's getApplications() reports it.
+export interface InstalledApp {
+  name: string;
+  path: string;
+  bundleId?: string;
+}
+
+export interface AppPickerItem {
+  value: string;
+  title: string;
+  // The app's path for its icon; undefined for a saved id that is not installed.
+  path?: string;
+}
+
+// The choices for the Extra Apps picker: every installed app that has a
+// bundle id, by name, then any selected id that is not installed (a hand
+// edit, or an app removed since) so it stays visible and removable. Case
+// differences in ids collapse onto the installed spelling.
+export function appPickerItems(
+  installed: InstalledApp[],
+  selected: string[],
+): AppPickerItem[] {
+  const items: AppPickerItem[] = [];
+  const seen = new Set<string>();
+  const sorted = [...installed]
+    .filter((app) => app.bundleId && app.bundleId.trim())
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) ||
+        a.path.localeCompare(b.path),
+    );
+  for (const app of sorted) {
+    const id = (app.bundleId as string).trim();
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ value: id, title: app.name, path: app.path });
+  }
+  for (const id of selected) {
+    const key = id.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    items.push({ value: id.trim(), title: `Not installed: ${id.trim()}` });
+  }
+  return items;
+}
+
+// Selected ids spelled the way the picker lists them, so a saved
+// "COM.apple.music" selects the installed "com.apple.Music" item.
+export function alignSelection(
+  selected: string[],
+  items: AppPickerItem[],
+): string[] {
+  const byKey = new Map(
+    items.map((item) => [item.value.toLowerCase(), item.value]),
+  );
+  const out: string[] = [];
+  for (const id of selected) {
+    const value = byKey.get(id.trim().toLowerCase());
+    if (value && !out.includes(value)) out.push(value);
+  }
+  return out;
 }
