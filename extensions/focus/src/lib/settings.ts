@@ -78,3 +78,47 @@ export function moveTarget(
     name: config.logCalendarName ?? "the log calendar",
   };
 }
+
+// ---- blocking half (PLAN step 4) ----
+
+export interface Option {
+  value: string;
+  title: string;
+}
+
+// Snooze length choices, in seconds on disk. A saved length that is not one
+// of them (hand-edited) stays selectable as "N seconds" so saving the form
+// does not change it.
+export const SNOOZE_MINUTES = [1, 3, 5, 10] as const;
+
+export function snoozeOptions(savedSeconds: number): Option[] {
+  const options: Option[] = SNOOZE_MINUTES.map((minutes) => ({
+    value: String(minutes * 60),
+    title: `${minutes} minute${minutes === 1 ? "" : "s"}`,
+  }));
+  if (!options.some((option) => option.value === String(savedSeconds))) {
+    options.push({
+      value: String(savedSeconds),
+      title: `${savedSeconds} seconds`,
+    });
+  }
+  return options;
+}
+
+// The browsers whose front tab the helper watches (PLAN "Browsers").
+export const KNOWN_BROWSERS: readonly Option[] = [
+  { value: "com.google.Chrome", title: "Google Chrome" },
+  { value: "company.thebrowser.dia", title: "Dia" },
+];
+
+// The two known browsers, then any other saved bundle id as it is, so an
+// id added by hand survives a save.
+export function browserOptions(saved: string[]): Option[] {
+  const options = [...KNOWN_BROWSERS];
+  for (const id of saved) {
+    if (!options.some((option) => option.value === id)) {
+      options.push({ value: id, title: id });
+    }
+  }
+  return options;
+}

@@ -23,8 +23,10 @@ export interface FocusConfig {
   [key: string]: unknown;
 }
 
-// The part of the config Focus Settings writes in this step. Profiles,
-// browsers, snooze length and the deeplink toggle join it in step 4.
+// The keys Focus Settings writes. The Settings form saves everything but
+// `profiles`; the profile editor saves `profiles` (and `calendarProfiles`
+// when a profile is renamed or deleted) on its own, so neither overwrites
+// the other's unsaved state.
 export type ConfigPatch = Partial<
   Pick<
     FocusConfig,
@@ -161,7 +163,18 @@ export async function writeConfig(
   patch: ConfigPatch,
   file: string = CONFIG_PATH,
 ): Promise<FocusConfig> {
+  return updateConfig(() => patch, file);
+}
+
+// Like writeConfig, but the patch is computed from the file as it is right
+// before the write, for changes that depend on what is already saved
+// (renaming a profile rewrites the calendars that use it).
+export async function updateConfig(
+  update: (current: FocusConfig) => ConfigPatch,
+  file: string = CONFIG_PATH,
+): Promise<FocusConfig> {
   const current = normalizeConfig(await readRaw(file));
+  const patch = update(current);
   const next: FocusConfig = { ...current };
   for (const [key, value] of Object.entries(patch)) {
     if (value !== undefined) next[key] = value;

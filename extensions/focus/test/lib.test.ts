@@ -12,9 +12,23 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  ADHOC_PRESET_MINUTES,
+  DEFAULT_ADHOC_MINUTES,
+  LAST_CALENDAR_KEY,
+  adhocCalendarGone,
+  adhocProfileFor,
+  adhocRefusedText,
+  adhocStartedText,
+  initialAdhocCalendar,
+  lastAdhocCalendar,
+  rememberAdhocCalendar,
+  resolveAdhocMinutes,
+} from "../src/lib/adhoc";
+import {
   ConfigError,
   defaultConfig,
   readConfig,
+  updateConfig,
   writeConfig,
 } from "../src/lib/config";
 import {
@@ -33,10 +47,35 @@ import {
   sessionStatusText,
 } from "../src/lib/session";
 import {
+  CATEGORIES,
+  applyProfileDelete,
+  applyProfileSave,
+  builtInDefault,
+  bundleIdProblem,
+  calendarProfileValue,
+  categoryTitle,
+  dedupeApps,
+  draftFor,
+  entrySummary,
+  hostProblem,
+  normalizeHosts,
+  parseProfile,
+  profileEntries,
+  profileNames,
+  profileSummary,
+  pruneCalendarProfiles,
+  remapCalendarProfiles,
+  splitLines,
+  validateProfile,
+} from "../src/lib/profiles";
+import {
   NO_LOG_CALENDAR,
+  SNOOZE_MINUTES,
+  browserOptions,
   moveTarget,
   resolveLogCalendar,
   settingsChoices,
+  snoozeOptions,
 } from "../src/lib/settings";
 import {
   durationText,
@@ -48,6 +87,9 @@ import {
 } from "../src/lib/time";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createFakeDaemon } = require("./fake-daemon.js");
+// The stub @raycast/api (esbuild aliases the import), for its LocalStorage.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const raycastStub = require("@raycast/api");
 
 type Case = [string, () => Promise<void>];
 
@@ -908,6 +950,465 @@ net.createServer((socket) => {
         assert.deepEqual(fake.state.requests.at(-1), { rating: 5, cmd: "finish" });
         assert.equal(await daemon.status(), null);
         await rejectsWith(daemon.stop(), "daemon", /no session is running/);
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  // ---- settings, blocking half (step 4): profiles ----
+  [
+    "profiles: categories mirror helper/Categories.swift (ids, titles, order)",
+    async () => {
+      const swift = readFileSync(path.resolve("helper/Categories.swift"), "utf8");
+      const defs = new Map<string, string>();
+      for (const match of swift.matchAll(/static let (\w+) = BlockCategory\(\s*id: "([^"]+)", title: "([^"]+)"/g)) {
+        defs.set(match[1], JSON.stringify({ id: match[2], title: match[3] }));
+      }
+      const order = /static let all: \[BlockCategory\] = \[([^\]]+)\]/.exec(swift);
+      assert.ok(order, "Categories.all not found");
+      const swiftCategories = order[1].split(",").map((name) => JSON.parse(defs.get(name.trim()) ?? "null"));
+      assert.deepEqual(CATEGORIES.map((c) => ({ id: c.id, title: c.title })), swiftCategories);
+      assert.equal(swiftCategories.length, 6);
+    },
+  ],
+  [
+    "profiles: entries are read like the helper reads them",
+    async () => {
+      assert.deepEqual(parseProfile("deep"), { ok: false, problem: "is not an object" });
+      assert.deepEqual(parseProfile({ categories: "social" }), { ok: false, problem: "categories is not a list" });
+      assert.deepEqual(parseProfile({ hosts: { a: 1 } }), { ok: false, problem: "hosts is not a list" });
+      // Every key optional.
+      assert.deepEqual(parseProfile({}), {
+        ok: true,
+        spec: { mode: "blocklist", categories: [], apps: [], hosts: [] },
+        problems: [],
+      });
+      const parsed = parseProfile({
+        mode: " AllowList ",
+        categories: ["Social", "social", "sports", 3],
+        apps: [" com.a.b ", "", 7],
+        hosts: null,
+        extra: true,
+      });
+      assert.ok(parsed.ok);
+      assert.deepEqual(parsed.spec, { mode: "allowlist", categories: ["social", "sports"], apps: ["com.a.b"], hosts: [] });
+      assert.deepEqual(parsed.problems, ['unknown category "sports"']);
+      const badMode = parseProfile({ mode: "strict" });
+      assert.ok(badMode.ok);
+      assert.equal(badMode.spec.mode, "blocklist");
+      assert.deepEqual(badMode.problems, ['mode "strict" is not blocklist or allowlist']);
+    },
+  ],
+  [
+    "profiles: default comes first (built in when config has none), the rest by name",
+    async () => {
+      const none = profileEntries({});
+      assert.equal(none.length, 1);
+      assert.equal(none[0].name, "default");
+      assert.equal(none[0].builtIn, true);
+      assert.deepEqual(none[0].spec, builtInDefault());
+      assert.deepEqual(builtInDefault().categories, CATEGORIES.map((c) => c.id));
+      assert.equal(entrySummary(none[0]), "Blocklist · all categories (built in)");
+
+      const entries = profileEntries({
+        zeta: { mode: "allowlist" },
+        deep: { categories: "social" },
+        default: { categories: ["news"] },
+        "  ": {},
+        alpha: {},
+      });
+      assert.deepEqual(entries.map((e) => e.name), ["default", "alpha", "deep", "zeta"]);
+      assert.equal(entries[0].builtIn, false);
+      assert.equal(entries[2].malformed, "categories is not a list");
+      assert.equal(entrySummary(entries[2]), "Not readable (categories is not a list); sessions asking for it use default");
+      // A malformed entry cannot be picked for a session.
+      assert.deepEqual(profileNames({ zeta: {}, deep: { apps: "x" } }), ["default", "zeta"]);
+
+      const brokenDefault = profileEntries({ default: [] });
+      assert.equal(brokenDefault[0].malformed, "is not an object");
+      assert.deepEqual(brokenDefault[0].spec, builtInDefault());
+      assert.equal(entrySummary(brokenDefault[0]), "Not readable (is not an object); the built-in default is used");
+      assert.deepEqual(profileNames({ default: [] }), ["default"]);
+    },
+  ],
+  [
+    "profiles: summary line names the mode, categories and extra counts",
+    async () => {
+      assert.equal(profileSummary(builtInDefault()), "Blocklist · all categories");
+      assert.equal(
+        profileSummary({ mode: "allowlist", categories: [], apps: ["com.microsoft.VSCode"], hosts: ["github.com"] }),
+        "Allowlist · no categories · 1 extra app · 1 extra host",
+      );
+      // Canonical order, unknown ids left out of the names.
+      assert.equal(
+        profileSummary({ mode: "blocklist", categories: ["news", "social", "sports"], apps: ["a.b", "c.d"], hosts: ["x.com", "y.com", "z.com"] }),
+        "Blocklist · Social, News · 2 extra apps · 3 extra hosts",
+      );
+      assert.equal(categoryTitle("gaming"), "Gaming");
+    },
+  ],
+  [
+    "profiles: bundle id shape",
+    async () => {
+      for (const good of ["com.tinyspeck.slackmacgap", "desktop.WhatsApp", "com.foo_bar.App-2", "net.battle.app"]) {
+        assert.equal(bundleIdProblem(good), null, good);
+      }
+      assert.equal(bundleIdProblem("Slack"), '"Slack" is not a bundle id');
+      assert.equal(bundleIdProblem("com.tiny speck.x"), '"com.tiny speck.x" has a space');
+      for (const bad of [".com.a", "com..a", "com.a.", "https://com.a", "com/a.b", "-", "com.a!b"]) {
+        assert.notEqual(bundleIdProblem(bad), null, bad);
+      }
+    },
+  ],
+  [
+    "profiles: host shape (lowercase, no scheme, path, port, wildcard or spaces)",
+    async () => {
+      for (const good of ["youtube.com", "m.youtube.com", "www.youtube.com", "a-b.co.uk", "news.ycombinator.com", "10.0.0.1"]) {
+        assert.equal(hostProblem(good), null, good);
+      }
+      assert.equal(hostProblem("https://www.YouTube.com/watch?v=1"), "Write youtube.com (no scheme)");
+      assert.equal(hostProblem("youtube.com/feed"), "Write youtube.com (no path)");
+      assert.equal(hostProblem("YouTube.com"), "Write youtube.com (lowercase)");
+      assert.equal(hostProblem("you tube.com"), '"you tube.com" is not a host (no spaces)');
+      assert.equal(hostProblem("youtube.com:443"), "Write youtube.com (no port)");
+      assert.equal(hostProblem("*.youtube.com"), "Write youtube.com (it covers subdomains)");
+      assert.equal(hostProblem("youtube"), '"youtube" is not a host (like youtube.com)');
+      for (const bad of ["-x.com", "x-.com", "x..com", ".x.com", "x_y.com", "ex@mple.com"]) {
+        assert.notEqual(hostProblem(bad), null, bad);
+      }
+      assert.deepEqual(normalizeHosts(["www.x.com", "x.com", "y.com"]), ["x.com", "y.com"]);
+      assert.deepEqual(dedupeApps(["com.A.b", "com.a.B", "com.c.d"]), ["com.A.b", "com.c.d"]);
+      assert.deepEqual(splitLines(" a \r\n\n b\n  "), ["a", "b"]);
+    },
+  ],
+  [
+    "profiles: validation (name, duplicates, mode, categories, apps, hosts)",
+    async () => {
+      const names = ["default", "deep"];
+      const draft = { name: "reading", mode: "blocklist", categories: ["news", "social"], apps: "", hosts: "" };
+      const errorsOf = (result: ReturnType<typeof validateProfile>) => (result.ok ? {} : result.errors);
+
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, name: "   " }, null, names)), { name: "Give the profile a name" });
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, name: " Deep " }, null, names)), {
+        name: 'There is already a profile named "Deep"',
+      });
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, name: "DEFAULT" }, null, names)), {
+        name: 'There is already a profile named "DEFAULT"',
+      });
+      // Editing keeps its own name; renaming onto another is a duplicate.
+      assert.ok(validateProfile({ ...draft, name: "deep" }, "deep", names).ok);
+      assert.ok(validateProfile({ ...draft, name: "Deep" }, "deep", names).ok);
+      assert.equal(errorsOf(validateProfile({ ...draft, name: "default" }, "deep", names)).name, 'There is already a profile named "default"');
+      // "default" cannot be renamed, whatever the draft says.
+      const kept = validateProfile({ ...draft, name: "renamed" }, "default", names);
+      assert.ok(kept.ok && kept.name === "default");
+
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, mode: "strict" }, null, names)), { mode: "Pick blocklist or allowlist" });
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, categories: ["social", "sports", "games"] }, null, names)), {
+        categories: 'Remove unknown categories "sports", "games"',
+      });
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, apps: "com.a.b\nSlack" }, null, names)), {
+        apps: '"Slack" is not a bundle id',
+      });
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, hosts: "x.com\nhttps://y.com/a" }, null, names)), {
+        hosts: "Write y.com (no scheme)",
+      });
+      // Several problems at once are all reported.
+      assert.deepEqual(Object.keys(errorsOf(validateProfile({ name: "", mode: "x", categories: ["nope"], apps: "a", hosts: "B.com" }, null, names))), [
+        "name",
+        "mode",
+        "categories",
+        "apps",
+        "hosts",
+      ]);
+
+      const saved = validateProfile(
+        {
+          name: "  reading ",
+          mode: "allowlist",
+          categories: ["news", "social"],
+          apps: " com.a.b \n\ncom.A.B\ncom.c.d",
+          hosts: "www.github.com\ngithub.com\n docs.rs ",
+        },
+        null,
+        names,
+      );
+      assert.deepEqual(saved, {
+        ok: true,
+        name: "reading",
+        spec: { mode: "allowlist", categories: ["social", "news"], apps: ["com.a.b", "com.c.d"], hosts: ["github.com", "docs.rs"] },
+      });
+      // A new profile starts as a blocklist of every category.
+      assert.deepEqual(draftFor(null), { name: "", mode: "blocklist", categories: CATEGORIES.map((c) => c.id), apps: "", hosts: "" });
+      assert.deepEqual(draftFor(profileEntries({ deep: { mode: "allowlist", apps: ["a.b", "c.d"], hosts: ["x.com"] } })[1]), {
+        name: "deep",
+        mode: "allowlist",
+        categories: [],
+        apps: "a.b\nc.d",
+        hosts: "x.com",
+      });
+    },
+  ],
+  [
+    "profiles: save, rename and delete rewrite profiles and the calendars using them",
+    async () => {
+      const spec = { mode: "allowlist" as const, categories: [], apps: ["com.a.b"], hosts: ["github.com"] };
+      const current = {
+        profiles: {
+          default: { mode: "blocklist", categories: ["social"] },
+          deep: { mode: "blocklist", note: "keep me", apps: ["x.y"] },
+          study: {},
+        },
+        calendarProfiles: { work: "deep", school: "study", home: "deep" },
+      };
+      // Add: appended, calendars untouched.
+      const added = applyProfileSave(current, null, "new", spec);
+      assert.deepEqual(Object.keys(added.profiles), ["default", "deep", "study", "new"]);
+      assert.deepEqual(added.calendarProfiles, current.calendarProfiles);
+      // Edit in place keeps keys the helper does not read and the position.
+      const edited = applyProfileSave(current, "deep", "deep", spec);
+      assert.deepEqual(Object.keys(edited.profiles), ["default", "deep", "study"]);
+      assert.deepEqual(edited.profiles.deep, { mode: "allowlist", note: "keep me", apps: ["com.a.b"], categories: [], hosts: ["github.com"] });
+      // Rename: same position, calendars follow.
+      const renamed = applyProfileSave(current, "deep", "focus", spec);
+      assert.deepEqual(Object.keys(renamed.profiles), ["default", "focus", "study"]);
+      assert.equal((renamed.profiles.focus as { note?: string }).note, "keep me");
+      assert.deepEqual(renamed.calendarProfiles, { work: "focus", school: "study", home: "focus" });
+      // Editing the built-in default (absent from config) writes it.
+      const defaulted = applyProfileSave({ profiles: {}, calendarProfiles: {} }, "default", "default", builtInDefault());
+      assert.deepEqual(defaulted.profiles, { default: { ...builtInDefault() } });
+      // The input is not mutated.
+      assert.deepEqual(Object.keys(current.profiles), ["default", "deep", "study"]);
+
+      const deleted = applyProfileDelete(current, "deep");
+      assert.deepEqual(Object.keys(deleted.profiles), ["default", "study"]);
+      assert.deepEqual(deleted.calendarProfiles, { school: "study" });
+      assert.throws(() => applyProfileDelete(current, "default"), RangeError);
+
+      // "__proto__" is an ordinary key in config.json (JSON.parse makes it
+      // one); it must stay an own property through a save, never become the
+      // object's prototype, and cannot be picked as a new name.
+      const withProto = JSON.parse('{"profiles": {"__proto__": {"mode": "allowlist"}, "deep": {}}, "calendarProfiles": {"work": "__proto__"}}');
+      const kept = applyProfileSave(withProto, "deep", "deep", spec);
+      assert.deepEqual(Object.keys(kept.profiles), ["__proto__", "deep"]);
+      assert.equal(Object.getPrototypeOf(kept.profiles), Object.prototype);
+      assert.deepEqual(JSON.parse(JSON.stringify(kept.profiles)).__proto__, { mode: "allowlist" });
+      const protoRenamed = applyProfileSave(withProto, "__proto__", "legacy", spec);
+      assert.deepEqual(Object.keys(protoRenamed.profiles), ["legacy", "deep"]);
+      assert.deepEqual(protoRenamed.calendarProfiles, { work: "legacy" });
+      const intoProto = applyProfileSave({ profiles: {}, calendarProfiles: {} }, null, "__proto__", spec);
+      assert.deepEqual(Object.keys(intoProto.profiles), ["__proto__"]);
+      assert.deepEqual(
+        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, null, ["default"]),
+        { ok: false, errors: { name: "Pick another name" } },
+      );
+      // One already in config.json can still be edited under its own name.
+      assert.ok(
+        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, "__proto__", ["default", "__proto__"]).ok,
+      );
+      assert.deepEqual(pruneCalendarProfiles({}, ["__proto__", "toString"]), {});
+      assert.equal(calendarProfileValue({}, "toString"), "default");
+      assert.deepEqual(remapCalendarProfiles({ a: "x", b: "y" }, "x", "default"), { b: "y" });
+    },
+  ],
+  // ---- settings, blocking half: the form's other fields ----
+  [
+    "settings: calendarProfiles are pruned to the calendars still selected",
+    async () => {
+      const saved = { work: "deep", school: "study", gone: "deep", home: "default" };
+      // Deselecting school drops its entry; "default" is the fallback, so it is not written.
+      assert.deepEqual(pruneCalendarProfiles(saved, ["work", "home", "new"]), { work: "deep" });
+      assert.deepEqual(pruneCalendarProfiles(saved, []), {});
+      assert.equal(calendarProfileValue(saved, "work"), "deep");
+      assert.equal(calendarProfileValue(saved, "new"), "default");
+    },
+  ],
+  [
+    "settings: snooze choices keep an odd saved length as an extra option",
+    async () => {
+      const standard = [
+        { value: "60", title: "1 minute" },
+        { value: "180", title: "3 minutes" },
+        { value: "300", title: "5 minutes" },
+        { value: "600", title: "10 minutes" },
+      ];
+      assert.deepEqual(snoozeOptions(180), standard);
+      assert.deepEqual(snoozeOptions(600), standard);
+      assert.deepEqual(snoozeOptions(90), [...standard, { value: "90", title: "90 seconds" }]);
+      assert.deepEqual(SNOOZE_MINUTES, [1, 3, 5, 10]);
+    },
+  ],
+  [
+    "settings: browser choices keep unknown saved bundle ids",
+    async () => {
+      const known = [
+        { value: "com.google.Chrome", title: "Google Chrome" },
+        { value: "company.thebrowser.dia", title: "Dia" },
+      ];
+      assert.deepEqual(browserOptions(defaultConfig().browsers), known);
+      assert.deepEqual(browserOptions([]), known);
+      assert.deepEqual(browserOptions(["com.brave.Browser", "company.thebrowser.dia"]), [
+        ...known,
+        { value: "com.brave.Browser", title: "com.brave.Browser" },
+      ]);
+    },
+  ],
+  [
+    "settings: saving the blocking half round-trips and keeps unknown keys",
+    async () => {
+      const dir = path.join(freshDir(), "focus");
+      const file = path.join(dir, "config.json");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({
+          startableCalendars: ["work"],
+          profiles: { default: { categories: ["social"], helperNote: 1 }, deep: { mode: "allowlist" } },
+          futureKey: [1, { two: 2 }],
+        }),
+      );
+      // What the Settings form writes (never `profiles`).
+      await writeConfig(
+        {
+          startableCalendars: ["work", "school"],
+          calendarProfiles: pruneCalendarProfiles({ work: "deep", school: "default", old: "deep" }, ["work", "school"]),
+          snoozeSeconds: 300,
+          browsers: ["company.thebrowser.dia", "com.brave.Browser"],
+          raycastDeeplink: true,
+        },
+        file,
+      );
+      const afterForm = await readConfig(file);
+      assert.deepEqual(afterForm.calendarProfiles, { work: "deep" });
+      assert.equal(afterForm.snoozeSeconds, 300);
+      assert.deepEqual(afterForm.browsers, ["company.thebrowser.dia", "com.brave.Browser"]);
+      assert.equal(afterForm.raycastDeeplink, true);
+      assert.deepEqual(afterForm.profiles, { default: { categories: ["social"], helperNote: 1 }, deep: { mode: "allowlist" } });
+      assert.deepEqual(afterForm.futureKey, [1, { two: 2 }]);
+
+      // What Manage Profiles writes: computed from the file as it is now.
+      writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), laterKey: "hand edit" }));
+      const renamed = await updateConfig(
+        (current) => applyProfileSave(current, "deep", "focus", { mode: "allowlist", categories: [], apps: [], hosts: ["github.com"] }),
+        file,
+      );
+      const onDisk = JSON.parse(readFileSync(file, "utf8"));
+      assert.deepEqual(onDisk, renamed);
+      assert.deepEqual(Object.keys(onDisk.profiles), ["default", "focus"]);
+      assert.deepEqual(onDisk.calendarProfiles, { work: "focus" });
+      assert.equal(onDisk.laterKey, "hand edit");
+      assert.deepEqual(onDisk.futureKey, [1, { two: 2 }]);
+      assert.equal(onDisk.snoozeSeconds, 300);
+      const deleted = await updateConfig((current) => applyProfileDelete(current, "focus"), file);
+      assert.deepEqual(deleted.calendarProfiles, {});
+      assert.deepEqual(Object.keys(deleted.profiles), ["default"]);
+      assert.deepEqual(readdirSync(dir), ["config.json"]);
+    },
+  ],
+  // ---- ad-hoc session ----
+  [
+    "adhoc: duration is the preset unless custom minutes are filled (1 to 1440)",
+    async () => {
+      assert.deepEqual(ADHOC_PRESET_MINUTES, [15, 25, 45, 60, 90]);
+      assert.equal(DEFAULT_ADHOC_MINUTES, 25);
+      assert.deepEqual(resolveAdhocMinutes("25", ""), { ok: true, minutes: 25 });
+      assert.deepEqual(resolveAdhocMinutes("90", "   "), { ok: true, minutes: 90 });
+      assert.deepEqual(resolveAdhocMinutes("25", " 40 "), { ok: true, minutes: 40 });
+      assert.deepEqual(resolveAdhocMinutes("25", "1"), { ok: true, minutes: 1 });
+      assert.deepEqual(resolveAdhocMinutes("25", "1440"), { ok: true, minutes: 1440 });
+      assert.deepEqual(resolveAdhocMinutes("25", "007"), { ok: true, minutes: 7 });
+      for (const bad of ["0", "1441", "2.5", "-5", "1e3", "abc", "25 min", "+5"]) {
+        assert.deepEqual(resolveAdhocMinutes("25", bad), { ok: false, error: "Whole minutes from 1 to 1440" }, bad);
+      }
+      assert.deepEqual(resolveAdhocMinutes("30", ""), { ok: false, error: "Pick a duration" });
+      assert.deepEqual(resolveAdhocMinutes("", ""), { ok: false, error: "Pick a duration" });
+    },
+  ],
+  [
+    "adhoc: calendar and profile preselection",
+    async () => {
+      const calendars = [{ id: "a" }, { id: "b" }, { id: "c" }];
+      assert.equal(initialAdhocCalendar(calendars, "c", { startableCalendars: ["b"] }), "c");
+      // The last one is gone: the first startable one that exists, else the first.
+      assert.equal(initialAdhocCalendar(calendars, "gone", { startableCalendars: ["x", "b"] }), "b");
+      assert.equal(initialAdhocCalendar(calendars, undefined, { startableCalendars: ["x"] }), "a");
+      assert.equal(initialAdhocCalendar([], "a", { startableCalendars: ["a"] }), null);
+
+      const config = { calendarProfiles: { a: "deep", b: "deleted" } };
+      assert.equal(adhocProfileFor("a", config, ["default", "deep"]), "deep");
+      assert.equal(adhocProfileFor("b", config, ["default", "deep"]), "default");
+      assert.equal(adhocProfileFor("c", config, ["default", "deep"]), "default");
+      assert.equal(adhocProfileFor(null, config, ["default", "deep"]), "default");
+      // Inherited names are never read as a calendar's profile.
+      assert.equal(adhocProfileFor("toString", config, ["default", "deep"]), "default");
+
+      // The calendar is checked again right before a start.
+      assert.equal(adhocCalendarGone(calendars, "b"), false);
+      assert.equal(adhocCalendarGone(calendars, "removed"), true);
+      assert.equal(adhocCalendarGone(null, "removed"), false);
+    },
+  ],
+  [
+    "adhoc: the last calendar is remembered in LocalStorage",
+    async () => {
+      raycastStub.LocalStorage._reset();
+      assert.equal(await lastAdhocCalendar(), undefined);
+      await rememberAdhocCalendar("cal-study");
+      assert.equal(await lastAdhocCalendar(), "cal-study");
+      assert.equal(await raycastStub.LocalStorage.getItem(LAST_CALENDAR_KEY), "cal-study");
+      await raycastStub.LocalStorage.setItem(LAST_CALENDAR_KEY, "");
+      assert.equal(await lastAdhocCalendar(), undefined);
+      raycastStub.LocalStorage._reset();
+    },
+  ],
+  [
+    "adhoc: toasts for a start and for a refusal while a session is open",
+    async () => {
+      const plannedEnd = new Date(2026, 8, 28, 15, 40).toISOString();
+      assert.deepEqual(adhocStartedText({ goal: "Write the report", plannedEnd, profile: "deep" }, 25), {
+        title: "Focusing: Write the report",
+        message: "Until 15:40 (25 min), deep profile",
+      });
+      assert.deepEqual(adhocStartedText({ goal: "Read", plannedEnd: null, profile: "default" }, 90), {
+        title: "Focusing: Read",
+        message: "(1 h 30 min), default profile",
+      });
+      assert.deepEqual(adhocRefusedText("whatever", { goal: "Review the plan", state: "ending" }), {
+        title: "A session is already running",
+        message: '"Review the plan" is at the end sheet: finish or extend it first',
+      });
+      assert.deepEqual(adhocRefusedText("calendar gone", null), { title: "Could not start the session", message: "calendar gone" });
+    },
+  ],
+  [
+    "adhoc: against the fake daemon, a start while one runs sends that one to the end sheet",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      const clock = new Date(2026, 8, 28, 10, 0, 0);
+      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      await fake.listen();
+      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      try {
+        const minutes = resolveAdhocMinutes("25", "");
+        assert.ok(minutes.ok);
+        const first = await daemon.startAdhoc({ goal: "Write", durationSeconds: minutes.minutes * 60, calendarId: "cal-study", profile: "deep" });
+        assert.deepEqual(fake.state.requests.at(-1), { goal: "Write", durationSeconds: 1500, calendarId: "cal-study", profile: "deep", cmd: "startAdhoc" });
+        assert.equal(adhocStartedText(first, 25).message, "Until 10:25 (25 min), deep profile");
+
+        const refusal = await rejectsWith(
+          daemon.startAdhoc({ goal: "Another", durationSeconds: 900, calendarId: "cal-work" }),
+          "daemon",
+          /already running/,
+        );
+        const open = await daemon.status();
+        assert.equal(open?.state, "ending");
+        assert.deepEqual(adhocRefusedText(refusal.message, open), {
+          title: "A session is already running",
+          message: '"Write" is at the end sheet: finish or extend it first',
+        });
+        await daemon.finish();
       } finally {
         await fake.close();
       }
