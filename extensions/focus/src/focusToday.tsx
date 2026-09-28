@@ -8,6 +8,7 @@ import {
   Toast,
   launchCommand,
   showToast,
+  PopToRootType,
   closeMainWindow,
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -200,7 +201,10 @@ export default function FocusTodayCommand() {
       // Like Raycast Focus: the window goes away and the countdown takes over.
       // A failure to close is not a failed start: the session is running,
       // so a window that stays open shows it instead of the stale list.
-      await closeMainWindow({ clearRootSearch: true }).catch(() => reload());
+      await closeMainWindow({
+        clearRootSearch: true,
+        popToRootType: PopToRootType.Immediate,
+      }).catch(() => reload());
     } catch (startError) {
       toast.style = Toast.Style.Failure;
       toast.title = "Could not start the session";

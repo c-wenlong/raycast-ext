@@ -5,6 +5,7 @@ import {
   Icon,
   Image,
   Toast,
+  PopToRootType,
   closeMainWindow,
   showToast,
 } from "@raycast/api";
@@ -34,7 +35,6 @@ import {
   getDaemon,
 } from "./lib/daemon";
 import { DEFAULT_PROFILE, profileNames } from "./lib/profiles";
-import { sessionStatusText } from "./lib/session";
 import { durationText } from "./lib/time";
 
 // Ad-hoc Session (PLAN "Ad-hoc sessions"): a goal, a length, a calendar to
@@ -45,8 +45,6 @@ import { durationText } from "./lib/time";
 interface Loaded {
   calendars: Calendar[];
   config: FocusConfig;
-  // The open session, if any, for the note at the top.
-  open: Session | null;
 }
 
 interface Errors {
@@ -76,14 +74,13 @@ export default function AdhocSessionCommand() {
     setIsLoading(true);
     try {
       const daemon = getDaemon();
-      const [config, calendars, lastUsed, open] = await Promise.all([
+      const [config, calendars, lastUsed] = await Promise.all([
         readConfig(),
         daemon.calendars(),
         lastAdhocCalendar().catch(() => undefined),
-        daemon.status().catch((): Session | null => null),
       ]);
       const initial = initialAdhocCalendar(calendars, lastUsed, config);
-      setLoaded({ calendars, config, open });
+      setLoaded({ calendars, config });
       setCalendarId(initial ?? "");
       setProfile(
         adhocProfileFor(initial, config, profileNames(config.profiles)),
@@ -149,12 +146,16 @@ export default function AdhocSessionCommand() {
       toast.style = Toast.Style.Success;
       toast.title = text.title;
       toast.message = text.message;
-      setLoaded({ ...loaded, open: session });
       setGoal("");
       setCustom("");
       // Like Raycast Focus: the window goes away and the countdown takes over.
       // A failure to close is not a failed start: the session is running.
-      await closeMainWindow({ clearRootSearch: true }).catch(() => undefined);
+      // The form is done: back to the root so a later ⌘Space does not
+      // reopen it with stale state.
+      await closeMainWindow({
+        clearRootSearch: true,
+        popToRootType: PopToRootType.Immediate,
+      }).catch(() => undefined);
     } catch (error) {
       // A refusal because a session is open has already sent that session
       // to the end sheet; ask for it so the toast can name it.
@@ -166,7 +167,6 @@ export default function AdhocSessionCommand() {
       toast.style = Toast.Style.Failure;
       toast.title = text.title;
       toast.message = text.message;
-      setLoaded({ ...loaded, open });
     } finally {
       setIsLoading(false);
     }
@@ -190,9 +190,8 @@ export default function AdhocSessionCommand() {
     );
   }
 
-  const { calendars, config, open } = loaded;
+  const { calendars, config } = loaded;
   const names = profileNames(config.profiles);
-  const openSession = open && open.state !== "finished" ? open : null;
 
   return (
     <Form
@@ -214,12 +213,6 @@ export default function AdhocSessionCommand() {
         </ActionPanel>
       }
     >
-      {openSession ? (
-        <Form.Description
-          title="Running"
-          text={`${openSession.goal} (${sessionStatusText(openSession, new Date())}). Starting another sends it to the end sheet first.`}
-        />
-      ) : null}
       <Form.TextField
         id="goal"
         title="Goal"
