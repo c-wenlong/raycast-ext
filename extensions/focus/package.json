@@ -27,6 +27,12 @@
       "title": "Ad-hoc Session",
       "description": "Start a focus session with a goal and a length, filed under a calendar of your choice",
       "mode": "view"
+    },
+    {
+      "name": "focusStats",
+      "title": "Focus Stats",
+      "description": "Focused time today and this week, per calendar and per day, and your recent sessions",
+      "mode": "view"
     }
   ],
   "scripts": {

@@ -1573,6 +1573,237 @@ extension JSONValue {
   }
 }
 
+// MARK: - Stats: aggregation over fixture rows
+
+func statRow(
+  _ id: Int64, _ start: Date, _ end: Date?, calendar: String = "work", event: String? = "E", rating: Int? = nil,
+  reason: String? = "manual", pauses: [PauseSpan] = []
+) -> StatsRow {
+  StatsRow(
+    id: id, goal: "Goal \(id)", calendarId: calendar, sourceEventId: event, startedAt: start, endedAt: end,
+    endReason: reason, rating: rating, pauses: pauses)
+}
+
+do {
+  let now = at(15, 0)
+  let titles = ["work": "Work", "study": "Study", "personal": "Personal", "log": "Focus Log"]
+  let names = CalendarNames(access: true, titles: titles)
+  let r1 = statRow(1, at(9, 0), at(10, 0), rating: 4, pauses: [PauseSpan(start: at(9, 20), end: at(9, 30))])
+  let r2 = statRow(2, at(23, 30, day: 27), at(0, 30), rating: 2)
+  let r3 = statRow(3, at(11, 0), at(11, 10), calendar: "bogus", event: nil, reason: "abandoned")
+  let running = statRow(4, at(14, 0), nil)
+  let backwards = statRow(5, at(12, 0), at(11, 0), calendar: "log")
+  let overPaused = statRow(
+    6, at(13, 0), at(13, 10), calendar: "personal",
+    pauses: [PauseSpan(start: at(13, 0), end: at(13, 8)), PauseSpan(start: at(13, 2), end: at(13, 10))])
+  let r7 = statRow(7, at(10, 0, day: 22), at(10, 30, day: 22), calendar: "study", rating: 5)
+  let r8 = statRow(8, at(23, 50, day: 21), at(0, 10, day: 22), calendar: "study")
+  let old = statRow(9, at(10, 0, day: 20), at(11, 0, day: 20), rating: 1)
+  let openPause = statRow(
+    10, at(10, 0, day: 26), at(11, 0, day: 26), calendar: "personal",
+    pauses: [PauseSpan(start: at(10, 30, day: 26), end: nil)])
+  let rows = [old, r8, r7, openPause, r2, r1, r3, backwards, overPaused, running]
+
+  check("stats: focused subtracts pauses", Stats.focusedSeconds(r1) == 3000)
+  check("stats: an open pause runs to the end", Stats.focusedSeconds(openPause) == 1800)
+  check("stats: an end before the start clamps to zero", Stats.focusedSeconds(backwards) == 0)
+  check("stats: overlapping pauses clamp to zero", Stats.focusedSeconds(overPaused) == 0)
+  check("stats: a running session has no focused time", Stats.focusedSeconds(running) == 0)
+  check("stats: abandoned counts its span", Stats.focusedSeconds(r3) == 600)
+  let summary = LogSummary(
+    sessionId: 1, sourceCalendarId: "work", sourceEventId: "E", startedAt: r1.startedAt, endedAt: r1.endedAt!,
+    endReason: "manual", pauses: r1.pauses)
+  check("stats: focused matches the log event's number", Stats.focusedSeconds(r1) == LogText.focusedSeconds(summary))
+  let midnight = Stats.dayIntervals(days: 2, now: now)
+  check(
+    "stats: a session across midnight splits between the days",
+    Stats.focusedSeconds(r2, within: midnight[0]) == 1800 && Stats.focusedSeconds(r2, within: midnight[1]) == 1800)
+  check(
+    "stats: a pause is split at midnight too",
+    Stats.focusedSeconds(
+      statRow(11, at(23, 0, day: 27), at(1, 0), pauses: [PauseSpan(start: at(23, 50, day: 27), end: at(0, 20))]),
+      within: midnight[1]) == 2400)
+
+  let report = Stats.report(windowRows: rows, recent: rows.reversed(), names: names, days: 7, now: now)
+  check("stats: today", report.today == StatsTotals(focusedSeconds: 5400, sessions: 5, averageRating: 3), "\(report.today)")
+  check("stats: last 7 days", report.week == StatsTotals(focusedSeconds: 11400, sessions: 8, averageRating: 3.67), "\(report.week)")
+  check(
+    "stats: days are zero-filled, oldest first, split at local midnight",
+    report.days.map(\.date) == ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28"]
+      && report.days.map(\.focusedSeconds) == [2400, 0, 0, 0, 1800, 1800, 5400], "\(report.days)")
+  check("stats: days start at local midnight", report.days.last?.start == at(0, 0) && report.days.first?.start == at(0, 0, day: 22))
+  check("stats: days carry the weekday", report.days.last?.weekday == local.component(.weekday, from: at(12, 0)))
+  check(
+    "stats: per calendar, most focused first, ad hoc bucketed",
+    report.perCalendar.map { "\($0.calendarTitle) \($0.focusedSeconds) \($0.sessions)" }
+      == ["Work 6600 2", "Study 2400 2", "Personal 1800 2", "Ad hoc 600 1", "Focus Log 0 1"], "\(report.perCalendar)")
+  check("stats: the ad hoc bucket has its own id", report.perCalendar.first { $0.calendarTitle == "Ad hoc" }?.calendarId == "adhoc")
+  check("stats: running sessions are left out of recent", report.recent.map(\.id) == [6, 5, 3, 1, 2, 10, 7, 8, 9], "\(report.recent.map(\.id))")
+  check("stats: recent names calendars", report.recentTitles.first == "Personal" && report.recentTitles.contains("Ad hoc"))
+  let many = (1...30).map { statRow(Int64($0), at(9, 0), at(9, 1)) }
+  check("stats: recent keeps 20", Stats.report(windowRows: [], recent: many, names: names, days: 7, now: now).recent.count == 20)
+
+  let empty = Stats.report(windowRows: [], recent: [], names: names, days: 3, now: now)
+  check("stats: no sessions gives zeros and a null rating", empty.today == StatsTotals(focusedSeconds: 0, sessions: 0, averageRating: nil) && empty.days.map(\.focusedSeconds) == [0, 0, 0] && empty.perCalendar.isEmpty)
+  check("stats: only running gives zeros", Stats.report(windowRows: [running], recent: [running], names: names, days: 1, now: now).today.sessions == 0)
+  check("stats: a session ending at the window start is not in it", !Stats.belongs(statRow(12, at(23, 0, day: 21), at(0, 0, day: 22)), to: Stats.window(days: 7, now: now)))
+  check("stats: a zero-length session in the window counts", Stats.belongs(statRow(13, at(9, 0), at(9, 0)), to: Stats.window(days: 1, now: now)))
+
+  // Names without Calendar access.
+  let blind = CalendarNames(access: false, titles: [:])
+  var logged = statRow(14, at(9, 0), at(10, 0), calendar: "log")
+  logged.logCalendarId = "log"
+  logged.logCalendarName = "Focus Log (iCloud)"
+  check("stats: without access the log calendar uses its stored name", blind.bucket(for: logged) == ("log", "Focus Log (iCloud)"))
+  check("stats: without access another calendar is unknown", blind.bucket(for: r1) == ("work", "Unknown calendar"))
+  check("stats: without access an ad hoc id cannot be judged", blind.bucket(for: r3).title == "Unknown calendar")
+  check("stats: an ad hoc session with no calendar is ad hoc", blind.bucket(for: statRow(15, at(9, 0), at(9, 1), calendar: "", event: nil)) == ("adhoc", "Ad hoc"))
+  check("stats: with access a vanished event calendar is unknown", names.bucket(for: statRow(16, at(9, 0), at(9, 1), calendar: "gone")) == ("gone", "Unknown calendar"))
+
+  // DST: 1 November 2026 is 25 hours long in New York.
+  var york = Calendar(identifier: .gregorian)
+  york.timeZone = TimeZone(identifier: "America/New_York")!
+  let dstNow = york.date(from: DateComponents(year: 2026, month: 11, day: 2, hour: 12))!
+  let dstDays = Stats.dayIntervals(days: 3, now: dstNow, calendar: york)
+  check("stats: a DST day is 25 hours", dstDays.map(\.duration) == [86_400, 90_000, 86_400], "\(dstDays)")
+  check("stats: DST days are contiguous", dstDays[0].end == dstDays[1].start && dstDays[1].end == dstDays[2].start)
+  let dstStart = york.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 0))!
+  let dstRow = statRow(17, dstStart, dstStart.addingTimeInterval(90_000))
+  check("stats: a session filling the DST day counts 25 hours", Stats.days([dstRow], days: 3, now: dstNow, calendar: york).map(\.focusedSeconds) == [0, 90_000, 0])
+  check("stats: dates follow the calendar's zone", Stats.days([], days: 3, now: dstNow, calendar: york).map(\.date) == ["2026-10-31", "2026-11-01", "2026-11-02"])
+  var buddhist = Calendar(identifier: .buddhist)
+  buddhist.timeZone = york.timeZone
+  check("stats: dates are Gregorian on a Buddhist calendar", Stats.days([], days: 2, now: dstNow, calendar: buddhist).map(\.date) == ["2026-11-01", "2026-11-02"])
+  var hebrew = Calendar(identifier: .hebrew)
+  hebrew.timeZone = york.timeZone
+  let hebrewDays = Stats.days([dstRow], days: 3, now: dstNow, calendar: hebrew)
+  check("stats: a Hebrew calendar keeps Gregorian dates and local days", hebrewDays.map(\.date) == ["2026-10-31", "2026-11-01", "2026-11-02"] && hebrewDays.map(\.focusedSeconds) == [0, 90_000, 0], "\(hebrewDays)")
+
+  let json = Stats.json(report)
+  check("stats: json averages", json["week"]?["averageRating"] == .double(3.67) && json["today"]?["averageRating"] == .double(3))
+  check("stats: json null rating", Stats.json(empty)["today"] == ["focusedSeconds": 0, "sessions": 0, "averageRating": nil])
+}
+
+// MARK: - Stats: the chart
+
+do {
+  func days(_ seconds: [Int]) -> [DayTotal] {
+    Stats.days([], days: seconds.count, now: at(12, 0)).enumerated().map { index, day in
+      var copy = day
+      copy.focusedSeconds = seconds[index]
+      return copy
+    }
+  }
+  func rects(_ svg: String) -> Int { svg.components(separatedBy: "<rect").count - 1 }
+  let week = Chart.svg(days([2400, 0, 0, 0, 1800, 1800, 5400]))
+  check("chart: one rect per day", rects(week) == 7)
+  check("chart: no script, no external reference", !week.lowercased().contains("<script") && !week.contains("href") && !week.contains("@import"))
+  check("chart: size and canvas", week.hasPrefix("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"640\" height=\"240\"") && week.contains("fill=\"#1A1A1A\""))
+  check("chart: bars in the accent colour, empty days as stubs", week.components(separatedBy: "fill=\"#E85C54\"").count - 1 == 4 && week.components(separatedBy: "fill=\"#3A3A3A\"").count - 1 == 3)
+  check("chart: system fonts only", week.contains("font-family=\"-apple-system, Helvetica, sans-serif\""))
+  check("chart: weekday labels and today", week.contains(">Today</text>") && week.contains(">\(local.shortWeekdaySymbols[local.component(.weekday, from: at(0, 0, day: 22)) - 1])</text>"))
+  check("chart: minutes labels", week.contains(">1h 30m</text>") && week.contains(">40m</text>") && week.contains(">3 h 10 min in total</text>"), week)
+  check("chart: an empty week says so", Chart.svg(days([0, 0, 0])).contains("No focused time yet") && rects(Chart.svg(days([0, 0, 0]))) == 3)
+  let fortnight = Chart.svg(days(Array(repeating: 45_000, count: 14)))
+  check("chart: no column values past a week (the slots are too narrow)", rects(fortnight) == 14 && !fortnight.contains(">12h 30m</text>") && fortnight.components(separatedBy: "fill=\"#EDEDED\"").count - 1 == 2, fortnight)
+  check("chart: a week of long days keeps its values", Chart.svg(days(Array(repeating: 45_000, count: 7))).components(separatedBy: ">12h 30m</text>").count - 1 == 7)
+  let quarter = Chart.svg(days(Array(repeating: 600, count: 90)))
+  check("chart: 90 days still one rect each", rects(quarter) == 90 && !quarter.contains(">Today<"))
+  check("chart: compact labels", Chart.compact(0) == "0m" && Chart.compact(2700) == "45m" && Chart.compact(3600) == "1h" && Chart.compact(5100) == "1h 25m")
+  check("chart: scale", Chart.scale(maxMinutes: 0) == (60, 30) && Chart.scale(maxMinutes: 90) == (90, 30) && Chart.scale(maxMinutes: 91) == (120, 30) && Chart.scale(maxMinutes: 45) == (45, 15) && Chart.scale(maxMinutes: 500) == (540, 180))
+  check("chart: escapes text", Chart.escape("<a & 'b'>") == "&lt;a &amp; &#39;b&#39;&gt;")
+}
+
+// MARK: - Stats: the command end to end
+
+do {
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  // Yesterday: an event-calendar session with a pause and an extension, rated 4.
+  clock.now = at(22, 0, day: 27)
+  let first = h.send("startAdhoc", ["goal": "Write", "durationSeconds": 1800, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(22, 10, day: 27)
+  _ = h.send("pause")
+  clock.now = at(22, 15, day: 27)
+  _ = h.send("resume")
+  _ = h.send("extend", ["seconds": 600])
+  clock.now = at(22, 40, day: 27)
+  _ = h.send("finish", ["rating": 4, "note": "Draft done"])
+  try! h.db.addAttempt(Int64(first), BlockedAttempt(at: at(22, 5, day: 27), kind: "site", target: "x.com", outcome: "blocked"))
+  try! h.db.addAttempt(Int64(first), BlockedAttempt(at: at(22, 6, day: 27), kind: "site", target: "x.com", outcome: "snoozed"))
+  // Today: ad hoc under a calendar EventKit does not know.
+  clock.now = at(9, 0)
+  _ = h.send("startAdhoc", ["goal": "Inbox", "durationSeconds": 600, "calendarId": "scratch"])
+  clock.now = at(9, 10)
+  _ = h.send("finish", ["rating": 2])
+  // One waiting for a calendar that is gone.
+  try! #"{"logCalendarId": "gone", "logCalendarName": "Old Log (Google)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  _ = h.send("startAdhoc", ["goal": "Read", "durationSeconds": 300, "calendarId": "work"])
+  clock.now = at(9, 15)
+  _ = h.send("finish", [:])
+  // And one still running, which stats must leave out.
+  clock.now = at(10, 0)
+  _ = h.send("startAdhoc", ["goal": "Running", "durationSeconds": 3600, "calendarId": "work"])
+  clock.now = at(10, 30)
+
+  let reply = h.send("stats")
+  check("stats command: ok", reply["ok"] == true, reply.serialized())
+  check("stats command: today", reply["today"] == ["focusedSeconds": 900, "sessions": 2, "averageRating": .double(2)], reply["today"]?.serialized() ?? "")
+  check("stats command: week", reply["week"] == ["focusedSeconds": 3000, "sessions": 3, "averageRating": .double(3)], reply["week"]?.serialized() ?? "")
+  check(
+    "stats command: per calendar",
+    reply["perCalendar"] == [
+      ["calendarId": "work", "calendarTitle": "Work", "focusedSeconds": 2400, "sessions": 2],
+      ["calendarId": "adhoc", "calendarTitle": "Ad hoc", "focusedSeconds": 600, "sessions": 1],
+    ], reply["perCalendar"]?.serialized() ?? "")
+  let dayList = reply["days"]?.arrayValue ?? []
+  check("stats command: seven days ending today", dayList.count == 7 && dayList.last?["date"] == "2026-09-28" && dayList.last?["focusedSeconds"] == 900 && dayList[5]["focusedSeconds"] == 2100, reply["days"]?.serialized() ?? "")
+  let recent = reply["recent"]?.arrayValue ?? []
+  check("stats command: recent newest first, running left out", recent.map { $0["goal"]?.stringValue ?? "" } == ["Read", "Inbox", "Write"], "\(recent)")
+  let write = recent.last
+  check(
+    "stats command: a recent session in full",
+    write?["id"]?.intValue == first && write?["calendarTitle"] == "Work" && write?["focusedSeconds"] == 2100
+      && write?["rating"] == 4 && write?["note"] == "Draft done" && write?["endReason"] == "timer"
+      && write?["blockedAttempts"] == 2 && write?["snoozes"] == 1 && write?["logPending"] == false
+      && write?["startedAt"]?.stringValue.flatMap(ISO.parse) == at(22, 0, day: 27)
+      && write?["endedAt"]?.stringValue.flatMap(ISO.parse) == at(22, 40, day: 27), write?.serialized() ?? "")
+  check("stats command: a waiting session is marked", recent.first?["logPending"] == true && recent.first?["rating"] == .null)
+  check(
+    "stats command: waiting", reply["waiting"]?.arrayValue?.count == 1 && reply["waiting"]?[0]?["goal"] == "Read"
+      && reply["waiting"]?[0]?["logCalendarName"] == "Old Log (Google)" && reply["waiting"]?[0]?["sessionId"]?.intValue != nil,
+    reply["waiting"]?.serialized() ?? "")
+  let chartPath = reply["chartPath"]?.stringValue ?? ""
+  check("stats command: chartPath is absolute, under the focus folder", chartPath.hasPrefix("/") && chartPath == h.dir + "/stats/week.svg", chartPath)
+  let svg = (try? String(contentsOfFile: chartPath, encoding: .utf8)) ?? ""
+  check("stats command: the chart is written", svg.hasPrefix("<svg") && svg.components(separatedBy: "<rect").count - 1 == 7 && !svg.contains("<script"))
+  check("stats command: the running session is untouched", h.send("status")["session"]?["state"] == "running")
+  let batchedPauses = try! h.db.pauses(forSessions: [Int64(first), Int64(first), 999])
+  check("stats reads: pauses by session in one query", batchedPauses.count == 1 && batchedPauses[Int64(first)] == (try! h.db.pauses(Int64(first))))
+  let batchedCounts = try! h.db.attemptCounts(forSessions: Array(1...1200).map(Int64.init))
+  check("stats reads: attempt counts over many ids in chunks", batchedCounts.count == 1 && batchedCounts[Int64(first)]?.all == 2 && batchedCounts[Int64(first)]?.snoozed == 1)
+  check("stats reads: no ids, no rows", (try! h.db.pauses(forSessions: [])).isEmpty && (try! h.db.attemptCounts(forSessions: [])).isEmpty)
+
+  let month = h.send("stats", ["days": 30])
+  check("stats command: days picks the window", month["days"]?.arrayValue?.count == 30 && month["days"]?[0]?["date"] == "2026-08-30")
+  check("stats command: rewrites the chart", ((try? String(contentsOfFile: chartPath, encoding: .utf8)) ?? "").components(separatedBy: "<rect").count - 1 == 30)
+  check("stats command: one day", h.send("stats", ["days": 1])["week"] == h.send("stats", ["days": 1])["today"])
+  check("stats command: days 0 refused", h.send("stats", ["days": 0])["error"] == "days must be 1 to 90")
+  check("stats command: days 91 refused", h.send("stats", ["days": 91])["ok"] == false)
+  check("stats command: days must be a number", h.send("stats", ["days": "7"])["ok"] == false)
+
+  h.fake.accessState = "denied"
+  let blind = h.send("stats")
+  check("stats command: works without calendar access", blind["ok"] == true && blind["perCalendar"]?[0]?["calendarTitle"] == "Unknown calendar", blind["perCalendar"]?.serialized() ?? "")
+
+  // A folder that cannot hold the chart: the numbers still come back.
+  let blocked = tempDir()
+  try! "not a folder".write(toFile: blocked + "/stats", atomically: true, encoding: .utf8)
+  let other = Harness(clock: clock, dir: blocked)
+  let noChart = other.send("stats")
+  check("stats command: a chart that cannot be written gives a null path", noChart["ok"] == true && noChart["chartPath"] == .null && other.logs.contains { $0.contains("could not write the stats chart") }, noChart.serialized())
+}
+
 print("\(count - failures)/\(count) passed")
 if failures == 0 { print("all passed") }
 exit(failures == 0 ? 0 : 1)

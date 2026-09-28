@@ -78,6 +78,24 @@ import {
   snoozeOptions,
 } from "../src/lib/settings";
 import {
+  attemptsText,
+  averageRatingText,
+  calendarTable,
+  chartMarkdown,
+  dayLabel,
+  endReasonText,
+  escapeMarkdown,
+  focusedText,
+  lastDaysLabel,
+  overviewMarkdown,
+  ratingText,
+  recentMarkdown,
+  sessionsText,
+  spanText,
+  totalsText,
+  waitingMarkdown,
+} from "../src/lib/stats";
+import {
   durationText,
   formatClock,
   formatTimeRange,
@@ -1411,6 +1429,252 @@ net.createServer((socket) => {
         await daemon.finish();
       } finally {
         await fake.close();
+      }
+    },
+  ],
+
+  // ---- stats: formatting ----
+  [
+    "stats: focused time, sessions and ratings read as text",
+    async () => {
+      assert.equal(focusedText(0), "0 min");
+      assert.equal(focusedText(-5), "0 min");
+      assert.equal(focusedText(1), "under a minute");
+      assert.equal(focusedText(59), "under a minute");
+      assert.equal(focusedText(60), "1 min");
+      assert.equal(focusedText(89), "1 min");
+      assert.equal(focusedText(90), "2 min");
+      assert.equal(focusedText(2700), "45 min");
+      assert.equal(focusedText(3600), "1 h");
+      assert.equal(focusedText(5100), "1 h 25 min");
+      assert.equal(focusedText(3599), "1 h");
+      assert.equal(focusedText(Number.NaN), "0 min");
+      assert.equal(sessionsText(0), "no sessions");
+      assert.equal(sessionsText(1), "1 session");
+      assert.equal(sessionsText(3), "3 sessions");
+      assert.equal(averageRatingText(null), "no ratings");
+      assert.equal(averageRatingText(3.67), "3.7 ★");
+      assert.equal(averageRatingText(4), "4.0 ★");
+      assert.equal(ratingText(null), "unrated");
+      assert.equal(ratingText(4), "★★★★☆");
+      assert.equal(lastDaysLabel(7), "Last 7 days");
+      assert.equal(lastDaysLabel(1), "Today");
+      assert.equal(
+        totalsText({ focusedSeconds: 5100, sessions: 2, averageRating: 3.5 }),
+        "1 h 25 min over 2 sessions, average 3.5 ★",
+      );
+      assert.equal(
+        totalsText({ focusedSeconds: 0, sessions: 0, averageRating: null }),
+        "0 min over no sessions",
+      );
+      assert.equal(endReasonText("timer"), "when the timer ran out");
+      assert.equal(endReasonText("abandoned"), "abandoned (the helper stopped)");
+      assert.equal(endReasonText(null), "unknown");
+    },
+  ],
+  [
+    "stats: days, spans, attempts and markdown",
+    async () => {
+      const now = new Date(2026, 8, 28, 15, 0, 0);
+      const iso = (d: number, h: number, m: number) =>
+        new Date(2026, 8, d, h, m).toISOString();
+      assert.equal(dayLabel(iso(28, 9, 0), now), "Today");
+      assert.equal(dayLabel(iso(27, 23, 59), now), "Yesterday");
+      assert.equal(dayLabel(iso(22, 10, 0), now), "Tue 22 Sep");
+      assert.equal(dayLabel("nope", now), "?");
+      assert.equal(spanText(iso(28, 14, 10), iso(28, 15, 0), now), "Today 14:10–15:00");
+      assert.equal(
+        spanText(iso(27, 23, 30), iso(28, 0, 30), now),
+        "Yesterday 23:30–Mon 00:30",
+      );
+      const session = {
+        id: 1,
+        goal: "Write *the* report",
+        calendarTitle: "Work",
+        startedAt: iso(28, 9, 0),
+        endedAt: iso(28, 10, 0),
+        focusedSeconds: 3000,
+        rating: 4,
+        note: "Line one\n# not a heading [link](x)",
+        endReason: "timer",
+        blockedAttempts: 3,
+        snoozes: 1,
+        logPending: false,
+      };
+      assert.equal(attemptsText(session), "3, 1 snoozed");
+      assert.equal(attemptsText({ ...session, snoozes: 0 }), "3");
+      assert.equal(attemptsText({ ...session, blockedAttempts: 0 }), "none");
+      assert.equal(
+        recentMarkdown(session),
+        "## Write \\*the\\* report\n\nLine one \\# not a heading \\[link\\]\\(x\\)",
+      );
+      assert.equal(recentMarkdown({ ...session, note: "  " }).endsWith("_No note_"), true);
+      assert.equal(escapeMarkdown("a | b <script>"), "a \\| b \\<script\\>");
+      assert.equal(
+        chartMarkdown("/Users/kai/.raycast/focus/stats/week.svg"),
+        "![Focused minutes](file:///Users/kai/.raycast/focus/stats/week.svg)",
+      );
+      assert.equal(
+        chartMarkdown("/tmp/my focus (1)/week.svg"),
+        "![Focused minutes](file:///tmp/my%20focus%20%281%29/week.svg)",
+      );
+      assert.equal(chartMarkdown(null), "_The chart could not be drawn._");
+      const rows = [
+        { calendarId: "w", calendarTitle: "Work | Deep", focusedSeconds: 5100, sessions: 2 },
+        { calendarId: "adhoc", calendarTitle: "Ad hoc", focusedSeconds: 30, sessions: 1 },
+      ];
+      assert.equal(
+        calendarTable(rows),
+        [
+          "| Calendar | Focused | Sessions |",
+          "| --- | ---: | ---: |",
+          "| Work \\| Deep | 1 h 25 min | 2 |",
+          "| Ad hoc | under a minute | 1 |",
+        ].join("\n"),
+      );
+      assert.equal(calendarTable([]), "_No sessions in this period._");
+      assert.ok(
+        waitingMarkdown("Old Log (kai@old.example)").startsWith(
+          "The log event for this session waits for `Old Log (kai@old.example)`.",
+        ),
+      );
+      assert.ok(waitingMarkdown("a`b").includes("`a'b`"));
+      assert.ok(waitingMarkdown(null).includes("waits for a log calendar."));
+      const markdown = overviewMarkdown({
+        label: "Today",
+        totals: { focusedSeconds: 5100, sessions: 2, averageRating: null },
+        chartPath: "/x/week.svg",
+        windowLabel: "Last 7 days",
+        perCalendar: rows,
+      });
+      assert.ok(markdown.startsWith("**Today**: 1 h 25 min over 2 sessions\n\n![Focused minutes](file:///x/week.svg)"), markdown);
+      assert.ok(markdown.includes("### By calendar, last 7 days\n\n| Calendar |"), markdown);
+    },
+  ],
+
+  // ---- stats: round trip against the fake daemon ----
+  [
+    "daemon: stats round-trips against the fake daemon",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      let clock = new Date(2026, 8, 27, 23, 30, 0);
+      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      await fake.listen();
+      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      try {
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
+        const empty = await daemon.stats();
+        assert.deepEqual(empty.today, { focusedSeconds: 0, sessions: 0, averageRating: null });
+        assert.equal(empty.days.length, 7);
+        assert.deepEqual(fake.state.requests.at(-1), { days: 7, cmd: "stats" });
+
+        // Across midnight, with a 5-minute pause after midnight.
+        await daemon.startAdhoc({ goal: "Late night", durationSeconds: 3600, calendarId: "cal-work" });
+        clock = new Date(2026, 8, 28, 0, 10, 0);
+        await daemon.pause();
+        clock = new Date(2026, 8, 28, 0, 15, 0);
+        await daemon.resume();
+        clock = new Date(2026, 8, 28, 0, 30, 0);
+        await daemon.finish({ rating: 4, note: "Wrapped up" });
+        // Ad hoc on no calendar, and one still running.
+        await daemon.startAdhoc({ goal: "Inbox", durationSeconds: 600, calendarId: "none" });
+        clock = new Date(2026, 8, 28, 0, 40, 0);
+        await daemon.finish({ rating: 2 });
+        await daemon.startAdhoc({ goal: "Running", durationSeconds: 600, calendarId: "cal-work" });
+
+        const stats = await daemon.stats();
+        assert.deepEqual(stats.today, { focusedSeconds: 1500 + 600, sessions: 2, averageRating: 3 });
+        assert.deepEqual(stats.week, { focusedSeconds: 1800 + 1500 + 600, sessions: 2, averageRating: 3 });
+        assert.deepEqual(
+          stats.days.slice(-2),
+          [
+            { date: "2026-09-27", focusedSeconds: 1800 },
+            { date: "2026-09-28", focusedSeconds: 2100 },
+          ],
+        );
+        assert.equal(stats.days[0].date, "2026-09-22");
+        assert.deepEqual(stats.perCalendar, [
+          { calendarId: "cal-work", calendarTitle: "Work", focusedSeconds: 3300, sessions: 1 },
+          { calendarId: "adhoc", calendarTitle: "Ad hoc", focusedSeconds: 600, sessions: 1 },
+        ]);
+        assert.deepEqual(stats.recent.map((s) => s.goal), ["Inbox", "Late night"]);
+        assert.equal(stats.recent[1].note, "Wrapped up");
+        assert.equal(stats.recent[1].focusedSeconds, 3300);
+        assert.equal(stats.recent[1].logPending, false);
+        assert.deepEqual(stats.waiting, []);
+        assert.equal(stats.chartPath, path.join(dir, "stats", "week.svg"));
+        assert.ok(existsSync(stats.chartPath as string));
+        assert.equal(
+          (readFileSync(stats.chartPath as string, "utf8").match(/<rect/g) ?? []).length,
+          7,
+        );
+
+        // A snooze during a session counts; a waiting session moved to a
+        // writable calendar stops being pending.
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-gone", logCalendarName: "Gone (x)" }));
+        await daemon.finish({});
+        await daemon.startAdhoc({ goal: "Snoozy", durationSeconds: 600, calendarId: "cal-work" });
+        await daemon.snooze("x.com");
+        await daemon.snooze("com.apple.Calculator");
+        clock = new Date(2026, 8, 28, 0, 50, 0);
+        await daemon.finish({});
+        const waiting = await daemon.stats();
+        const snoozy = waiting.recent.find((s) => s.goal === "Snoozy");
+        assert.equal(snoozy?.snoozes, 2);
+        assert.equal(snoozy?.blockedAttempts, 2);
+        assert.equal(snoozy?.logPending, true);
+        assert.deepEqual(waiting.waiting.map((w) => w.goal), ["Running", "Snoozy"]);
+        await daemon.movePending("cal-log");
+        const moved = await daemon.stats();
+        assert.deepEqual(moved.waiting, []);
+        assert.equal(moved.recent.some((s) => s.logPending), false);
+
+        const month = await daemon.stats(30);
+        assert.equal(month.days.length, 30);
+        assert.deepEqual(fake.state.requests.at(-1), { days: 30, cmd: "stats" });
+
+        // Checked before anything is sent.
+        const sent = fake.state.requests.length;
+        await assert.rejects(daemon.stats(0), RangeError);
+        await assert.rejects(daemon.stats(91), RangeError);
+        await assert.rejects(daemon.stats(7.5), RangeError);
+        assert.equal(fake.state.requests.length, sent);
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  [
+    "daemon: stats rejects a malformed reply and tolerates a missing chart",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const base = {
+        ok: true,
+        today: { focusedSeconds: 0, sessions: 0, averageRating: null },
+        week: { focusedSeconds: 0, sessions: 0, averageRating: null },
+        perCalendar: [],
+        days: [],
+        recent: [],
+        waiting: [],
+      };
+      let reply: Record<string, unknown> = { ...base, chartPath: "relative/week.svg" };
+      const server = await scriptedServer(socketPath, (_raw, socket) => {
+        socket.end(`${JSON.stringify(reply)}\n`);
+      });
+      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      try {
+        assert.equal((await daemon.stats()).chartPath, null);
+        reply = { ...base, chartPath: null };
+        assert.equal((await daemon.stats()).chartPath, null);
+        reply = { ...base, days: "nope", chartPath: null };
+        await rejectsWith(daemon.stats(), "protocol", /"days"/);
+        reply = { ok: false, error: "unknown command: stats" };
+        await rejectsWith(daemon.stats(), "daemon", /unknown command/);
+      } finally {
+        await server.close();
       }
     },
   ],

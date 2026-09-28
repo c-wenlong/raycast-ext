@@ -49,6 +49,16 @@ end-of-session sheet, app and site blocking, stats), is
   blocking profile (the calendar's default is preselected). Starting while a
   session is open sends that one to the end sheet, and the toast says so.
 
+- **Focus Stats**: a list with a detail pane. **Overview** has Today and Last
+  7 days with focused time (pauses excluded) and the session count; their
+  detail shows the helper's bar chart of focused time per day
+  (`~/.raycast/focus/stats/week.svg`) and a per-calendar table. **By
+  calendar** lists each calendar's focused time this week (ad-hoc sessions
+  not filed under a calendar count as "Ad hoc"). **Recent sessions** shows
+  the last 20 with calendar, span, focused time, rating, blocked attempts and
+  the note in the detail ("Copy Goal"). Sessions whose log event is still
+  waiting get the same Retry and Move actions as Focus Today. `⌘R` refreshes.
+
 ## Where data lives
 
 Everything is in `~/.raycast/focus/` (gitignored at the repo root as `/focus/`):
@@ -58,6 +68,7 @@ Everything is in `~/.raycast/focus/` (gitignored at the repo root as `/focus/`):
 | `config.json` | Focus Settings | startable calendars, log calendar id and name, and the step 4 keys (profiles, browsers, snooze length, Raycast deeplink). Unknown keys are kept on save; writes go through a temp file and a rename. |
 | `focus.sock` | the helper | the socket the commands talk to: one JSON request line, one JSON reply line. |
 | `focus.db` | the helper | sqlite log of sessions, pauses and blocked attempts. |
+| `stats/week.svg` | the helper | the Focus Stats chart, rewritten on every `stats` request. |
 
 The commands launch the helper (`assets/focus-daemon`) on first use if nothing
 answers on the socket.

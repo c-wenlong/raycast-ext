@@ -328,6 +328,66 @@ final class Database {
     }
   }
 
+  // MARK: Stats reads
+
+  /// Finished (and abandoned) sessions that may overlap [start, end): started
+  /// before `end` and ended at or after `start`, oldest first.
+  func finishedSessions(overlapping start: Date, _ end: Date) throws -> [SessionRow] {
+    try rows(
+      """
+      select \(Database.sessionColumns) from sessions
+      where ended_at is not null and started_at < ? and ended_at >= ?
+      order by started_at, id
+      """, [SQLValue(end), SQLValue(start)], Database.session)
+  }
+
+  /// The newest finished (and abandoned) sessions, newest end first.
+  func recentSessions(limit: Int) throws -> [SessionRow] {
+    try rows(
+      """
+      select \(Database.sessionColumns) from sessions
+      where ended_at is not null order by ended_at desc, id desc limit ?
+      """, [.int(Int64(limit))], Database.session)
+  }
+
+  /// Runs `sql` (with one `%@` for a list of placeholders) over `ids` in
+  /// chunks, so a long history is a handful of queries, not one per session.
+  private func perSession<T>(_ ids: [Int64], _ sql: String, _ map: (Row) -> T) throws -> [T] {
+    var result: [T] = []
+    let unique = Array(Set(ids)).sorted()
+    for start in stride(from: 0, to: unique.count, by: 500) {
+      let chunk = unique[start..<min(start + 500, unique.count)]
+      let marks = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+      result += try rows(sql.replacingOccurrences(of: "%@", with: marks), chunk.map { .int($0) }, map)
+    }
+    return result
+  }
+
+  /// The pauses of several sessions, by session, in the order they were made.
+  func pauses(forSessions ids: [Int64]) throws -> [Int64: [PauseSpan]] {
+    var bySession: [Int64: [PauseSpan]] = [:]
+    let spans = try perSession(
+      ids, "select session_id, paused_at, resumed_at from pauses where session_id in (%@) order by id"
+    ) { ($0.int(0) ?? 0, PauseSpan(start: $0.date(1) ?? Date(timeIntervalSince1970: 0), end: $0.date(2))) }
+    for (id, span) in spans { bySession[id, default: []].append(span) }
+    return bySession
+  }
+
+  /// Per session: its blocked_attempts rows, and how many of them are snoozes.
+  /// Sessions with none are missing from the result.
+  func attemptCounts(forSessions ids: [Int64]) throws -> [Int64: (all: Int, snoozed: Int)] {
+    let counts = try perSession(
+      ids,
+      """
+      select session_id, count(*), coalesce(sum(outcome = 'snoozed'), 0) from blocked_attempts
+      where session_id in (%@) group by session_id
+      """
+    ) { ($0.int(0) ?? 0, Int($0.int(1) ?? 0), Int($0.int(2) ?? 0)) }
+    var result: [Int64: (all: Int, snoozed: Int)] = [:]
+    for (id, all, snoozed) in counts { result[id] = (all, snoozed) }
+    return result
+  }
+
   // MARK: Plumbing
 
   private func failure(_ context: String) -> DatabaseError {
