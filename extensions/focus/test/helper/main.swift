@@ -701,6 +701,89 @@ do {
   check("the extend options are 5, 10, 15 and 25 minutes", SessionMachine.extendOptions == [300, 600, 900, 1500])
 }
 
+// MARK: - Session state machine: an ad-hoc session's pause stops the clock
+
+func adhoc(at start: Date = at(14, 0), until end: Date = at(14, 30)) -> SessionMachine {
+  var machine = SessionMachine(pauseStopsClock: true)
+  _ = machine.apply(.start(at: start, plannedEnd: end))
+  return machine
+}
+
+do {
+  check("a new machine is a calendar session unless told", !SessionMachine().pauseStopsClock && SessionMachine(pauseStopsClock: true).pauseStopsClock)
+  check("idle has no end", SessionMachine(pauseStopsClock: true).effectiveEnd(at: at(14, 0)) == nil)
+
+  // A calendar session's end does not move while paused.
+  var calendar = running()
+  _ = calendar.apply(.pause(at: at(14, 10)))
+  check("calendar: the effective end is the planned end while paused", calendar.effectiveEnd(at: at(14, 20)) == at(14, 30) && !calendar.isClockStopped)
+  _ = calendar.apply(.resume(at: at(14, 15)))
+  check("calendar: resume leaves the planned end", calendar.plannedEnd == at(14, 30))
+
+  var machine = adhoc()
+  check("ad hoc: running counts down as usual", machine.remainingSeconds(at: at(14, 10)) == 1200 && machine.effectiveEnd(at: at(14, 10)) == at(14, 30) && !machine.isClockStopped)
+  check("ad hoc: pause", applied(&machine, .pause(at: at(14, 10))) == .paused && machine.isClockStopped)
+  check("ad hoc: remaining is frozen while paused", machine.remainingSeconds(at: at(14, 10)) == 1200 && machine.remainingSeconds(at: at(14, 12)) == 1200 && machine.remainingSeconds(at: at(14, 40)) == 1200)
+  check("ad hoc: the effective end moves on with the pause", machine.effectiveEnd(at: at(14, 12)) == at(14, 32) && machine.effectiveEnd(at: at(14, 40)) == at(15, 0))
+  check("ad hoc: the stored end waits for the pause to close", machine.plannedEnd == at(14, 30))
+  check("ad hoc: a tick at the original end changes nothing", applied(&machine, .tick(at: at(14, 30))) == SessionTransition.none && machine.state == .paused)
+  check("ad hoc: a tick long past the original end changes nothing", applied(&machine, .tick(at: at(16, 0))) == SessionTransition.none && machine.state == .paused && machine.pauses.last?.end == nil)
+  check("ad hoc: paused time counts up", machine.pausedSeconds(at: at(14, 15)) == 300)
+  check("ad hoc: resume after 5 min", applied(&machine, .resume(at: at(14, 15))) == .resumed && machine.state == .running)
+  check("ad hoc: resume moves the end by the pause", machine.plannedEnd == at(14, 35) && machine.extendedSeconds == 0)
+  check("ad hoc: remaining carries on from the frozen value", machine.remainingSeconds(at: at(14, 15)) == 1200 && machine.remainingSeconds(at: at(14, 16)) == 1140)
+  check("ad hoc: focused time excludes the pause", machine.focusedSeconds(at: at(14, 20)) == 15 * 60)
+  check("ad hoc: the moved end is not reached early", applied(&machine, .tick(at: at(14, 34, 59))) == SessionTransition.none)
+
+  // A second pause, past the moved end, with an extension in it.
+  check("ad hoc: pause again", applied(&machine, .pause(at: at(14, 20))) == .paused)
+  check("ad hoc: extend while paused", applied(&machine, .extend(seconds: 300, at: at(14, 50))) == .extended(seconds: 300, fromEnding: false))
+  check("ad hoc: extend while paused adds to the end as it stands", machine.plannedEnd == at(14, 40) && machine.extendedSeconds == 300 && machine.state == .paused)
+  check("ad hoc: extend while paused adds to the time left", machine.remainingSeconds(at: at(14, 50)) == 1200 && machine.effectiveEnd(at: at(14, 50)) == at(15, 10))
+  check("ad hoc: resume after the second pause", applied(&machine, .resume(at: at(15, 0))) == .resumed)
+  check("ad hoc: two pauses accumulate", machine.plannedEnd == at(15, 20) && machine.pausedSeconds(at: at(15, 0)) == 45 * 60 && machine.extendedSeconds == 300)
+  check("ad hoc: the deadline after the pauses", applied(&machine, .tick(at: at(15, 19, 59))) == SessionTransition.none && applied(&machine, .tick(at: at(15, 20))) == .reachedDeadline && machine.endingReason == .timer)
+  check("ad hoc: finish", applied(&machine, .finish(at: at(15, 21), rating: 5, note: nil, reason: nil)) == .finished(.timer))
+  // 81 min elapsed, 45 paused.
+  check("ad hoc: focused seconds after finish", machine.focusedSeconds(at: at(16, 0)) == 36 * 60)
+
+  // Stop during a pause past the original end: the end sheet says stopped,
+  // and an extension from it keeps the frozen time.
+  var stopped = adhoc(until: at(14, 1))
+  _ = stopped.apply(.pause(at: at(14, 0, 30)))
+  check("ad hoc: stop from a long pause", applied(&stopped, .stop(at: at(14, 20))) == .stopped && stopped.state == .ending && stopped.endingReason == .manual)
+  check("ad hoc: stop closes the pause and moves the end", stopped.pauses == [PauseSpan(start: at(14, 0, 30), end: at(14, 20))] && stopped.plannedEnd == at(14, 20, 30))
+  check("ad hoc: extend from that sheet adds to the moved end", applied(&stopped, .extend(seconds: 300, at: at(14, 20, 10))) != nil && stopped.plannedEnd == at(14, 25, 30))
+
+  // Finish and abandon straight from a pause.
+  var finishPaused = adhoc()
+  _ = finishPaused.apply(.pause(at: at(14, 10)))
+  check("ad hoc: finish from paused is manual", applied(&finishPaused, .finish(at: at(14, 50), rating: nil, note: nil, reason: nil)) == .finished(.manual))
+  check("ad hoc: finish from paused closes the pause", finishPaused.pauses == [PauseSpan(start: at(14, 10), end: at(14, 50))] && finishPaused.focusedSeconds(at: at(15, 0)) == 10 * 60)
+  var abandonPaused = adhoc()
+  _ = abandonPaused.apply(.pause(at: at(14, 10)))
+  check("ad hoc: abandon from paused", applied(&abandonPaused, .abandon(at: at(14, 12))) == .abandoned && abandonPaused.pauses.last?.end == at(14, 12))
+
+  // Pause and resume at the same second change nothing.
+  var blink = adhoc()
+  _ = blink.apply(.pause(at: at(14, 5)))
+  _ = blink.apply(.resume(at: at(14, 5)))
+  check("ad hoc: a zero-length pause leaves the end", blink.plannedEnd == at(14, 30))
+
+  // Restored from sqlite: the stored end already holds the closed pauses.
+  var restored = SessionMachine(
+    restoring: at(14, 0), plannedEnd: at(14, 35), extendedSeconds: 0,
+    pauses: [PauseSpan(start: at(14, 5), end: at(14, 10)), PauseSpan(start: at(14, 20), end: nil)], endingReason: nil,
+    pauseStopsClock: true)
+  check("ad hoc restored paused: time left frozen at the pause", restored.state == .paused && restored.remainingSeconds(at: at(14, 25)) == 900 && restored.effectiveEnd(at: at(14, 25)) == at(14, 40))
+  check("ad hoc restored paused: no deadline past the stored end", applied(&restored, .tick(at: at(14, 50))) == SessionTransition.none)
+  check("ad hoc restored paused: resume moves the end once", applied(&restored, .resume(at: at(14, 30))) == .resumed && restored.plannedEnd == at(14, 45))
+  let restoredRunning = SessionMachine(
+    restoring: at(14, 0), plannedEnd: at(14, 35), extendedSeconds: 0, pauses: [PauseSpan(start: at(14, 5), end: at(14, 10))],
+    endingReason: nil, pauseStopsClock: true)
+  check("ad hoc restored running: the stored end as is", restoredRunning.state == .running && restoredRunning.remainingSeconds(at: at(14, 15)) == 1200)
+}
+
 // MARK: - Raycast deeplink
 
 do {
@@ -1166,15 +1249,20 @@ do {
 func pauseRows(_ db: Database, _ id: Int) -> [PauseSpan] { try! db.pauses(Int64(id)) }
 
 do {
+  // A calendar session: a pause is a break, the planned end stays put.
   let clock = Clock(at(10, 0))
-  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  let h = Harness(
+    config: #"{"startableCalendars": ["work"], "logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#,
+    clock: clock)
+  h.fake.eventList = [event("D1", "Draft", at(10, 0), at(10, 10))]
   check("idle: nothing to tick", !h.core.ticking && h.core.sessionView() == nil)
   check("pause with nothing running", h.send("pause")["error"] == "no session is running")
   check("stop with nothing running", h.send("stop")["error"] == "no session is running")
   check("extend with nothing running", h.send("extend", ["seconds": 300])["error"] == "no session is running")
 
-  let started = h.send("startAdhoc", ["goal": "Draft", "durationSeconds": 600, "calendarId": "work"])
+  let started = h.send("start", ["eventId": "D1"])
   let id = started["session"]?["id"]?.intValue ?? 0
+  check("a calendar session's pause does not stop the clock", started["session"]?["pauseStopsClock"] == false, started.serialized())
   check("start begins the 1 Hz tick", h.core.ticking)
   check("start shows the session", h.lastView?.state == "running" && h.lastView?.remainingSeconds == 600 && h.lastView?.goal == "Draft", "\(String(describing: h.lastView))")
   check("the view names the calendar and the extend options", h.lastView?.calendarTitle == "Work" && h.lastView?.extendOptions == [300, 600, 900, 1500] && h.lastView?.id == id)
@@ -1190,13 +1278,16 @@ do {
   clock.now = at(10, 4)
   let status = h.send("status")["session"]
   check("status counts paused time and the deadline keeps running", status?["pausedSeconds"] == 120 && status?["remainingSeconds"] == 360 && status?["state"] == "paused", status?.serialized() ?? "")
+  check("a paused calendar session keeps its planned end", status?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 10))
   let views = h.presenter.views.count
   h.core.secondTick()
   check("each second refreshes the view", h.presenter.views.count == views + 1 && h.lastView?.pausedSeconds == 120)
+  check("the paused calendar view keeps its end and counts down", h.lastView?.plannedEnd == at(10, 10) && h.lastView?.remainingSeconds == 360)
 
   clock.now = at(10, 5)
   check("resume", h.send("resume")["session"]?["state"] == "running")
   check("resume closes the pause row", pauseRows(h.db, id) == [PauseSpan(start: at(10, 2), end: at(10, 5))])
+  check("resuming a calendar session leaves the end alone", (try! h.db.session(id: Int64(id)))?.extendedEnd == nil && h.lastView?.plannedEnd == at(10, 10))
   check("resume twice is refused", h.send("resume")["error"] == "the session is not paused")
 
   check("extend needs seconds", h.send("extend")["error"] == "seconds is required")
@@ -1255,17 +1346,19 @@ do {
 do {
   // The deadline while paused, noticed by a command before the timer fires,
   // then Finish records "timer".
+  // A calendar session, so the planned end does not wait for the pause.
   let clock = Clock(at(11, 0))
-  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
-  let id = h.send("startAdhoc", ["goal": "Short", "durationSeconds": 60, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
-  clock.now = at(11, 0, 30)
+  let h = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log"}"#, clock: clock)
+  h.fake.eventList = [event("S1", "Short", at(11, 0), at(11, 2))]
+  let id = h.send("start", ["eventId": "S1"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(11, 1)
   _ = h.send("pause")
-  clock.now = at(11, 1, 5)
+  clock.now = at(11, 2, 5)
   let status = h.send("status")["session"]
   check("a command notices the deadline passed while paused", status?["state"] == "ending" && status?["endReason"] == "timer", status?.serialized() ?? "")
   check("the end sheet shows then too", h.presenter.endSheets.count == 1)
-  check("the pause closes at the deadline", pauseRows(h.db, id) == [PauseSpan(start: at(11, 0, 30), end: at(11, 1))])
-  clock.now = at(11, 2)
+  check("the pause closes at the deadline", pauseRows(h.db, id) == [PauseSpan(start: at(11, 1), end: at(11, 2))])
+  clock.now = at(11, 3)
   let finished = h.send("finish", ["rating": 3])
   check("finish at the timer's end sheet records timer", finished["session"]?["endReason"] == "timer", finished.serialized())
   check("its log event says the timer ran out", h.fake.saved.last?.draft.notes.contains("Ended: when the timer ran out") == true)
@@ -1289,7 +1382,8 @@ do {
   h.core.presenterResume()
   h.core.presenterExtend(seconds: 600)
   h.core.drain()
-  check("resume and extend from the UI", h.lastView?.state == "running" && h.lastView?.plannedEnd == at(12, 35))
+  // Ad hoc: the 2 min pause moved the end from 12:25 to 12:27, then +10 min.
+  check("resume and extend from the UI", h.lastView?.state == "running" && h.lastView?.plannedEnd == at(12, 37), "\(String(describing: h.lastView))")
   h.core.presenterStop()
   h.core.drain()
   check("stop from the UI shows the end sheet", h.presenter.endSheets.count == 1 && h.lastView?.state == "ending")
@@ -1342,9 +1436,11 @@ do {
 }
 
 do {
+  // A calendar session restarted while paused: its end stays put.
   let clock = Clock(at(9, 0))
-  let first = Harness(clock: clock)
-  let id = first.send("startAdhoc", ["goal": "Restarted", "durationSeconds": 3600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  let first = Harness(config: #"{"startableCalendars": ["work"]}"#, clock: clock)
+  first.fake.eventList = [event("R1", "Restarted", at(9, 0), at(10, 0))]
+  let id = first.send("start", ["eventId": "R1"])["session"]?["id"]?.intValue ?? 0
   clock.now = at(9, 1)
   _ = first.send("extend", ["seconds": 600])
   clock.now = at(9, 10)
@@ -1390,6 +1486,203 @@ do {
   _ = boundary.send("startAdhoc", ["goal": "Boundary", "durationSeconds": 3600, "calendarId": "work"])
   let stale = boundary.relaunch(at: at(9, 31, 31))
   check("91 s without a heartbeat is abandoned", stale.send("status")["session"] == .null && (try! stale.db.session(id: 1))?.endReason == "abandoned")
+}
+
+do {
+  // Ad hoc: a pause stops the clock (Kai, 2026-09-28).
+  let clock = Clock(at(10, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  let started = h.send("startAdhoc", ["goal": "Essay", "durationSeconds": 1200, "calendarId": "work"])
+  let id = started["session"]?["id"]?.intValue ?? 0
+  check("ad hoc: the session says a pause stops its clock", started["session"]?["pauseStopsClock"] == true, started.serialized())
+
+  // Pause 5 min, then resume.
+  clock.now = at(10, 5)
+  _ = h.send("pause")
+  clock.now = at(10, 7)
+  var status = h.send("status")["session"]
+  check(
+    "ad hoc paused: remaining frozen, end moving", status?["remainingSeconds"] == 900 && status?["pausedSeconds"] == 120
+      && status?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 22) && status?["state"] == "paused",
+    status?.serialized() ?? "")
+  clock.now = at(10, 8)
+  h.core.secondTick()
+  check("ad hoc paused: the view is frozen", h.lastView?.remainingSeconds == 900 && h.lastView?.plannedEnd == at(10, 23), "\(String(describing: h.lastView))")
+  check("ad hoc paused: the view's end minus now is the time left", h.lastView.map { $0.plannedEnd.timeIntervalSince(at(10, 8)) } == 900)
+  check("ad hoc paused: nothing stored until the pause closes", (try! h.db.session(id: Int64(id)))?.extendedEnd == nil)
+  clock.now = at(10, 10)
+  let resumed = h.send("resume")["session"]
+  check(
+    "ad hoc: resume after 5 min moves the end by 5 min", resumed?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 25)
+      && resumed?["remainingSeconds"] == 900 && resumed?["extendedSeconds"] == 0 && resumed?["state"] == "running",
+    resumed?.serialized() ?? "")
+  var row = try! h.db.session(id: Int64(id))!
+  check("ad hoc: the moved end is stored, extensions untouched", row.extendedEnd == at(10, 25) && row.extendedSeconds == 0 && row.plannedEnd == at(10, 20), "\(row)")
+  check("ad hoc: the pause row is closed", pauseRows(h.db, id) == [PauseSpan(start: at(10, 5), end: at(10, 10))])
+  clock.now = at(10, 11)
+  h.core.secondTick()
+  check("ad hoc: the countdown carries on from the frozen value", h.lastView?.remainingSeconds == 840 && h.lastView?.plannedEnd == at(10, 25))
+
+  // A second pause runs past the moved end, and extends during it.
+  clock.now = at(10, 12)
+  _ = h.send("pause")
+  clock.now = at(10, 30)
+  h.core.secondTick()
+  check("ad hoc: no end sheet while paused past the end", h.presenter.endSheets.isEmpty && h.lastView?.state == "paused" && h.lastView?.remainingSeconds == 780)
+  status = h.send("status")["session"]
+  check("ad hoc: a command past the end leaves it paused", status?["state"] == "paused" && status?["endReason"] == .null, status?.serialized() ?? "")
+  let extended = h.send("extend", ["seconds": 300])["session"]
+  check(
+    "ad hoc: extend during a pause adds to the moved end", extended?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 48)
+      && extended?["remainingSeconds"] == 1080 && extended?["extendedSeconds"] == 300 && extended?["state"] == "paused",
+    extended?.serialized() ?? "")
+  row = try! h.db.session(id: Int64(id))!
+  check("ad hoc: the extension is stored on the end as it stood", row.extendedEnd == at(10, 30) && row.extendedSeconds == 300, "\(row)")
+  clock.now = at(10, 40)
+  let again = h.send("resume")["session"]
+  check("ad hoc: two pauses accumulate", again?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 58) && again?["remainingSeconds"] == 1080 && again?["pausedSeconds"] == 1980, again?.serialized() ?? "")
+  check("ad hoc: the accumulated end is stored", (try! h.db.session(id: Int64(id)))?.extendedEnd == at(10, 58))
+
+  // The timer runs out at the moved end.
+  clock.now = at(10, 57, 59)
+  h.core.secondTick()
+  check("ad hoc: no end sheet before the moved end", h.presenter.endSheets.isEmpty && h.lastView?.remainingSeconds == 1)
+  clock.now = at(10, 58)
+  h.core.secondTick()
+  check("ad hoc: the end sheet at the moved end", h.presenter.endSheets.count == 1 && h.lastView?.state == "ending")
+  clock.now = at(10, 59)
+  let finished = h.send("finish", ["rating": 4])
+  check("ad hoc: finish records the timer", finished["session"]?["endReason"] == "timer" && finished["session"]?["pausedSeconds"] == 1980, finished.serialized())
+  let notes = h.fake.saved.last?.draft.notes ?? ""
+  // 59 min from start to end, 33 min paused.
+  check(
+    "ad hoc: the log event's focused line excludes the pauses",
+    notes.contains("Focused: 26 min of 59 min") && notes.contains("Pauses: 2, 33 min in total")
+      && notes.contains("Ended: when the timer ran out, after extending 5 min"), notes)
+  let recent = h.send("stats")["recent"]?[0]
+  check("ad hoc: stats' focused seconds exclude the pauses", recent?["focusedSeconds"] == 1560, recent?.serialized() ?? "")
+}
+
+do {
+  // Ad hoc: a stop during a pause past the original end is a stop, not the timer.
+  let clock = Clock(at(11, 0))
+  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  let id = h.send("startAdhoc", ["goal": "Short", "durationSeconds": 60, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(11, 0, 30)
+  _ = h.send("pause")
+  clock.now = at(11, 5)
+  let stopped = h.send("stop")["session"]
+  check("ad hoc: stop from a long pause", stopped?["state"] == "ending" && stopped?["endReason"] == "manual", stopped?.serialized() ?? "")
+  check("ad hoc: the end sheet's end is still ahead", h.presenter.endSheets.last.map { $0.plannedEnd == at(11, 5, 30) && $0.remainingSeconds == 0 } == true, "\(h.presenter.endSheets)")
+  check("ad hoc: stop stores the moved end", (try! h.db.session(id: Int64(id)))?.extendedEnd == at(11, 5, 30) && pauseRows(h.db, id) == [PauseSpan(start: at(11, 0, 30), end: at(11, 5))])
+  clock.now = at(11, 5, 10)
+  let more = h.send("extend", ["seconds": 60])["session"]
+  check("ad hoc: extend from that sheet keeps the frozen time", more?["state"] == "running" && more?["remainingSeconds"] == 80, more?.serialized() ?? "")
+  // Before the new end (11:06:30): 375 s from the start, 270 s paused.
+  clock.now = at(11, 6, 15)
+  let finished = h.send("finish")
+  check("ad hoc: finish after a stop records manual", finished["session"]?["endReason"] == "manual", finished.serialized())
+  check("ad hoc: its log event says so", h.fake.saved.last?.draft.notes.contains("Focused: 2 min of 6 min") == true && h.fake.saved.last?.draft.notes.contains("Ended: manually, after extending 1 min") == true, h.fake.saved.last?.draft.notes ?? "")
+}
+
+do {
+  // Ad hoc: restarts mid-pause and after a resume.
+  let clock = Clock(at(9, 0))
+  let first = Harness(clock: clock)
+  let id = first.send("startAdhoc", ["goal": "Restarted", "durationSeconds": 3600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(9, 1)
+  _ = first.send("extend", ["seconds": 600])
+  clock.now = at(9, 10)
+  _ = first.send("pause")
+  first.core.tick()
+  let second = first.relaunch(at: at(9, 11, 30))
+  var status = second.send("status")["session"]
+  check(
+    "ad hoc restart mid-pause: still paused with the time left frozen", status?["id"]?.intValue == id && status?["state"] == "paused"
+      && status?["remainingSeconds"] == 3600 && status?["pausedSeconds"] == 90 && status?["extendedSeconds"] == 600
+      && status?["pauseStopsClock"] == true, status?.serialized() ?? "")
+  check("ad hoc restart mid-pause: the end moves on from the pause", status?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 11, 30))
+  check("ad hoc restart mid-pause: the view is frozen too", second.lastView?.remainingSeconds == 3600 && second.lastView?.state == "paused")
+  clock.now = at(9, 20)
+  let resumed = second.send("resume")["session"]
+  check("ad hoc restart mid-pause: resume moves the end by the whole pause", resumed?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 20) && resumed?["remainingSeconds"] == 3600, resumed?.serialized() ?? "")
+  check("ad hoc restart mid-pause: the same pause row closes", pauseRows(second.db, id) == [PauseSpan(start: at(9, 10), end: at(9, 20))])
+  let stored = try! second.db.session(id: Int64(id))!
+  check("ad hoc restart mid-pause: stored end and extensions", stored.extendedEnd == at(10, 20) && stored.extendedSeconds == 600, "\(stored)")
+  second.core.tick()
+  let third = second.relaunch(at: at(9, 21))
+  status = third.send("status")["session"]
+  check(
+    "ad hoc restart after resume: running to the moved end", status?["state"] == "running"
+      && status?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 20) && status?["remainingSeconds"] == 3540,
+    status?.serialized() ?? "")
+  clock.now = at(10, 19, 59)
+  third.core.secondTick()
+  check("ad hoc restart after resume: no end sheet early", third.presenter.endSheets.isEmpty)
+  clock.now = at(10, 20)
+  third.core.secondTick()
+  check("ad hoc restart after resume: the end sheet at the moved end", third.presenter.endSheets.count == 1)
+}
+
+do {
+  // Ad hoc: finishing or abandoning while paused stores the moved end.
+  let clock = Clock(at(12, 0))
+  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  let id = h.send("startAdhoc", ["goal": "Finish paused", "durationSeconds": 600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(12, 2)
+  _ = h.send("pause")
+  clock.now = at(12, 5)
+  let finished = h.send("finish")
+  check("ad hoc finish from paused: the reply has the moved end", finished["session"]?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(12, 13) && finished["session"]?["pausedSeconds"] == 180, finished.serialized())
+  check("ad hoc finish from paused: the row stores it", (try! h.db.session(id: Int64(id)))?.extendedEnd == at(12, 13) && (try! h.db.session(id: Int64(id)))?.extendedSeconds == 0)
+
+  // A calendar session's finish leaves extended_end alone.
+  let calendarClock = Clock(at(12, 0))
+  let calendar = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log"}"#, clock: calendarClock)
+  calendar.fake.eventList = [event("F1", "Finish paused", at(12, 0), at(12, 10))]
+  let calendarId = calendar.send("start", ["eventId": "F1"])["session"]?["id"]?.intValue ?? 0
+  calendarClock.now = at(12, 2)
+  _ = calendar.send("pause")
+  calendarClock.now = at(12, 5)
+  _ = calendar.send("finish")
+  check("calendar finish from paused: no extended end", (try! calendar.db.session(id: Int64(calendarId)))?.extendedEnd == nil)
+
+  // Abandoned at launch while paused: the pause closes at the last heartbeat.
+  let abandonClock = Clock(at(13, 0))
+  let first = Harness(clock: abandonClock)
+  let abandonId = first.send("startAdhoc", ["goal": "Crashed paused", "durationSeconds": 600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  abandonClock.now = at(13, 1)
+  _ = first.send("pause")
+  abandonClock.now = at(13, 2)
+  first.core.tick()
+  let second = first.relaunch(at: at(13, 10))
+  let row = try! second.db.session(id: Int64(abandonId))!
+  check("ad hoc abandoned while paused: the end moved by the pause up to the heartbeat", row.endReason == "abandoned" && row.endedAt == at(13, 2) && row.extendedEnd == at(13, 11), "\(row)")
+}
+
+do {
+  // Ad hoc: restarted during a pause that ran past the original end.
+  let clock = Clock(at(9, 0))
+  let first = Harness(clock: clock)
+  _ = first.send("startAdhoc", ["goal": "Short", "durationSeconds": 60, "calendarId": "work"])
+  clock.now = at(9, 0, 30)
+  _ = first.send("pause")
+  clock.now = at(9, 5)
+  first.core.tick()
+  let second = first.relaunch(at: at(9, 5, 30))
+  let status = second.send("status")["session"]
+  check("ad hoc restart past the original end: still paused", status?["state"] == "paused" && status?["remainingSeconds"] == 30 && second.presenter.endSheets.isEmpty, status?.serialized() ?? "")
+  // A calendar session in the same spot reaches the end sheet (as before).
+  let calendarClock = Clock(at(9, 0))
+  let calendar = Harness(config: #"{"startableCalendars": ["work"]}"#, clock: calendarClock)
+  calendar.fake.eventList = [event("C1", "Short", at(9, 0), at(9, 2))]
+  _ = calendar.send("start", ["eventId": "C1"])
+  calendarClock.now = at(9, 0, 30)
+  _ = calendar.send("pause")
+  calendarClock.now = at(9, 5)
+  calendar.core.tick()
+  let back = calendar.relaunch(at: at(9, 5, 30))
+  check("calendar restart past the end while paused: the end sheet", back.send("status")["session"]?["state"] == "ending" && back.presenter.endSheets.count == 1)
 }
 
 // MARK: - Blocking: matching
@@ -1924,10 +2217,13 @@ do {
 
 do {
   let clock = Clock(at(9, 0))
-  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  let h = Harness(
+    config: #"{"startableCalendars": ["work"], "logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#,
+    clock: clock)
   // Yesterday: an event-calendar session with a pause and an extension, rated 4.
+  h.fake.eventList = [event("W1", "Write", at(22, 0, day: 27), at(22, 30, day: 27))]
   clock.now = at(22, 0, day: 27)
-  let first = h.send("startAdhoc", ["goal": "Write", "durationSeconds": 1800, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  let first = h.send("start", ["eventId": "W1"])["session"]?["id"]?.intValue ?? 0
   clock.now = at(22, 10, day: 27)
   _ = h.send("pause")
   clock.now = at(22, 15, day: 27)
@@ -2198,6 +2494,13 @@ do {
   check("replacingReview: Kai's own Rating line is not Focus's", LogText.replacingReview(in: kais, rating: 5, note: nil) == "Rating: great session\n" + base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★"))
   let afterMarkers = bare.replacingOccurrences(of: "Rating: none\n", with: "") + "\nRating: ★★★★★"
   check("replacingReview: nil without a Rating line above the markers", LogText.replacingReview(in: afterMarkers, rating: 3, note: nil) == nil)
+  let kaisReview = "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + base
+  check("replacingReview: Kai's own review lines above Focus's block are kept", LogText.replacingReview(in: kaisReview, rating: nil, note: nil) == "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + bare)
+  let kaisNote = base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old\nEnded: manually", with: "Rating: ★★★☆☆\nEnded: manually\nNote: mine")
+  check("replacingReview: Kai's Note line below the block is kept", LogText.replacingReview(in: kaisNote, rating: 2, note: nil) == kaisNote.replacingOccurrences(of: "Rating: ★★★☆☆", with: "Rating: ★★☆☆☆"))
+  let inserted = base.replacingOccurrences(of: "Note: old\n", with: "Note: old\nMy line\n")
+  check("replacingReview: nil when a line was put inside the block", LogText.replacingReview(in: inserted, rating: 5, note: nil) == nil)
+  check("replacingReview: nil without the attempts line above the rating", LogText.replacingReview(in: base.replacingOccurrences(of: "Blocked attempts: none\n", with: ""), rating: 5, note: nil) == nil)
   check("replacingReview: nil for notes with no Rating line", LogText.replacingReview(in: "My own notes", rating: 3, note: nil) == nil)
   check("LogText: the description uses the same review lines", LogText.ratingLine(nil) == "Rating: none" && LogText.noteLine(" \n") == nil && LogText.noteLine("a\nb") == "Note: a b")
 }
@@ -2321,7 +2624,7 @@ do {
   // Kai added his own text but kept the markers: only the review lines change.
   let (keptId, keptEvent) = finished("Annotated", from: at(13, 40), to: at(13, 50))
   let generated = h.fake.notes(of: keptEvent) ?? ""
-  let annotated = "My own thoughts\n\n" + generated.replacingOccurrences(of: "Ended:", with: "Aside: kept\nEnded:") + "\nPS: also mine"
+  let annotated = "My own thoughts\n\n" + generated.replacingOccurrences(of: "Blocked attempts:", with: "Aside: kept\nBlocked attempts:") + "\nPS: also mine"
   if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = annotated }
   let annotatedReply = update(keptId, ["rating": 5, "note": "after"])
   let expected = annotated.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: before", with: "Rating: ★★★★★\nNote: after")

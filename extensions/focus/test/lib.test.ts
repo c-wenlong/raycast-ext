@@ -3416,7 +3416,10 @@ net.createServer((socket) => {
         });
         assert.equal(cleared.session.rating, null);
         assert.equal(cleared.session.note, null);
-        assert.match(eventOf(logged.id).notes, /Rating: none\n\n/);
+        assert.match(
+          eventOf(logged.id).notes,
+          /Rating: none\nEnded: manually\n\n/,
+        );
         assert.doesNotMatch(eventOf(logged.id).notes, /Note:/);
         await daemon.updateSession(logged.id, {
           rating: 2,

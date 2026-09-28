@@ -181,10 +181,12 @@ function createFakeDaemon(options) {
     return id;
   }
 
-  // A shortened LogText.description: the rating and note lines, then the markers.
+  // A shortened LogText.description: the review block (attempts, rating,
+  // note, how it ended), then the markers.
   function logNotes(item) {
-    const lines = ["Source: fake", `Rating: ${stars(item.rating)}`];
+    const lines = ["Source: fake", "Blocked attempts: none", `Rating: ${stars(item.rating)}`];
     if (item.note) lines.push(`Note: ${item.note}`);
+    lines.push("Ended: manually");
     return [...lines, "", ...markerLines(item.id, item.startedAt)].join("\n");
   }
 
@@ -229,23 +231,31 @@ function createFakeDaemon(options) {
     }
     const rewritten = replacingReview(event.notes, item.rating, item.note);
     if (rewritten === null) {
-      return "the log event's notes no longer have the Rating line Focus wrote, so it was not updated";
+      return "the log event's notes no longer have the Rating line in the block Focus wrote, so it was not updated";
     }
     event.notes = rewritten;
     return null;
   }
 
-  // LogText.replacingReview: only Focus's Rating line (above the markers)
-  // and the Note line below it change; null when that Rating line is gone.
+  // LogText.replacingReview: the review block Focus wrote is found by its
+  // shape (Blocked attempts, Rating, maybe Note, Ended; the last one above
+  // the markers) and only its Rating and Note lines change; null without one.
   function replacingReview(notes, rating, note) {
     const lines = notes.split("\n");
-    const marker = lines.findIndex((line) => line.trim().startsWith("focus-session: "));
-    const index = lines.findIndex(
-      (line, i) => (marker < 0 || i < marker) && /^Rating: (none|[★☆]{5})$/.test(line),
-    );
+    let end = lines.findIndex((line) => line.trim().startsWith("focus-session: "));
+    if (end < 0) end = lines.length;
+    let index = -1;
+    let hasNote = false;
+    for (let i = end - 1; i >= 1 && index < 0; i--) {
+      if (!lines[i - 1].startsWith("Blocked attempts: ") || !/^Rating: (none|[★☆]{5})$/.test(lines[i])) continue;
+      if (i + 1 < end && lines[i + 1].startsWith("Ended: ")) index = i;
+      else if (i + 2 < end && lines[i + 1].startsWith("Note: ") && lines[i + 2].startsWith("Ended: ")) {
+        index = i;
+        hasNote = true;
+      }
+    }
     if (index < 0) return null;
     lines[index] = `Rating: ${stars(rating)}`;
-    const hasNote = index + 1 < lines.length && lines[index + 1].startsWith("Note: ");
     const noteLine = note ? `Note: ${note}` : null;
     if (hasNote && noteLine) lines[index + 1] = noteLine;
     else if (hasNote) lines.splice(index + 1, 1);
