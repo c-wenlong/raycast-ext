@@ -73,24 +73,17 @@ Everything is in `~/.raycast/focus/` (gitignored at the repo root as `/focus/`):
 The commands launch the helper (`assets/focus-daemon`) on first use if nothing
 answers on the socket.
 
-## Status: step 3 (engine)
+## Status: built
 
-While a session runs (and while its end sheet waits) the helper blocks apps
-from the session's profile: a blocked app is hidden and a native block page
-with one Snooze button takes its place. Profiles and the six built-in
-categories are in `config.json` (see [HELPER.md](HELPER.md) "Blocking"); the
-site half (block page for Chrome and Dia tabs) arrives in its own PR.
-
-## Status: step 2
-
-PLAN step 1 and the session half of step 2: the helper runs the timer,
-pause, resume, extend and stop, keeps a heartbeat, marks a session abandoned
-when the helper died with it open, and can fire the Raycast Focus deeplink.
-The menu bar countdown and the native end sheet arrive with the step 2 UI PR;
-until then Focus Today's Finish form
+All four steps of [PLAN.md](PLAN.md) are merged (2026-09-28). While a session
+runs (and while its end sheet waits) the helper blocks apps and sites from the
+session's profile: a blocked app is hidden behind a native block page with one
+Snooze button, and a blocked host in Chrome or Dia is sent to the same page
+served on loopback. The menu bar shows the countdown; the native end sheet
+takes the rating and note. Focus Today's Finish form
 ([src/components/FinishSessionForm.tsx](src/components/FinishSessionForm.tsx))
-is the way to finish. Ad-hoc sessions and the rest of Settings arrived in step
-4 (see Commands above).
+stays as a headless fallback. macOS asks once per binary path for Calendar
+access and for Automation access to each browser.
 
 ## Development
 
