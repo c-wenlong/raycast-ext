@@ -73,12 +73,13 @@ final class BrowserWatch {
   private var lastRedirect: [String: (url: String, at: Date)] = [:]
   private var reported: [String: String] = [:]
   private var asking: Set<String> = []
+  private var deferred: [String: Date] = [:]
 
   init(
     log: @escaping (String) -> Void,
     page: @escaping PageBuilder,
     isOwnPage: @escaping (String) -> Bool,
-    runner: @escaping Runner = BrowserWatch.osascript,
+    runner: @escaping Runner = { BrowserWatch.osascript($0, $1) },
     permission: @escaping PermissionCheck = BrowserWatch.automationPermission,
     isRunning: @escaping (String) -> Bool = BrowserWatch.appIsRunning,
     clock: @escaping () -> Date = Date.init,
@@ -150,6 +151,7 @@ final class BrowserWatch {
     guard isRunning(bundle) else { return }
     // While the prompt is up, even the no-prompt check waits for Kai's answer; leave this browser alone.
     guard !asking.contains(bundle) else { return }
+    if let until = deferred[bundle] { if clock() < until { return } else { deferred[bundle] = nil } }
     switch permission(bundle, false) {
     case Self.granted:
       break
@@ -204,7 +206,8 @@ final class BrowserWatch {
         } else if status == Self.denied {
           self.report(bundle, "\(bundle): Automation permission denied; allow focus-daemon to control it in System Settings > Privacy & Security > Automation")
         } else {
-          self.log("\(bundle): Automation prompt returned \(status)")
+          self.deferred[bundle] = self.clock().addingTimeInterval(Self.promptRetry)
+          self.report(bundle, "\(bundle): Automation prompt returned \(status); trying again in \(Int(Self.promptRetry)) s")
         }
       }
     }
@@ -299,14 +302,61 @@ final class BrowserWatch {
     !NSRunningApplication.runningApplications(withBundleIdentifier: bundle).isEmpty
   }
 
+  /// Automation permission as osascript sees it. The in-process check,
+  /// `AEDeterminePermissionToAutomateTarget`, never returns inside the daemon
+  /// (verified 2026-09-28: the watcher thread sat in it for good, with or
+  /// without a prompt), so the verdict comes from a probe script instead:
+  /// exit 0 is granted, -1743 is denied, anything else is passed through.
+  /// Without `ask` the cached verdict is returned, or `notAsked` when this
+  /// browser has not been probed yet, so the caller runs the probe (which may
+  /// block on the prompt) on a thread of its own. A grant is cached for good;
+  /// a denial is re-probed after `denialRetry` so a later grant in System
+  /// Settings is picked up without a restart.
+  static let denialRetry: TimeInterval = 60
+  private static let probeLock = NSLock()
+  private static var probed: [String: (verdict: Int32, at: Date)] = [:]
+
   static func automationPermission(_ bundle: String, ask: Bool) -> Int32 {
-    let target = NSAppleEventDescriptor(bundleIdentifier: bundle)
-    guard let desc = target.aeDesc else { return Self.notRunning }
-    return AEDeterminePermissionToAutomateTarget(desc, typeWildCard, typeWildCard, ask)
+    probeLock.lock()
+    let cached = probed[bundle]
+    probeLock.unlock()
+    if let cached {
+      if cached.verdict == granted { return granted }
+      if Date().timeIntervalSince(cached.at) < denialRetry { return cached.verdict }
+    }
+    guard ask else { return notAsked }
+    let verdict = probeVerdict(osascript(probeScript(bundle), [], timeout: nil))
+    if verdict == granted || verdict == denied {
+      probeLock.lock()
+      probed[bundle] = (verdict, Date())
+      probeLock.unlock()
+    }
+    return verdict
+  }
+
+  /// The probe is the real tab read: `get name` needs no consent and would
+  /// report "granted" before the prompt, and while a prompt is pending every
+  /// other Apple Event to that browser times out (-1712).
+  static func probeScript(_ bundle: String) -> String {
+    readScript(bundle).replacingOccurrences(of: "with timeout of 3 seconds", with: "with timeout of \(Int(promptWait)) seconds")
+  }
+  /// How long one probe waits for the Automation prompt to be answered.
+  static let promptWait: TimeInterval = 900
+  /// How long to leave a browser alone after a probe came back undecided.
+  static let promptRetry: TimeInterval = 30
+
+  /// Maps a probe run to the permission constants above. Consent was given
+  /// when the script ran at all, so "no window" (-1719, -1728) counts as
+  /// granted; a timeout (-1712) is the prompt still pending and is not cached.
+  static func probeVerdict(_ result: ScriptResult) -> Int32 {
+    if result.status == 0 { return granted }
+    guard let number = result.errorNumber else { return notRunning }
+    if number == -1719 || number == -1728 { return granted }
+    return Int32(clamping: number)
   }
 
   /// Runs `source` with `arguments` in /usr/bin/osascript, killed after `scriptTimeout`.
-  static func osascript(_ source: String, _ arguments: [String]) -> ScriptResult {
+  static func osascript(_ source: String, _ arguments: [String], timeout: TimeInterval? = scriptTimeout) -> ScriptResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
     process.arguments = ["-e", source] + arguments
@@ -321,7 +371,7 @@ final class BrowserWatch {
       return ScriptResult(status: -1, output: "", error: "could not run osascript: \(error)")
     }
     let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-    DispatchQueue.global().asyncAfter(deadline: .now() + scriptTimeout, execute: watchdog)
+    if let timeout { DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog) }
     // stderr is read on another thread so neither pipe can fill up and stall the child.
     var errorData = Data()
     let group = DispatchGroup()

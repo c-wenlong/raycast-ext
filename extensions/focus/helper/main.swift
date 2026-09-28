@@ -224,6 +224,7 @@ func runServer() -> Never {
   let engine = BlockEngine(config: configFile, log: log)
   let appBlocker = AppBlocker(engine: engine, log: log)
   engine.workspace = appBlocker
+  engine.siteBlocker = makeSiteBlocker(log: log)
   keepAlive.append(appBlocker)
 
   let core: FocusCore

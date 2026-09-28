@@ -133,6 +133,17 @@ if arguments.first == "--demo" {
   app.run()
 }
 
+// MARK: Permission probe
+
+check("probe: exit 0 is granted", BrowserWatch.probeVerdict(ScriptResult(status: 0, output: "Google Chrome\n", error: "")) == BrowserWatch.granted)
+check("probe: -1743 is denied", BrowserWatch.probeVerdict(ScriptResult(status: 1, output: "", error: "execution error: Not authorized to send Apple events to Google Chrome. (-1743)")) == BrowserWatch.denied)
+check("probe: -600 passes through", BrowserWatch.probeVerdict(ScriptResult(status: 1, output: "", error: "execution error: Google Chrome got an error: Application isn't running. (-600)")) == BrowserWatch.notRunning)
+check("probe: a killed script counts as not running", BrowserWatch.probeVerdict(ScriptResult(status: 15, output: "", error: "")) == BrowserWatch.notRunning)
+check("probe: the probe is the tab read with a long timeout", BrowserWatch.probeScript("com.google.Chrome") == BrowserWatch.readScript("com.google.Chrome").replacingOccurrences(of: "with timeout of 3 seconds", with: "with timeout of 900 seconds"))
+check("probe: the probe still reads the active tab", BrowserWatch.probeScript("com.google.Chrome").contains("URL of active tab of front window"))
+check("probe: no window still means consent was given", BrowserWatch.probeVerdict(ScriptResult(status: 1, output: "", error: "execution error: Google Chrome got an error: Can’t get window 1. Invalid index. (-1719)")) == BrowserWatch.granted)
+check("probe: a pending prompt (-1712) is passed through, not cached", BrowserWatch.probeVerdict(ScriptResult(status: 1, output: "", error: "execution error: Google Chrome got an error: AppleEvent timed out. (-1712)")) == -1712)
+
 // MARK: Page
 
 let hostile = "<img src=x onerror=alert(1)>.evil.com"

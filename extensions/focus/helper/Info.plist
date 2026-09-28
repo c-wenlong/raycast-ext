@@ -18,6 +18,8 @@
   <true/>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>Focus lists today's events from the calendars you pick and writes a log event for each finished focus session.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Focus reads the active tab of Chrome and Dia to block sites during a focus session.</string>
   <key>NSCalendarsUsageDescription</key>
   <string>Focus lists today's events from the calendars you pick and writes a log event for each finished focus session.</string>
 </dict>
