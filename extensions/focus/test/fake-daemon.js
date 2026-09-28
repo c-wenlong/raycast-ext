@@ -130,9 +130,21 @@ function createFakeDaemon(options) {
     };
   }
 
-  function closePause(session, at) {
+  // An ad-hoc session's pause stops its clock, as in Session.swift: the time
+  // left holds, and closing the pause moves the planned end on by its length.
+  const pauseStopsClock = (session) => session.sourceEventId === null;
+  const openPause = (session) => {
     const last = session._pauses[session._pauses.length - 1];
-    if (last && last.end === null) last.end = Math.max(at, last.start);
+    return last && last.end === null ? last : null;
+  };
+
+  function closePause(session, at) {
+    const last = openPause(session);
+    if (!last) return;
+    last.end = Math.max(at, last.start);
+    if (pauseStopsClock(session)) {
+      session.plannedEnd = new Date(Date.parse(session.plannedEnd) + (last.end - last.start)).toISOString();
+    }
   }
 
   function pausedSeconds(session, now) {
@@ -140,10 +152,12 @@ function createFakeDaemon(options) {
     return Math.round(total / 1000);
   }
 
-  // Deadline check, as the helper does before every command.
+  // Deadline check, as the helper does before every command. A paused ad-hoc
+  // session never reaches it.
   function advance(now) {
     const session = state.session;
     if (!session || session.state === "ending") return;
+    if (session.state === "paused" && pauseStopsClock(session)) return;
     const end = Date.parse(session.plannedEnd);
     if (now.getTime() >= end) {
       closePause(session, end);
@@ -155,11 +169,19 @@ function createFakeDaemon(options) {
   function wire(session, now) {
     if (!session) return null;
     const { _pauses, _ending, ...rest } = session;
-    const remaining = Math.floor((Date.parse(session.plannedEnd) - now.getTime()) / 1000);
+    // A paused ad-hoc session: the time left as of the pause, and the end it
+    // would have if resumed now.
+    const pause = session.state === "paused" && pauseStopsClock(session) ? openPause(session) : null;
+    const clockAt = pause ? pause.start : now.getTime();
+    const remaining = Math.floor((Date.parse(session.plannedEnd) - clockAt) / 1000);
     return {
       ...rest,
+      plannedEnd: pause
+        ? new Date(Date.parse(session.plannedEnd) + (now.getTime() - pause.start)).toISOString()
+        : session.plannedEnd,
       remainingSeconds: session.state === "ending" ? 0 : Math.max(0, remaining),
       pausedSeconds: pausedSeconds({ _pauses }, now.getTime()),
+      pauseStopsClock: pauseStopsClock(session),
       endReason: _ending,
     };
   }
@@ -429,7 +451,12 @@ function createFakeDaemon(options) {
         }
         const session = state.session;
         if (!session) return refuse("extend");
-        const from = Math.max(Date.parse(session.plannedEnd), now.getTime());
+        // A paused ad-hoc session's end is never behind (its clock is
+        // stopped), so the extension adds to it as it stands.
+        const stopped = session.state === "paused" && pauseStopsClock(session);
+        const from = stopped
+          ? Date.parse(session.plannedEnd)
+          : Math.max(Date.parse(session.plannedEnd), now.getTime());
         session.plannedEnd = new Date(from + seconds * 1000).toISOString();
         session.extendedSeconds += seconds;
         if (session.state === "ending") {

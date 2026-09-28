@@ -110,12 +110,12 @@ let panel = sheet.panel
 func session(
   id: Int = 7, goal: String = "Deep Work", state: String = "running", remaining: Int = 1500,
   started: TimeInterval = -1500, plannedEnd: TimeInterval? = nil, paused: Int = 0, calendar: String = "Work",
-  extend: [Int] = [300, 600, 900, 1500]
+  extend: [Int] = [300, 600, 900, 1500], adHoc: Bool = false
 ) -> SessionView {
   SessionView(
     id: id, goal: goal, state: state, startedAt: now.addingTimeInterval(started),
     plannedEnd: now.addingTimeInterval(plannedEnd ?? TimeInterval(remaining)), remainingSeconds: remaining,
-    pausedSeconds: paused, calendarTitle: calendar, extendOptions: extend)
+    pausedSeconds: paused, calendarTitle: calendar, extendOptions: extend, pauseStopsClock: adHoc)
 }
 
 func lastCall() -> String { fake.calls.last ?? "(none)" }
@@ -753,6 +753,17 @@ check("extended by 10 min: the fill drops to 1500/3600", abs((floating.content?.
 ui.update(session(state: "paused", remaining: 1500, started: -1500))
 check("paused title", floating.content?.titleText == "⏸ 25:00 Deep Work", floating.content?.titleText ?? "nil")
 check("paused keeps the fill", abs((floating.content?.progress ?? 0) - 0.5) < 0.001)
+// An ad-hoc pause: the planned end moves on each second (Session.swift), but
+// the panel's fill holds, and carries on from there at the resume.
+ui.update(session(id: 58, remaining: 1500, started: -1500, adHoc: true))
+let adHocFill = floating.pill.progress
+ui.update(session(id: 58, state: "paused", remaining: 1500, started: -1500, adHoc: true))
+now = now.addingTimeInterval(30)
+ui.update(session(id: 58, state: "paused", remaining: 1500, started: -1530, plannedEnd: 1500, paused: 30, adHoc: true))
+check("panel: an ad-hoc pause freezes the fill", floating.pill.progress == adHocFill && !floating.sweepMoves, "\(floating.pill.progress) \(adHocFill)")
+ui.update(session(id: 58, remaining: 1500, started: -1530, plannedEnd: 1500, paused: 30, adHoc: true))
+check("panel: resumed, the fill carries on from where it froze", abs(floating.pill.progress - adHocFill) < 1e-9 && floating.sweepMoves, "\(floating.pill.progress) \(adHocFill)")
+ui.update(session(state: "paused", remaining: 1500, started: -1500))
 let pausedPanelWidth = floating.frame.width
 ui.update(session(remaining: 1500, started: -1500))
 check("paused pill keeps the same size and its right edge", pausedPanelWidth == floating.frame.width && floating.frame.maxX == defaultFrame.maxX, "\(floating.frame)")
@@ -1066,60 +1077,48 @@ if let real = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
   check("notch: a real notch sits between the menu bar's two halves", found.notch.map { $0.height == real.safeAreaInsets.top && $0.maxY == real.frame.maxY && $0.width > 100 && $0.width < 260 } == true && found.barHeight == real.safeAreaInsets.top, "\(found)")
 }
 
-// The sweep and pauses. An ad-hoc session's pause holds the time left while
-// its planned end moves on (Session.swift): the fill freezes, and after the
-// pause the length leaves the paused time out, so it resumes where it froze.
+// The sweep and pauses (`PanelSweep`, shared with the floating panel). An
+// ad-hoc session's pause holds the time left while its planned end moves on
+// (Session.swift): the fill freezes, and after the pause the length leaves
+// the paused time out, so it resumes where it froze.
 let t0 = now
-var notchSweep = NotchSweep()
-notchSweep.update(session(id: 60, remaining: 1500, started: -1500), at: now)
-check("notch sweep: running is the truth at an update", notchSweep.progress(at: now) == 0.5 && notchSweep.moving)
-check("notch sweep: moving on between updates", abs(notchSweep.progress(at: now.addingTimeInterval(1)) - 1501.0 / 3000) < 1e-9)
+var panelSweep = PanelSweep()
+panelSweep.update(session(id: 60, remaining: 1500, started: -1500, adHoc: true), at: now)
+check("panel sweep: running is the truth at an update", panelSweep.progress(at: now) == 0.5 && panelSweep.moving)
+check("panel sweep: moving on between updates", abs(panelSweep.progress(at: now.addingTimeInterval(1)) - 1501.0 / 3000) < 1e-9)
 now = t0.addingTimeInterval(10)
-notchSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1510, plannedEnd: 1490), at: now)
-let pausedAt = notchSweep.progress(at: now)
-check("notch sweep: pausing holds where it was", abs(pausedAt - 1510.0 / 3000) < 1e-9 && !notchSweep.moving)
-now = t0.addingTimeInterval(11)
-notchSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1511, plannedEnd: 1490, paused: 1), at: now)
-check("notch sweep: one second on, not yet sure what kind of pause", !notchSweep.pauseStopsClock && !notchSweep.pauseKeepsClock && notchSweep.progress(at: now) == pausedAt)
+panelSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1510, plannedEnd: 1490, adHoc: true), at: now)
+let pausedAt = panelSweep.progress(at: now)
+check("panel sweep: an ad-hoc pause holds the fill where it was", abs(pausedAt - 1510.0 / 3000) < 1e-9 && !panelSweep.moving)
 now = t0.addingTimeInterval(70)
-notchSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1570, plannedEnd: 1490, paused: 60), at: now)
-check("notch sweep: the time left held: a pause that stops the clock", notchSweep.pauseStopsClock && !notchSweep.pauseKeepsClock)
-check("notch sweep: the planned end moving on while paused does not drain it", notchSweep.progress(at: now.addingTimeInterval(5)) == pausedAt)
-notchSweep.update(session(id: 60, remaining: 1490, started: -1570, plannedEnd: 1490, paused: 60), at: now)
-check("notch sweep: resumed, it carries on from where it froze (the pause left out)", notchSweep.moving && abs(notchSweep.progress(at: now) - pausedAt) < 1e-9)
-check("notch sweep: and moves at the focused pace", abs(notchSweep.progress(at: now.addingTimeInterval(1)) - 1511.0 / 3000) < 1e-9)
+panelSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1570, plannedEnd: 1490, paused: 60, adHoc: true), at: now)
+check("panel sweep: the planned end moving on while paused does not drain it", panelSweep.progress(at: now.addingTimeInterval(5)) == pausedAt && !panelSweep.moving)
+panelSweep.update(session(id: 60, remaining: 1490, started: -1570, plannedEnd: 1490, paused: 60, adHoc: true), at: now)
+check("panel sweep: resumed, it carries on from where it froze (the pause left out)", panelSweep.moving && abs(panelSweep.progress(at: now) - pausedAt) < 1e-9)
+check("panel sweep: and moves at the focused pace", abs(panelSweep.progress(at: now.addingTimeInterval(1)) - 1511.0 / 3000) < 1e-9)
+now = t0.addingTimeInterval(80)
+panelSweep.update(session(id: 60, state: "paused", remaining: 1480, started: -1580, plannedEnd: 1480, paused: 60, adHoc: true), at: now)
+check("panel sweep: a second pause freezes again", !panelSweep.moving && abs(panelSweep.progress(at: now.addingTimeInterval(9)) - 1520.0 / 3000) < 1e-9)
 // A calendar session's pause is a break inside the event: the time left
 // keeps falling, and so does the fill.
 now = t0
-notchSweep.update(session(id: 62, remaining: 1500, started: -1500), at: now)
-notchSweep.update(session(id: 62, state: "paused", remaining: 1500, started: -1500), at: now)
-check("notch sweep: a new session starts afresh", notchSweep.sessionId == 62 && !notchSweep.pauseStopsClock && notchSweep.progress(at: now) == 0.5)
+panelSweep.update(session(id: 62, remaining: 1500, started: -1500), at: now)
+panelSweep.update(session(id: 62, state: "paused", remaining: 1500, started: -1500), at: now)
+check("panel sweep: a new session starts afresh", panelSweep.sessionId == 62 && panelSweep.progress(at: now) == 0.5)
 now = t0.addingTimeInterval(2)
-notchSweep.update(session(id: 62, state: "paused", remaining: 1498, started: -1502, paused: 2), at: now)
-check("notch sweep: the time left fell while paused: the fill keeps pace", notchSweep.pauseKeepsClock && notchSweep.moving
-  && abs(notchSweep.progress(at: now) - 1502.0 / 3000) < 1e-9 && abs(notchSweep.progress(at: now.addingTimeInterval(1)) - 1503.0 / 3000) < 1e-9)
+panelSweep.update(session(id: 62, state: "paused", remaining: 1498, started: -1502, paused: 2), at: now)
+check("panel sweep: a calendar pause keeps pace with the time left", panelSweep.moving
+  && abs(panelSweep.progress(at: now) - 1502.0 / 3000) < 1e-9 && abs(panelSweep.progress(at: now.addingTimeInterval(1)) - 1503.0 / 3000) < 1e-9)
 now = t0.addingTimeInterval(5)
-notchSweep.update(session(id: 62, remaining: 1495, started: -1505, paused: 5), at: now)
-check("notch sweep: resumed, the whole span still counts", abs(notchSweep.progress(at: now) - 1505.0 / 3000) < 1e-9)
-// A pause shorter than two ticks is told apart at the resume.
+panelSweep.update(session(id: 62, remaining: 1495, started: -1505, paused: 5), at: now)
+check("panel sweep: resumed, the whole span still counts", abs(panelSweep.progress(at: now) - 1505.0 / 3000) < 1e-9)
+// First seen while paused: the length leaves out the pause so far, which the
+// planned end has already moved on by.
 now = t0
-notchSweep.update(session(id: 63, remaining: 1500, started: -1500), at: now)
-notchSweep.update(session(id: 63, state: "paused", remaining: 1500, started: -1500), at: now)
-now = t0.addingTimeInterval(1.2)
-notchSweep.update(session(id: 63, remaining: 1500, started: -1501.2, plannedEnd: 1500, paused: 1), at: now)
-check("notch sweep: a 1.2 s ad-hoc pause, seen only at the resume: no jump", notchSweep.pauseStopsClock && abs(notchSweep.progress(at: now) - 0.5) < 1e-3)
-now = t0
-notchSweep.update(session(id: 64, remaining: 1500, started: -1500), at: now)
-notchSweep.update(session(id: 64, state: "paused", remaining: 1500, started: -1500), at: now)
-now = t0.addingTimeInterval(1.2)
-notchSweep.update(session(id: 64, remaining: 1498, started: -1501.2, plannedEnd: 1498.8, paused: 1), at: now)
-check("notch sweep: a 1.2 s calendar pause, seen at the resume: the whole span", notchSweep.pauseKeepsClock && !notchSweep.pauseStopsClock
-  && abs(notchSweep.progress(at: now) - 1501.2 / 3000) < 1e-3)
-now = t0
-notchSweep.update(session(id: 61, state: "paused", remaining: 600, started: -600), at: now)
-check("notch sweep: another session paused from the start: its own fill", notchSweep.progress(at: now) == 0.5)
-notchSweep.update(session(id: 61, state: "ending", remaining: 0, started: -1200, plannedEnd: 0), at: now)
-check("notch sweep: full and still at the end sheet", notchSweep.progress(at: now.addingTimeInterval(5)) == 1 && !notchSweep.moving)
+panelSweep.update(session(id: 61, state: "paused", remaining: 600, started: -640, plannedEnd: 600, paused: 40, adHoc: true), at: now)
+check("panel sweep: an ad-hoc session first seen paused: its own fill, the pause left out", panelSweep.progress(at: now) == 0.5 && !panelSweep.moving)
+panelSweep.update(session(id: 61, state: "ending", remaining: 0, started: -1200, plannedEnd: 0, adHoc: true), at: now)
+check("panel sweep: full and still at the end sheet", panelSweep.progress(at: now.addingTimeInterval(5)) == 1 && !panelSweep.moving)
 
 // Routing: the notch display shows only the notch.
 ui.update(nil)
@@ -1215,18 +1214,18 @@ scheduler.advance(0.2)
 // Paused: dimmed strip with ⏸ in the ring, Resume on the card; the fill holds.
 ui.update(session(remaining: 1500, started: -1500))
 let fillBeforePause = notch.strip.progress
-ui.update(session(state: "paused", remaining: 1500, started: -1500))
+ui.update(session(state: "paused", remaining: 1500, started: -1500, adHoc: true))
 check("notch paused: the strip says so", notch.strip.content.paused && notch.strip.accessibilityLabel() == "Focus: paused, 25:00 left, Deep Work")
 check("notch paused: same width", notch.stripRect == notchStrip)
 now = now.addingTimeInterval(30)
-ui.update(session(state: "paused", remaining: 1500, started: -1530, plannedEnd: 1500))
+ui.update(session(state: "paused", remaining: 1500, started: -1530, plannedEnd: 1500, adHoc: true))
 check("notch paused: an ad-hoc end moving on leaves the fill where it was", notch.strip.progress == fillBeforePause && notch.pill.progress == fillBeforePause, "\(notch.strip.progress)")
 notch.setExpanded(true, animated: false)
 check("notch paused: the card offers Resume", notch.pauseButton.title == "Resume" && notch.pauseButton.currentSymbol == "play" && notch.pauseButton.frame.width == FloatingPanel.pauseSlot)
 fake.calls.removeAll()
 notch.pauseButton.performClick(nil)
 check("notch: Resume resumes", fake.calls == ["resume"], "\(fake.calls)")
-ui.update(session(remaining: 1500, started: -1530, plannedEnd: 1500, paused: 30))
+ui.update(session(remaining: 1500, started: -1530, plannedEnd: 1500, paused: 30, adHoc: true))
 check("notch: resumed, the button reads Pause", notch.pauseButton.title == "Pause" && !notch.strip.content.paused)
 check("notch: resumed, the fill carries on from where it froze", notch.strip.progress == fillBeforePause, "\(notch.strip.progress) \(fillBeforePause)")
 

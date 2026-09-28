@@ -444,7 +444,7 @@ final class FocusCore: SessionPresenterDelegate {
         plannedEnd: current.machine.effectiveEnd(at: now) ?? plannedEnd,
         remainingSeconds: current.machine.remainingSeconds(at: now),
         pausedSeconds: current.machine.pausedSeconds(at: now), calendarTitle: current.calendarTitle,
-        extendOptions: SessionMachine.extendOptions)
+        extendOptions: SessionMachine.extendOptions, pauseStopsClock: current.machine.pauseStopsClock)
     }
   }
 

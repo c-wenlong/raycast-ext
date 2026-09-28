@@ -11,6 +11,9 @@ struct SessionView: Equatable {
   var pausedSeconds: Int         // total time spent paused so far
   var calendarTitle: String
   var extendOptions: [Int]       // seconds, e.g. [300, 600, 900, 1500]
+  /// True for an ad-hoc session: a pause holds `remainingSeconds` and moves
+  /// `plannedEnd` on (Session.swift), so its fill freezes while paused.
+  var pauseStopsClock = false
 }
 
 /// The UI calls back into the session logic through this.

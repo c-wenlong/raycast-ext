@@ -1407,6 +1407,28 @@ net.createServer((socket) => {
         ),
         "ending",
       );
+      // A paused ad-hoc session's time left is frozen: the reply's
+      // remainingSeconds, however late it is read, and never "ending".
+      const frozen = {
+        state: "paused" as const,
+        plannedEnd: at(now, -5),
+        endReason: null,
+        pauseStopsClock: true,
+        remainingSeconds: 1190,
+      };
+      assert.equal(sessionStatusText(frozen, now), "paused, 20 min left");
+      assert.equal(
+        sessionStatusText(frozen, new Date(now.getTime() + 600_000)),
+        "paused, 20 min left",
+      );
+      assert.equal(
+        sessionStatusText({ ...frozen, state: "running" }, now),
+        "ending",
+      );
+      assert.equal(
+        sessionStatusText({ ...frozen, pauseStopsClock: false }, now),
+        "paused, ending",
+      );
       const fetchedAt = new Date(now.getTime() - 90_000);
       assert.equal(
         pausedSecondsNow(
@@ -1451,6 +1473,14 @@ net.createServer((socket) => {
       assert.deepEqual(
         sessionActions(effectiveSession(past, fetched, now)).pause,
         false,
+      );
+      // A paused ad-hoc session never reaches its deadline while paused.
+      const pastAdHoc = { ...past, pauseStopsClock: true };
+      assert.equal(effectiveSession(pastAdHoc, fetched, now), pastAdHoc);
+      assert.equal(
+        effectiveSession({ ...pastAdHoc, state: "running" as const }, fetched, now)
+          .state,
+        "ending",
       );
       const runningPast = {
         state: "running" as const,
@@ -1522,12 +1552,23 @@ net.createServer((socket) => {
         assert.deepEqual(fake.state.requests.at(-1), { cmd: "pause" });
         await rejectsWith(daemon.pause(), "daemon", /already paused/);
         clock = new Date(start.getTime() + 180_000);
+        // An ad-hoc pause stops the clock: the time left holds at 480 and
+        // the planned end reads as if resumed now.
         const status = await daemon.status();
         assert.equal(status?.pausedSeconds, 60);
-        assert.equal(status?.remainingSeconds, 420);
+        assert.equal(status?.remainingSeconds, 480);
+        assert.equal(status?.pauseStopsClock, true);
+        assert.equal(status?.plannedEnd, at(start, 660));
+        assert.equal(sessionStatusText(status!, clock), "paused, 8 min left");
+        assert.equal(
+          sessionStatusText(status!, new Date(clock.getTime() + 300_000)),
+          "paused, 8 min left",
+        );
 
         const resumed = await daemon.resume();
         assert.equal(resumed.state, "running");
+        assert.equal(resumed.plannedEnd, at(start, 660));
+        assert.equal(resumed.remainingSeconds, 480);
         await rejectsWith(daemon.resume(), "daemon", /not paused/);
 
         // Extend is checked before anything is sent.
@@ -1540,7 +1581,7 @@ net.createServer((socket) => {
           seconds: 300,
           cmd: "extend",
         });
-        assert.equal(extended.plannedEnd, at(start, 900));
+        assert.equal(extended.plannedEnd, at(start, 960));
         assert.equal(extended.extendedSeconds, 300);
 
         const stopped = await daemon.stop();
@@ -1553,11 +1594,18 @@ net.createServer((socket) => {
         // Extend from the end sheet returns to running.
         const back = await daemon.extend(600);
         assert.equal(back.state, "running");
-        assert.equal(back.plannedEnd, at(start, 1500));
+        assert.equal(back.plannedEnd, at(start, 1560));
 
-        // The planned end passes while paused: ending by the timer.
+        // An ad-hoc pause cannot run the session out: the deadline waits
+        // for the resume, then moves on by the pause.
         await daemon.pause();
         clock = new Date(start.getTime() + 1_600_000);
+        const still = await daemon.status();
+        assert.equal(still?.state, "paused");
+        assert.equal(still?.remainingSeconds, 1380);
+        const running = await daemon.resume();
+        assert.equal(running.plannedEnd, at(start, 2980));
+        clock = new Date(start.getTime() + 3_000_000);
         const ending = await daemon.status();
         assert.equal(ending?.state, "ending");
         assert.equal(ending?.endReason, "timer");
