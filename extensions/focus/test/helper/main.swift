@@ -1698,7 +1698,7 @@ do {
   let week = Chart.svg(days([2400, 0, 0, 0, 1800, 1800, 5400]))
   check("chart: one rect per day", rects(week) == 7)
   check("chart: no script, no external reference", !week.lowercased().contains("<script") && !week.contains("href") && !week.contains("@import"))
-  check("chart: size and canvas", week.hasPrefix("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"640\" height=\"240\"") && week.contains("fill=\"#1A1A1A\""))
+  check("chart: size and canvas", week.hasPrefix("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"640\" height=\"264\"") && week.contains("fill=\"#1A1A1A\""))
   check("chart: bars in the accent colour, empty days as stubs", week.components(separatedBy: "fill=\"#E85C54\"").count - 1 == 4 && week.components(separatedBy: "fill=\"#3A3A3A\"").count - 1 == 3)
   check("chart: system fonts only", week.contains("font-family=\"-apple-system, Helvetica, sans-serif\""))
   check("chart: weekday labels and today", week.contains(">Today</text>") && week.contains(">\(local.shortWeekdaySymbols[local.component(.weekday, from: at(0, 0, day: 22)) - 1])</text>"))
