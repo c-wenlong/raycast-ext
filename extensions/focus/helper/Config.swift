@@ -1,7 +1,9 @@
 // ~/.raycast/focus/config.json: written by Focus Settings (TypeScript), read
 // by the helper on every request. Decoding is per key and forgiving: a
-// missing or mistyped key falls back to its default, unknown keys are
-// ignored, and the helper never rewrites a file that exists.
+// missing or mistyped key falls back to its default and unknown keys are
+// ignored. The helper writes only the two countdown keys (the floating
+// panel's "Move to Menu Bar", a dragged panel), through ConfigFile.update,
+// which keeps every other key as it is.
 
 import Foundation
 
@@ -18,6 +20,11 @@ struct FocusConfig: Equatable {
   var browsers: [String] = ["com.google.Chrome", "company.thebrowser.dia"]
   var snoozeSeconds: Int = 180
   var raycastDeeplink: Bool = false
+  /// Where the countdown shows while a session runs.
+  var countdownDisplay: CountdownDisplay = .panel
+  /// Top-left of the floating panel in screen points (AppKit's global
+  /// coordinates, y up), or nil for the default place.
+  var panelPosition: PanelPosition? = nil
 
   init() {}
 
@@ -53,6 +60,10 @@ struct FocusConfig: Equatable {
     if let items = fields["browsers"]?.arrayValue { browsers = items.compactMap(\.stringValue) }
     if let seconds = fields["snoozeSeconds"]?.intValue, seconds > 0 { snoozeSeconds = seconds }
     if let flag = fields["raycastDeeplink"]?.boolValue { raycastDeeplink = flag }
+    if let name = fields["countdownDisplay"]?.stringValue, let display = CountdownDisplay(rawValue: name) {
+      countdownDisplay = display
+    }
+    panelPosition = fields["panelPosition"].flatMap(PanelPosition.init(json:))
   }
 
   var json: JSONValue {
@@ -65,12 +76,45 @@ struct FocusConfig: Equatable {
       "browsers": .array(browsers.map(JSONValue.string)),
       "snoozeSeconds": .int(snoozeSeconds),
       "raycastDeeplink": .bool(raycastDeeplink),
+      "countdownDisplay": .string(countdownDisplay.rawValue),
+      "panelPosition": panelPosition?.json ?? .null,
     ])
   }
 
   /// The blocking profile a session on this calendar starts with.
   func profile(for calendarId: String) -> String {
     calendarProfiles[calendarId] ?? "default"
+  }
+}
+
+/// `countdownDisplay` in config.json: the floating panel (default) or the menu bar item.
+enum CountdownDisplay: String {
+  case panel
+  case menuBar
+}
+
+/// `panelPosition` in config.json: `{"x": 1200, "y": 870}`. Anything else
+/// (missing, null, not two finite numbers) means the default place.
+struct PanelPosition: Equatable {
+  var x: Double
+  var y: Double
+
+  init(x: Double, y: Double) {
+    self.x = x
+    self.y = y
+  }
+
+  init?(json: JSONValue) {
+    guard let fields = json.objectValue, let x = fields["x"]?.doubleValue, let y = fields["y"]?.doubleValue,
+      x.isFinite, y.isFinite
+    else { return nil }
+    self.x = x
+    self.y = y
+  }
+
+  /// Whole points, so the file stays readable.
+  var json: JSONValue {
+    .object(["x": .int(Int(x.rounded())), "y": .int(Int(y.rounded()))])
   }
 }
 
@@ -178,6 +222,27 @@ final class ConfigFile {
     let config = FocusConfig(json: value)
     lastGood = config
     return config
+  }
+
+  /// Sets top-level keys in config.json and keeps every other key as it is,
+  /// then writes the file atomically (a temp file renamed over it). A
+  /// missing file starts from the defaults; a file that does not parse is
+  /// left alone and the change is refused, so a half-written save from
+  /// Focus Settings is never overwritten.
+  func update(_ changes: [String: JSONValue]) throws {
+    var fields: [String: JSONValue]
+    if FileManager.default.fileExists(atPath: path) {
+      guard let data = FileManager.default.contents(atPath: path),
+        let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+        let object = value.objectValue
+      else { throw FocusError("\(path) is not a JSON object; leaving it alone") }
+      fields = object
+    } else {
+      fields = FocusConfig().json.objectValue ?? [:]
+    }
+    for (key, value) in changes { fields[key] = value }
+    try Data((JSONValue.object(fields).serialized(pretty: true) + "\n").utf8)
+      .write(to: URL(fileURLWithPath: path), options: .atomic)
   }
 
   /// Logs a problem once rather than on every request.

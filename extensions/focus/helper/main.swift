@@ -281,16 +281,20 @@ func runServer() -> Never {
   }
 
   installEditMenu()
-  attachPresenter(to: core)
+  attachPresenter(to: core, configPath: focusDir + "/config.json", log: log)
   log("serving \(socketPath) (version \(FocusCore.version))")
 
-  // Recovery at launch, and again as soon as access is granted.
-  work.async {
-    _ = core.config.load()
-    backend.onAccessGranted = { core.tick() }
-    backend.requestAccessIfNeeded()
-    log("calendar access is \(backend.accessState)")
-    if backend.accessState == "fullAccess" { core.tick() }
+  // Recovery at launch, and again as soon as access is granted. The UI
+  // demo drives a fake session and never needs the calendar, so it does
+  // not ask for access (a new binary path would otherwise prompt).
+  if environment["FOCUS_UI_DEMO"] != "1" {
+    work.async {
+      _ = core.config.load()
+      backend.onAccessGranted = { core.tick() }
+      backend.requestAccessIfNeeded()
+      log("calendar access is \(backend.accessState)")
+      if backend.accessState == "fullAccess" { core.tick() }
+    }
   }
 
   // Heartbeat and recovery every 30 seconds.

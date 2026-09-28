@@ -5,10 +5,22 @@ import path from "node:path";
 
 // Everything Focus keeps on disk lives in ~/.raycast/focus (gitignored at the
 // repo root). The helper owns the socket and the database; config.json is
-// read by both sides and written only by Focus Settings.
+// read by both sides and written by Focus Settings; the helper writes only
+// `countdownDisplay` and `panelPosition` (the floating panel's "Move to Menu
+// Bar" and a dragged panel), keeping every other key.
 export const FOCUS_DIR = path.join(os.homedir(), ".raycast", "focus");
 export const CONFIG_PATH = path.join(FOCUS_DIR, "config.json");
 export const SOCKET_PATH = path.join(FOCUS_DIR, "focus.sock");
+
+// Where the countdown shows while a session runs.
+export type CountdownDisplay = "panel" | "menuBar";
+
+// The floating panel's top-left in screen points (AppKit's global
+// coordinates, y up); null puts it at the top right of the main screen.
+export interface PanelPosition {
+  x: number;
+  y: number;
+}
 
 export interface FocusConfig {
   startableCalendars: string[];
@@ -19,6 +31,8 @@ export interface FocusConfig {
   browsers: string[];
   snoozeSeconds: number;
   raycastDeeplink: boolean;
+  countdownDisplay: CountdownDisplay;
+  panelPosition: PanelPosition | null;
   // Keys this version does not know about are kept as they are.
   [key: string]: unknown;
 }
@@ -38,6 +52,7 @@ export type ConfigPatch = Partial<
     | "browsers"
     | "snoozeSeconds"
     | "raycastDeeplink"
+    | "countdownDisplay"
   >
 >;
 
@@ -51,6 +66,8 @@ export function defaultConfig(): FocusConfig {
     browsers: ["com.google.Chrome", "company.thebrowser.dia"],
     snoozeSeconds: 180,
     raycastDeeplink: false,
+    countdownDisplay: "panel",
+    panelPosition: null,
   };
 }
 
@@ -75,6 +92,21 @@ function stringArray(value: unknown): string[] | undefined {
 function stringOrNull(value: unknown): string | null | undefined {
   if (value === null) return null;
   return typeof value === "string" ? value : undefined;
+}
+
+function countdownDisplay(value: unknown): CountdownDisplay | undefined {
+  return value === "panel" || value === "menuBar" ? value : undefined;
+}
+
+function panelPosition(value: unknown): PanelPosition | null {
+  if (!isPlainObject(value)) return null;
+  const { x, y } = value;
+  return typeof x === "number" &&
+    Number.isFinite(x) &&
+    typeof y === "number" &&
+    Number.isFinite(y)
+    ? { x, y }
+    : null;
 }
 
 function stringRecord(value: unknown): Record<string, string> | undefined {
@@ -112,6 +144,9 @@ export function normalizeConfig(raw: unknown): FocusConfig {
       typeof source.raycastDeeplink === "boolean"
         ? source.raycastDeeplink
         : defaults.raycastDeeplink,
+    countdownDisplay:
+      countdownDisplay(source.countdownDisplay) ?? defaults.countdownDisplay,
+    panelPosition: panelPosition(source.panelPosition),
   };
   for (const [key, value] of Object.entries(source)) {
     if (!KNOWN_KEYS.includes(key)) config[key] = value;

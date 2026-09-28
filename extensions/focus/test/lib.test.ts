@@ -72,9 +72,11 @@ import {
   validateProfile,
 } from "../src/lib/profiles";
 import {
+  COUNTDOWN_OPTIONS,
   NO_LOG_CALENDAR,
   SNOOZE_MINUTES,
   browserOptions,
+  isCountdownDisplay,
   moveTarget,
   resolveLogCalendar,
   settingsChoices,
@@ -183,7 +185,52 @@ const cases: Case[] = [
         browsers: ["com.google.Chrome", "company.thebrowser.dia"],
         snoozeSeconds: 180,
         raycastDeeplink: false,
+        countdownDisplay: "panel",
+        panelPosition: null,
       });
+    },
+  ],
+  [
+    "config: countdown display and panel position read, fall back and round-trip",
+    async () => {
+      const file = path.join(freshDir(), "config.json");
+      // As the helper writes it: sorted keys, whole points.
+      writeFileSync(
+        file,
+        JSON.stringify({
+          countdownDisplay: "menuBar",
+          panelPosition: { x: 1204, y: 870 },
+          snoozeSeconds: 300,
+        }),
+      );
+      const config = await readConfig(file);
+      assert.equal(config.countdownDisplay, "menuBar");
+      assert.deepEqual(config.panelPosition, { x: 1204, y: 870 });
+      // Saving the Settings form (which never writes panelPosition) keeps
+      // the helper's position, and switches the display.
+      await writeConfig({ countdownDisplay: "panel", snoozeSeconds: 180 }, file);
+      const saved = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(saved.countdownDisplay, "panel");
+      assert.deepEqual(saved.panelPosition, { x: 1204, y: 870 });
+      // Bad values fall back: an unknown display is the panel, a position
+      // that is not two finite numbers is null.
+      for (const [display, position] of [
+        ["dock", { x: "1", y: 2 }],
+        [3, [1, 2]],
+        [null, { x: 1 }],
+        ["menubar", "top right"],
+      ] as const) {
+        writeFileSync(
+          file,
+          JSON.stringify({ countdownDisplay: display, panelPosition: position }),
+        );
+        const fallback = await readConfig(file);
+        assert.equal(fallback.countdownDisplay, "panel");
+        assert.equal(fallback.panelPosition, null);
+      }
+      // Negative and fractional positions are fine (a screen left of the main one).
+      writeFileSync(file, JSON.stringify({ panelPosition: { x: -1500.5, y: 20 } }));
+      assert.deepEqual((await readConfig(file)).panelPosition, { x: -1500.5, y: 20 });
     },
   ],
   [
@@ -1282,6 +1329,21 @@ net.createServer((socket) => {
       assert.deepEqual(snoozeOptions(600), standard);
       assert.deepEqual(snoozeOptions(90), [...standard, { value: "90", title: "90 seconds" }]);
       assert.deepEqual(SNOOZE_MINUTES, [1, 3, 5, 10]);
+    },
+  ],
+  [
+    "settings: the Countdown field offers the floating panel and the menu bar",
+    async () => {
+      assert.deepEqual(COUNTDOWN_OPTIONS, [
+        { value: "panel", title: "Floating panel" },
+        { value: "menuBar", title: "Menu bar" },
+      ]);
+      // The default is the first choice, so a fresh form shows the panel.
+      assert.equal(COUNTDOWN_OPTIONS[0].value, defaultConfig().countdownDisplay);
+      assert.ok(isCountdownDisplay("panel"));
+      assert.ok(isCountdownDisplay("menuBar"));
+      assert.ok(!isCountdownDisplay("menubar"));
+      assert.ok(!isCountdownDisplay(""));
     },
   ],
   [

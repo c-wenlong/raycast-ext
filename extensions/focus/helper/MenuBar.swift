@@ -8,6 +8,8 @@ import Foundation
 // Focus pill: "[ 44:40 ] Deep Work". A paused session reads "[ ⏸ 44:40 ]".
 // Its menu holds the session's calendar and planned end, then Pause or
 // Resume, Extend ▸ and Stop; every action goes to the presenter delegate.
+// Shown only when config.json has `countdownDisplay: "menuBar"` (UIPresenter
+// decides); "Move to Floating Panel" switches back to the panel.
 
 final class MenuBar: NSObject {
   weak var delegate: SessionPresenterDelegate?
@@ -26,6 +28,9 @@ final class MenuBar: NSObject {
   let pauseItem = NSMenuItem(title: "Pause", action: nil, keyEquivalent: "")
   let extendItem = NSMenuItem(title: "Extend", action: nil, keyEquivalent: "")
   let stopItem = NSMenuItem(title: "Stop", action: nil, keyEquivalent: "")
+  let moveItem = NSMenuItem(title: "Move to Floating Panel", action: nil, keyEquivalent: "")
+  /// "Move to Floating Panel" was chosen.
+  var onMoveToPanel: (() -> Void)?
   private var extendOptions: [Int] = []
 
   /// `statusBar` is the system bar in the daemon; the tests pass a private
@@ -45,8 +50,11 @@ final class MenuBar: NSObject {
     stopItem.target = self
     stopItem.action = #selector(stop)
     stopItem.image = Self.symbol("stop.circle")
+    moveItem.target = self
+    moveItem.action = #selector(moveToPanel)
+    moveItem.image = Self.symbol("macwindow")
     menu.autoenablesItems = false
-    for item in [infoItem, .separator(), pauseItem, extendItem, stopItem] { menu.addItem(item) }
+    for item in [infoItem, .separator(), pauseItem, extendItem, stopItem, .separator(), moveItem] { menu.addItem(item) }
     statusItem.menu = menu
   }
 
@@ -159,6 +167,8 @@ final class MenuBar: NSObject {
     guard let view, view.state != "ending" else { return }
     delegate?.presenterStop()
   }
+
+  @objc private func moveToPanel() { onMoveToPanel?() }
 
   // MARK: Drawing
 

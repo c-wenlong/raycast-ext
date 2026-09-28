@@ -360,7 +360,7 @@ do {
     "missing config is created with exactly the schema keys",
     Set(written.keys) == [
       "startableCalendars", "logCalendarId", "logCalendarName", "calendarProfiles", "profiles", "browsers",
-      "snoozeSeconds", "raycastDeeplink",
+      "snoozeSeconds", "raycastDeeplink", "countdownDisplay", "panelPosition",
     ], "\(written.keys.sorted())")
   check("created config has explicit nulls", written["logCalendarId"] == .null && written["logCalendarName"] == .null)
   check(

@@ -34,7 +34,8 @@ end-of-session sheet, app and site blocking, stats), is
   calendars can be the log calendar. Below them: a blocking profile for each
   selected startable calendar (default "default"), the snooze length (1, 3, 5
   or 10 minutes), the browsers whose tabs are watched (Google Chrome, Dia),
-  "Also start Raycast Focus", and a summary line per profile. Saving writes
+  "Also start Raycast Focus", a summary line per profile, and Countdown
+  (Floating panel or Menu bar). Saving writes
   `config.json` (unknown keys kept) and applies to the next session.
   **Manage Profiles** (`⌘⇧P`) lists the profiles with Edit, Add (`⌘N`) and
   Delete (`⌃X`; "default" can be edited, never deleted or renamed). A profile
@@ -79,11 +80,25 @@ All four steps of [PLAN.md](PLAN.md) are merged (2026-09-28). While a session
 runs (and while its end sheet waits) the helper blocks apps and sites from the
 session's profile: a blocked app is hidden behind a native block page with one
 Snooze button, and a blocked host in Chrome or Dia is sent to the same page
-served on loopback. The menu bar shows the countdown; the native end sheet
+served on loopback. A floating panel shows the countdown (or the menu bar,
+per the Countdown setting; see "Countdown" below); the native end sheet
 takes the rating and note. Focus Today's Finish form
 ([src/components/FinishSessionForm.tsx](src/components/FinishSessionForm.tsx))
 stays as a headless fallback. macOS asks once per binary path for Calendar
 access and for Automation access to each browser.
+
+## Countdown
+
+While a session runs, a small pill floats over every window at the top right
+of the screen you are working on: the time left in a chip that fills green as
+the session goes, and the goal. Hover it for Pause (1, 2, 5 or 10 minutes, or
+until Resume), Complete (goes to the end sheet), "…" (Edit opens Focus Today,
+Cancel ends the session with no rating, Move to Menu Bar, Reset Panel
+Position) and a handle to drag it; where you leave it is remembered. When the
+timer runs out a sound plays, the screen edges glow green and a "Focus session
+completed" banner shows for 2.5 seconds, then the end sheet asks for the
+rating. Focus Settings' Countdown field (or the menu bar item's "Move to
+Floating Panel") switches between the panel and the menu bar.
 
 ## Development
 
