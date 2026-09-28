@@ -18,7 +18,10 @@ no-view commands, each ending in a HUD.
 The `lid` and `caff` scripts come from Kai's home-manager config, not this
 repo. `lid` needs the NOPASSWD sudoers rule in `/etc/sudoers.d/lid-sleep`;
 without it the toggle fails and the HUD says so. `caff` cannot hold a closed
-lid; only `lid` can (see the memory note on macOS sleep control).
+lid: `caffeinate` only takes the idle and display sleep assertions, and a
+closed lid goes through the separate clamshell sleep path, which nothing but
+`pmset disablesleep` overrides. So use `lid` for a closed MacBook and `caff`
+for an open one that should not doze.
 
 `scripts/toggle-lid-sleep.sh` at the repo root is the older Raycast script
 command for the same `lid toggle`.
