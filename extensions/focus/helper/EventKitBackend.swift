@@ -145,8 +145,10 @@ final class EventKitBackend: CalendarBackend {
     try store.remove(event, span: .thisEvent, commit: true)
   }
 
-  func updateEventNotes(id: String, notes: String) throws {
+  func updateEventNotes(id: String, from expected: String?, to notes: String) throws {
     guard let event = store.event(withIdentifier: id) else { throw FocusError("event \(id) disappeared") }
+    // The notes checked by the caller must be the ones being replaced.
+    guard event.notes == expected else { throw FocusError("its notes changed while it was being updated") }
     event.notes = notes
     try store.save(event, span: .thisEvent, commit: true)
   }

@@ -116,10 +116,17 @@ final class FakeCalendar: CalendarBackend {
   /// Event ids whose notes updateEventNotes replaced, in order.
   var notesUpdated: [String] = []
   var failUpdate = false
+  /// Runs inside updateEventNotes before the notes are compared (someone
+  /// editing the event between the check and the save).
+  var onUpdate: (() -> Void)?
 
-  func updateEventNotes(id: String, notes: String) throws {
+  func updateEventNotes(id: String, from expected: String?, to notes: String) throws {
+    onUpdate?()
     if failUpdate { throw Boom() }
     guard let index = saved.firstIndex(where: { $0.id == id }) else { throw Boom() }
+    guard saved[index].draft.notes == expected else {
+      throw FocusError("its notes changed while it was being updated")
+    }
     saved[index].draft.notes = notes
     notesUpdated.append(id)
   }
@@ -2178,6 +2185,24 @@ do {
 // MARK: - Editing a past session
 
 do {
+  // LogText.replacingReview, pure.
+  let base = "Source: x\nBlocked attempts: none\nRating: ★★★☆☆\nNote: old\nEnded: manually\n\nfocus-session: 7\nfocus-started: 2026-09-28T01:00:00Z"
+  check("replacingReview: both lines replaced", LogText.replacingReview(in: base, rating: 5, note: "new") == base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★\nNote: new"))
+  check("replacingReview: clearing drops the note line", LogText.replacingReview(in: base, rating: nil, note: nil) == base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: none"))
+  let bare = base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: none")
+  check("replacingReview: a note line is added below the rating", LogText.replacingReview(in: bare, rating: 1, note: " a\nb ") == base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★☆☆☆☆\nNote: a b"))
+  check("replacingReview: no note stays no note", LogText.replacingReview(in: bare, rating: 2, note: "  ") == bare.replacingOccurrences(of: "Rating: none", with: "Rating: ★★☆☆☆"))
+  let crlf = base.replacingOccurrences(of: "\n", with: "\r\n")
+  check("replacingReview: CRLF lines keep their endings", LogText.replacingReview(in: crlf, rating: 4, note: nil) == crlf.replacingOccurrences(of: "Rating: ★★★☆☆\r\nNote: old\r\n", with: "Rating: ★★★★☆\r\n"))
+  let kais = "Rating: great session\n" + base
+  check("replacingReview: Kai's own Rating line is not Focus's", LogText.replacingReview(in: kais, rating: 5, note: nil) == "Rating: great session\n" + base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★"))
+  let afterMarkers = bare.replacingOccurrences(of: "Rating: none\n", with: "") + "\nRating: ★★★★★"
+  check("replacingReview: nil without a Rating line above the markers", LogText.replacingReview(in: afterMarkers, rating: 3, note: nil) == nil)
+  check("replacingReview: nil for notes with no Rating line", LogText.replacingReview(in: "My own notes", rating: 3, note: nil) == nil)
+  check("LogText: the description uses the same review lines", LogText.ratingLine(nil) == "Rating: none" && LogText.noteLine(" \n") == nil && LogText.noteLine("a\nb") == "Note: a b")
+}
+
+do {
   let clock = Clock(at(9, 0))
   let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
   func finished(
@@ -2292,6 +2317,30 @@ do {
   check("updateSession: a failed save warns and keeps the row change", failed["logEventUpdated"] == false && failed["warning"]?.stringValue?.contains("updating the log event failed") == true && (try! h.db.session(id: offlineId))?.rating == 3, failed.serialized())
   let healed = update(offlineId, ["rating": 3])
   check("updateSession: a later edit catches the event up", healed["logEventUpdated"] == true && (h.fake.notes(of: offlineEvent) ?? "").contains("Rating: ★★★☆☆"), healed.serialized())
+
+  // Kai added his own text but kept the markers: only the review lines change.
+  let (keptId, keptEvent) = finished("Annotated", from: at(13, 40), to: at(13, 50))
+  let generated = h.fake.notes(of: keptEvent) ?? ""
+  let annotated = "My own thoughts\n\n" + generated.replacingOccurrences(of: "Ended:", with: "Aside: kept\nEnded:") + "\nPS: also mine"
+  if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = annotated }
+  let annotatedReply = update(keptId, ["rating": 5, "note": "after"])
+  let expected = annotated.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: before", with: "Rating: ★★★★★\nNote: after")
+  check("updateSession: Kai's own text in the event is kept", annotatedReply["logEventUpdated"] == true && h.fake.notes(of: keptEvent) == expected, h.fake.notes(of: keptEvent) ?? "")
+
+  // The Rating line is gone: nothing to put the review in, so the event stays.
+  let noRatingLine = generated.replacingOccurrences(of: "Rating: ★★★☆☆\n", with: "")
+  if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = noRatingLine }
+  let lineGone = update(keptId, ["rating": 2])
+  check("updateSession: an event without its Rating line is kept, with a warning", lineGone["logEventUpdated"] == false && lineGone["warning"]?.stringValue?.contains("Rating line") == true && h.fake.notes(of: keptEvent) == noRatingLine && (try! h.db.session(id: keptId))?.rating == 2, lineGone.serialized())
+
+  // The notes change between the check and the save: never overwritten.
+  if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = generated }
+  h.fake.onUpdate = {
+    if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = "Changed meanwhile" }
+  }
+  let raced = update(keptId, ["rating": 4])
+  h.fake.onUpdate = nil
+  check("updateSession: notes changed meanwhile are not overwritten", raced["logEventUpdated"] == false && raced["warning"]?.stringValue?.contains("its notes changed while it was being updated") == true && h.fake.notes(of: keptEvent) == "Changed meanwhile", raced.serialized())
 
   // No calendar: the row changes, no calendar is touched, no warning.
   let (scratchId, scratchEvent) = finished("Scratch", from: at(14, 0), to: at(14, 10), calendarId: Rules.noCalendar)

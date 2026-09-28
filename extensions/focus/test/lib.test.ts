@@ -3441,6 +3441,33 @@ net.createServer((socket) => {
           message: warned.warning,
         });
 
+        // Kai's own text in the event stays; only the review lines change.
+        const annotated = await finishOne("Annotated");
+        const own = `Mine above\n${eventOf(annotated.id).notes}\nMine below`;
+        eventOf(annotated.id).notes = own;
+        const kept = await daemon.updateSession(annotated.id, {
+          rating: 1,
+          note: null,
+        });
+        assert.equal(kept.logEventUpdated, true);
+        assert.equal(
+          eventOf(annotated.id).notes,
+          own.replace("Rating: ★★★☆☆\nNote: before", "Rating: ★☆☆☆☆"),
+        );
+        // Its Rating line removed: kept as it is, with a warning.
+        const lineless = eventOf(annotated.id).notes.replace(
+          "Rating: ★☆☆☆☆\n",
+          "",
+        );
+        eventOf(annotated.id).notes = lineless;
+        const noLine = await daemon.updateSession(annotated.id, {
+          rating: 5,
+          note: "x",
+        });
+        assert.equal(noLine.logEventUpdated, false);
+        assert.match(noLine.warning ?? "", /Rating line/);
+        assert.equal(eventOf(annotated.id).notes, lineless);
+
         // The event is gone: warns, the row still changes.
         const gone = await finishOne("Gone");
         fake.state.calendarEvents = fake.state.calendarEvents.filter(

@@ -30,8 +30,9 @@
 // warns). Log events are kept in `state.calendarEvents` ({id, calendarId,
 // sessionId, notes}) so tests can rewrite notes or check what was removed.
 // Their notes carry "Rating:" and "Note:" lines, which `updateSession`
-// rewrites under the same marker and access rules (the reply warns when the
-// event is missing, rewritten or out of reach; the history row changes anyway).
+// replaces (nothing else) under the same marker and access rules (the reply
+// warns when the event is missing, rewritten or out of reach, or has lost its
+// Rating line; the history row changes anyway).
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -182,8 +183,7 @@ function createFakeDaemon(options) {
 
   // A shortened LogText.description: the rating and note lines, then the markers.
   function logNotes(item) {
-    const rating = typeof item.rating === "number" ? "★".repeat(item.rating) + "☆".repeat(5 - item.rating) : "none";
-    const lines = ["Source: fake", `Rating: ${rating}`];
+    const lines = ["Source: fake", `Rating: ${stars(item.rating)}`];
     if (item.note) lines.push(`Note: ${item.note}`);
     return [...lines, "", ...markerLines(item.id, item.startedAt)].join("\n");
   }
@@ -227,9 +227,33 @@ function createFakeDaemon(options) {
     if (!carriesMarkers(event, item.id, item.startedAt)) {
       return "the log event's notes no longer carry this session's focus-session marker, so it was not updated";
     }
-    event.notes = logNotes(item);
+    const rewritten = replacingReview(event.notes, item.rating, item.note);
+    if (rewritten === null) {
+      return "the log event's notes no longer have the Rating line Focus wrote, so it was not updated";
+    }
+    event.notes = rewritten;
     return null;
   }
+
+  // LogText.replacingReview: only Focus's Rating line (above the markers)
+  // and the Note line below it change; null when that Rating line is gone.
+  function replacingReview(notes, rating, note) {
+    const lines = notes.split("\n");
+    const marker = lines.findIndex((line) => line.trim().startsWith("focus-session: "));
+    const index = lines.findIndex(
+      (line, i) => (marker < 0 || i < marker) && /^Rating: (none|[★☆]{5})$/.test(line),
+    );
+    if (index < 0) return null;
+    lines[index] = `Rating: ${stars(rating)}`;
+    const hasNote = index + 1 < lines.length && lines[index + 1].startsWith("Note: ");
+    const noteLine = note ? `Note: ${note}` : null;
+    if (hasNote && noteLine) lines[index + 1] = noteLine;
+    else if (hasNote) lines.splice(index + 1, 1);
+    else if (noteLine) lines.splice(index + 1, 0, noteLine);
+    return lines.join("\n");
+  }
+
+  const stars = (rating) => (typeof rating === "number" ? "★".repeat(rating) + "☆".repeat(5 - rating) : "none");
 
   // The helper's updateSession: a field left out keeps its value, null
   // clears it; the open session is refused.

@@ -101,10 +101,8 @@ enum LogText {
     }
 
     lines.append("Blocked attempts: \(attemptsText(summary.attempts))")
-    lines.append("Rating: \(summary.rating.map(stars) ?? "none")")
-    if let note = summary.note.map(oneLine), !note.isEmpty {
-      lines.append("Note: \(note)")
-    }
+    lines.append(ratingLine(summary.rating))
+    if let line = noteLine(summary.note) { lines.append(line) }
 
     var ended = summary.endReason == "timer" ? "Ended: when the timer ran out" : "Ended: manually"
     if summary.extendedSeconds > 0 {
@@ -115,6 +113,44 @@ enum LogText {
     lines.append("")
     lines.append(marker(summary.sessionId))
     lines.append(startedLine(summary.startedAt))
+    return lines.joined(separator: "\n")
+  }
+
+  static func ratingLine(_ rating: Int?) -> String { "Rating: \(rating.map(stars) ?? "none")" }
+
+  /// "Note: <one line>", or nil for no note (the line is left out).
+  static func noteLine(_ note: String?) -> String? {
+    guard let text = note.map(oneLine), !text.isEmpty else { return nil }
+    return "Note: \(text)"
+  }
+
+  /// Edit Session: `notes` with only the review changed. The Rating line
+  /// Focus wrote ("Rating: " then "none" or five stars, above the marker
+  /// lines) is replaced, and the Note line right below it replaced, added or
+  /// dropped; every other line, including anything Kai added in Calendar,
+  /// stays as it is. Nil when no such Rating line is left.
+  static func replacingReview(in notes: String, rating: Int?, note: String?) -> String? {
+    var lines = notes.components(separatedBy: "\n")
+    let bare = { (line: String) in line.hasSuffix("\r") ? String(line.dropLast()) : line }
+    let markerIndex = lines.firstIndex { bare($0).trimmingCharacters(in: .whitespaces).hasPrefix("focus-session: ") }
+    let generated = Set(["none"] + (0...5).map(stars))
+    guard
+      let index = lines.indices.first(where: { index in
+        guard markerIndex.map({ index < $0 }) ?? true else { return false }
+        let line = bare(lines[index])
+        return line.hasPrefix("Rating: ") && generated.contains(String(line.dropFirst("Rating: ".count)))
+      })
+    else { return nil }
+    let ending = lines[index].hasSuffix("\r") ? "\r" : ""
+    lines[index] = ratingLine(rating) + ending
+    let next = index + 1
+    let hasNote = next < lines.count && bare(lines[next]).hasPrefix("Note: ")
+    switch (hasNote, noteLine(note)) {
+    case (true, let line?): lines[next] = line + ending
+    case (true, nil): lines.remove(at: next)
+    case (false, let line?): lines.insert(line + ending, at: next)
+    case (false, nil): break
+    }
     return lines.joined(separator: "\n")
   }
 
