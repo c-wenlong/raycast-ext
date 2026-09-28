@@ -4,10 +4,11 @@ import {
   Form,
   Icon,
   Toast,
+  getApplications,
   showToast,
   useNavigation,
 } from "@raycast/api";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { errorMessage } from "../lib/daemon";
 import {
   CATEGORIES,
@@ -16,6 +17,9 @@ import {
   ProfileEntry,
   ProfileErrors,
   ProfileSpec,
+  InstalledApp,
+  alignSelection,
+  appPickerItems,
   draftFor,
   validateProfile,
 } from "../lib/profiles";
@@ -47,6 +51,31 @@ export function ProfileForm(props: {
   const [draft, setDraft] = useState<ProfileDraft>(() => draftFor(props.entry));
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [isSaving, setIsSaving] = useState(false);
+  // Installed apps for the Extra Apps picker; null until loaded.
+  const [installed, setInstalled] = useState<InstalledApp[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getApplications()
+      .then((apps) => {
+        if (!cancelled) setInstalled(apps);
+      })
+      .catch(async (error) => {
+        if (cancelled) return;
+        setInstalled([]);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Could not list installed apps",
+          message: errorMessage(error),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const appItems = appPickerItems(installed ?? [], draft.apps);
+  const appValue = alignSelection(draft.apps, appItems);
 
   function update<K extends keyof ProfileDraft>(
     key: K,
@@ -169,15 +198,26 @@ export function ProfileForm(props: {
           />
         ))}
       </Form.TagPicker>
-      <Form.TextArea
+      <Form.TagPicker
         id="apps"
         title="Extra Apps"
-        placeholder={"com.apple.Music\ncom.spotify.client"}
-        info={`One bundle id per line. Find an app's with: osascript -e 'id of app "Slack"'`}
-        value={draft.apps}
+        placeholder={
+          installed === null ? "Loading installed apps…" : "Pick apps"
+        }
+        info="Installed apps, on top of the categories. An app saved by hand that is not installed shows as Not installed so it can be removed."
+        value={appValue}
         error={errors.apps}
         onChange={(value) => update("apps", value)}
-      />
+      >
+        {appItems.map((item) => (
+          <Form.TagPicker.Item
+            key={item.value}
+            value={item.value}
+            title={item.title}
+            icon={item.path ? { fileIcon: item.path } : Icon.Warning}
+          />
+        ))}
+      </Form.TagPicker>
       <Form.TextArea
         id="hosts"
         title="Extra Hosts"

@@ -47,6 +47,8 @@ import {
   sessionStatusText,
 } from "../src/lib/session";
 import {
+  appPickerItems,
+  alignSelection,
   CATEGORIES,
   applyProfileDelete,
   applyProfileSave,
@@ -1018,6 +1020,31 @@ net.createServer((socket) => {
     },
   ],
   [
+    "profiles: the app picker lists installed apps by name, then saved ids that are not installed",
+    async () => {
+      const installed = [
+        { name: "Slack", path: "/Applications/Slack.app", bundleId: "com.tinyspeck.slackmacgap" },
+        { name: "Music", path: "/System/Applications/Music.app", bundleId: "com.apple.Music" },
+        { name: "No Id", path: "/Applications/NoId.app" },
+        { name: "Music copy", path: "/Applications/Music copy.app", bundleId: "COM.APPLE.MUSIC" },
+        { name: "Chess", path: "/System/Applications/Chess.app", bundleId: "com.apple.Chess" },
+      ];
+      const items = appPickerItems(installed, ["com.spotify.client", " COM.apple.music ", "", "com.spotify.client"]);
+      assert.deepEqual(items, [
+        { value: "com.apple.Chess", title: "Chess", path: "/System/Applications/Chess.app" },
+        { value: "com.apple.Music", title: "Music", path: "/System/Applications/Music.app" },
+        { value: "com.tinyspeck.slackmacgap", title: "Slack", path: "/Applications/Slack.app" },
+        { value: "com.spotify.client", title: "Not installed: com.spotify.client" },
+      ]);
+      // The selection takes the picker's spelling and drops ids the picker lacks.
+      assert.deepEqual(alignSelection([" COM.apple.music ", "com.spotify.client", "nope", "com.apple.Music"], items), [
+        "com.apple.Music",
+        "com.spotify.client",
+      ]);
+      assert.deepEqual(appPickerItems([], []), []);
+    },
+  ],
+  [
     "profiles: default comes first (built in when config has none), the rest by name",
     async () => {
       const none = profileEntries({});
@@ -1103,7 +1130,7 @@ net.createServer((socket) => {
     "profiles: validation (name, duplicates, mode, categories, apps, hosts)",
     async () => {
       const names = ["default", "deep"];
-      const draft = { name: "reading", mode: "blocklist", categories: ["news", "social"], apps: "", hosts: "" };
+      const draft = { name: "reading", mode: "blocklist", categories: ["news", "social"], apps: [], hosts: "" };
       const errorsOf = (result: ReturnType<typeof validateProfile>) => (result.ok ? {} : result.errors);
 
       assert.deepEqual(errorsOf(validateProfile({ ...draft, name: "   " }, null, names)), { name: "Give the profile a name" });
@@ -1125,14 +1152,14 @@ net.createServer((socket) => {
       assert.deepEqual(errorsOf(validateProfile({ ...draft, categories: ["social", "sports", "games"] }, null, names)), {
         categories: 'Remove unknown categories "sports", "games"',
       });
-      assert.deepEqual(errorsOf(validateProfile({ ...draft, apps: "com.a.b\nSlack" }, null, names)), {
+      assert.deepEqual(errorsOf(validateProfile({ ...draft, apps: ["com.a.b", "Slack"] }, null, names)), {
         apps: '"Slack" is not a bundle id',
       });
       assert.deepEqual(errorsOf(validateProfile({ ...draft, hosts: "x.com\nhttps://y.com/a" }, null, names)), {
         hosts: "Write y.com (no scheme)",
       });
       // Several problems at once are all reported.
-      assert.deepEqual(Object.keys(errorsOf(validateProfile({ name: "", mode: "x", categories: ["nope"], apps: "a", hosts: "B.com" }, null, names))), [
+      assert.deepEqual(Object.keys(errorsOf(validateProfile({ name: "", mode: "x", categories: ["nope"], apps: ["a"], hosts: "B.com" }, null, names))), [
         "name",
         "mode",
         "categories",
@@ -1145,7 +1172,7 @@ net.createServer((socket) => {
           name: "  reading ",
           mode: "allowlist",
           categories: ["news", "social"],
-          apps: " com.a.b \n\ncom.A.B\ncom.c.d",
+          apps: [" com.a.b ", "", "com.A.B", "com.c.d"],
           hosts: "www.github.com\ngithub.com\n docs.rs ",
         },
         null,
@@ -1157,12 +1184,12 @@ net.createServer((socket) => {
         spec: { mode: "allowlist", categories: ["social", "news"], apps: ["com.a.b", "com.c.d"], hosts: ["github.com", "docs.rs"] },
       });
       // A new profile starts as a blocklist of every category.
-      assert.deepEqual(draftFor(null), { name: "", mode: "blocklist", categories: CATEGORIES.map((c) => c.id), apps: "", hosts: "" });
+      assert.deepEqual(draftFor(null), { name: "", mode: "blocklist", categories: CATEGORIES.map((c) => c.id), apps: [], hosts: "" });
       assert.deepEqual(draftFor(profileEntries({ deep: { mode: "allowlist", apps: ["a.b", "c.d"], hosts: ["x.com"] } })[1]), {
         name: "deep",
         mode: "allowlist",
         categories: [],
-        apps: "a.b\nc.d",
+        apps: ["a.b", "c.d"],
         hosts: "x.com",
       });
     },
@@ -1217,12 +1244,12 @@ net.createServer((socket) => {
       const intoProto = applyProfileSave({ profiles: {}, calendarProfiles: {} }, null, "__proto__", spec);
       assert.deepEqual(Object.keys(intoProto.profiles), ["__proto__"]);
       assert.deepEqual(
-        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, null, ["default"]),
+        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: [], hosts: "" }, null, ["default"]),
         { ok: false, errors: { name: "Pick another name" } },
       );
       // One already in config.json can still be edited under its own name.
       assert.ok(
-        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, "__proto__", ["default", "__proto__"]).ok,
+        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: [], hosts: "" }, "__proto__", ["default", "__proto__"]).ok,
       );
       assert.deepEqual(pruneCalendarProfiles({}, ["__proto__", "toString"]), {});
       assert.equal(calendarProfileValue({}, "toString"), "default");
