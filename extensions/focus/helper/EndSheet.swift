@@ -650,11 +650,7 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
   /// Top centre of `screen`, `PanelStyle.margin` below the menu bar: where
   /// the completion banner used to be.
-  static func cardFrame(size: NSSize, on screen: ScreenGeometry) -> NSRect {
-    NSRect(
-      x: (screen.frame.midX - size.width / 2).rounded(),
-      y: (screen.visibleFrame.maxY - PanelStyle.margin - size.height).rounded(), width: size.width, height: size.height)
-  }
+  static func cardFrame(size: NSSize, on screen: ScreenGeometry) -> NSRect { screen.topCentre(size) }
 
   /// Hides the sheet after an answer; the entered stars and note stay in
   /// case the same session comes back after an extend.

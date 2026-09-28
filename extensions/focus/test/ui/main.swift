@@ -408,6 +408,8 @@ check("no temp files left", (try? FileManager.default.contentsOfDirectory(atPath
 // MARK: Floating panel
 
 let floating = ui.floating
+// The sweep reads the test's clock.
+floating.clock = { now }
 ui.update(nil)
 ui.panelMoveToMenuBar()  // already there: harmless
 ui.setDisplay(.panel)
@@ -432,9 +434,11 @@ check("panel floats on every space, above the block page", floating.panel.collec
 check("panel never activates or takes focus", floating.panel.styleMask.contains(.nonactivatingPanel) && !floating.panel.canBecomeKey
   && !floating.panel.hidesOnDeactivate && !floating.panel.isMovableByWindowBackground)
 let defaultFrame = FloatingPanel.defaultFrame(width: floating.frame.width, on: laptop)
-check("default place: top right of the main screen, 12 in", defaultFrame == NSRect(x: 1512 - 12 - floating.frame.width, y: 944 - 12 - 40, width: floating.frame.width, height: 40), "\(defaultFrame)")
+check("default place: top centre of the main screen, 12 below the menu bar", defaultFrame == NSRect(x: ((1512 - floating.frame.width) / 2).rounded(), y: 944 - 12 - 40, width: floating.frame.width, height: 40), "\(defaultFrame)")
+check("the same place rule as the end card", defaultFrame == EndSheet.cardFrame(size: NSSize(width: floating.frame.width, height: 40), on: laptop))
 check("first show uses the default place", floating.frame == defaultFrame, "\(floating.frame)")
-check("default place maths", FloatingPanel.defaultFrame(width: 160, on: laptop) == NSRect(x: 1340, y: 892, width: 160, height: 40))
+check("default place maths", FloatingPanel.defaultFrame(width: 160, on: laptop) == NSRect(x: 676, y: 892, width: 160, height: 40))
+check("default place on a screen to the right, centred on it", FloatingPanel.defaultFrame(width: 160, on: external) == NSRect(x: 1512 + 880, y: 1055 - 12 - 40, width: 160, height: 40))
 check("anchored to the right edge there", floating.anchoredRight)
 
 // The glass. The window server's glass does not render headless, so these
@@ -517,6 +521,7 @@ check("hover buttons: glass pills, white 10 % fill and 20 % border", abs(GlassSt
 // tint painted denser, the same fixed size.
 let fallback = FloatingPanel(scheduler: scheduler, screens: { screenList }, glass: false)
 fallback.headless = true
+fallback.clock = { now }
 fallback.show(session(remaining: 1500, started: -1500), saved: nil)
 let fallbackEffect = fallback.backdrop as? NSVisualEffectView
 check("fallback: the HUD blur", !fallback.usesGlass && fallbackEffect?.material == .hudWindow && fallbackEffect?.state == .active)
@@ -662,6 +667,69 @@ ui.update(session(remaining: 1500, started: -1500))
 check("panel lamp: shown again, it runs", floating.isVisible && floating.lava.isRunning)
 let fallbackLamp = FloatingPanel(scheduler: scheduler, screens: { screenList }, glass: false)
 check("panel lamp: still until the panel first shows", !fallbackLamp.lava.isRunning)
+
+// The smooth sweep. Pure first: an update anchors it, the wall clock moves
+// it on at 1 / total per second, and a later update lands without a step back.
+let halfView = session(id: 50, remaining: 1500, started: -1500)
+let halfSweep = SweepClock(halfView, at: now)
+check("sweep: an update is the truth at its moment", halfSweep.progress(at: now) == 0.5 && halfSweep.moving)
+check("sweep: it moves on with the clock", abs(halfSweep.progress(at: now.addingTimeInterval(0.5)) - 1500.5 / 3000) < 1e-9)
+let shortSweep = SweepClock(session(id: 51, remaining: 300, started: -300), at: now)
+let rate = { (clock: SweepClock) in clock.progress(at: now.addingTimeInterval(1)) - clock.progress(at: now) }
+check("sweep: speed is 1 / total (10 min moves 5 times as fast as 50)", abs(rate(shortSweep) - 1.0 / 600) < 1e-9 && abs(rate(halfSweep) - 1.0 / 3000) < 1e-9
+  && abs(rate(shortSweep) / rate(halfSweep) - 5) < 1e-6)
+check("sweep: never past full", SweepClock(session(id: 52, remaining: 1, started: -59), at: now).progress(at: now.addingTimeInterval(5)) == 1)
+// Whole seconds from the daemon (rounded down): the exact planned end wins
+// when it agrees to within a second, else the whole seconds.
+let flooredView = session(id: 53, remaining: 1499, started: -1500.4, plannedEnd: 1499.6)
+check("sweep: starts from the exact planned end", abs(SweepClock(flooredView, at: now).remaining - 1499.6) < 1e-6)
+let oddView = session(id: 54, remaining: 1000, started: -1500, plannedEnd: 1500)
+check("sweep: a planned end that disagrees: the whole seconds", SweepClock(oddView, at: now).remaining == 1000)
+// The next update, a second on, lands where the sweep already is.
+let nextView = session(id: 50, remaining: 1499, started: -1500, plannedEnd: 1500)
+let second = now.addingTimeInterval(1)
+let carried = halfSweep.updated(with: nextView, at: second)
+check("sweep: the next tick carries on, no step", carried == halfSweep && carried.progress(at: second) == halfSweep.progress(at: second))
+// Whole seconds only (a planned end that disagrees): an update 0.4 s
+// behind the sweep, a late tick, is ignored rather than pulling it back;
+// 0.6 s off snaps to it.
+let wholeSweep = SweepClock(oddView, at: now)
+let lateTick = now.addingTimeInterval(1.4)
+let late = wholeSweep.updated(with: session(id: 54, remaining: 999, started: -1500, plannedEnd: 1500), at: lateTick)
+check("sweep: 0.4 s behind: no step back", late == wholeSweep && late.progress(at: lateTick) == wholeSweep.progress(at: lateTick))
+let driftTick = now.addingTimeInterval(1.6)
+let drifted = wholeSweep.updated(with: session(id: 54, remaining: 999, started: -1500, plannedEnd: 1500), at: driftTick)
+check("sweep: 0.6 s off: snaps to the update", drifted.anchor == driftTick && drifted.remaining == 999)
+// Extend by 10 min: longer total, lower fill, slower from then on.
+let extended = halfSweep.updated(with: session(id: 50, remaining: 2099, started: -1500, plannedEnd: 2100), at: second)
+check("sweep: an extension lowers the fill and slows it", extended.total == 3600 && abs(extended.progress(at: second) - 1501.0 / 3600) < 1e-6
+  && abs(extended.progress(at: second.addingTimeInterval(1)) - extended.progress(at: second) - 1.0 / 3600) < 1e-9)
+let other = halfSweep.updated(with: session(id: 55, remaining: 600, started: 0), at: second)
+check("sweep: another session starts afresh", other.sessionId == 55 && other.anchor == second && other.progress(at: second) < 0.01)
+// Paused, the planned end does not move (Session.swift), so the digits
+// keep counting down and the sweep keeps pace; the end sheet stops it.
+check("sweep: paused keeps pace with the countdown", SweepClock(session(id: 50, state: "paused", remaining: 1500, started: -1500), at: now).moving)
+let ending = SweepClock(session(id: 50, state: "ending", remaining: 0, started: -3000, plannedEnd: 0), at: now)
+check("sweep: at the end sheet: full and still", !ending.moving && ending.progress(at: now.addingTimeInterval(10)) == 1)
+
+// In the panel: a 60 s session, half gone; half a second later the fill has
+// moved about 2.2 pt with no update in between.
+ui.update(session(id: 56, remaining: 30, started: -30))
+let fillAtTick = floating.pill.progressRect.width
+check("panel sweep: an update sets it", abs(floating.pill.progress - 0.5) < 1e-9 && floating.content?.progress == 0.5)
+check("panel sweep: moving while shown", floating.sweepMoves && !floating.sweepTimerRunning)
+now = now.addingTimeInterval(0.5)
+floating.advanceSweep()
+let fillLater = floating.pill.progressRect.width
+check("panel sweep: moved between ticks", abs(floating.pill.progress - 30.5 / 60) < 1e-9 && abs((fillLater - fillAtTick) - floating.pill.bounds.width * 0.5 / 60) <= 0.5, "\(fillAtTick) -> \(fillLater)")
+check("panel sweep: the fill sits on device pixels", (fillLater * 2).rounded() == fillLater * 2)
+now = now.addingTimeInterval(0.5)
+ui.update(session(id: 56, remaining: 29, started: -31))
+check("panel sweep: the next update lands without a step back", floating.pill.progress >= 30.5 / 60 && abs(floating.pill.progress - 31.0 / 60) < 1e-9, "\(floating.pill.progress)")
+floating.hide()
+check("panel sweep: hidden, it stops", !floating.sweepMoves)
+ui.update(session(id: 56, state: "ending", remaining: 0, started: -60, plannedEnd: 0))
+check("panel sweep: full at the end", !floating.sweepMoves)
 
 ui.update(session(remaining: 3000, started: 0))
 check("at the start: no green", floating.content?.progress == 0 && floating.pill.progressRect.width == 0)
@@ -871,7 +939,7 @@ check("dragged onto the second screen", floating.frame.minX > 1512, "\(floating.
 scheduler.advance(1)
 screenList = [laptop]
 ui.update(session(id: 30, remaining: 590, started: 10))
-check("screen unplugged: back on the main screen", FloatingPanel.isOnScreen(floating.frame, screens: [laptop]) && floating.frame.maxX == 1500, "\(floating.frame)")
+check("screen unplugged: back on the main screen", FloatingPanel.isOnScreen(floating.frame, screens: [laptop]) && floating.frame == FloatingPanel.defaultFrame(width: floating.frame.width, on: laptop), "\(floating.frame)")
 screenList = [laptop, external]
 ui.panelMoved(topLeft: NSPoint(x: moved.x, y: moved.y))
 scheduler.advance(1)

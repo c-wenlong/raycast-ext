@@ -37,6 +37,15 @@ struct ScreenGeometry: Equatable {
     }
     return screens.map { ScreenGeometry(frame: $0.frame, visibleFrame: $0.visibleFrame) }
   }
+
+  /// A rect of `size` at the top centre: centred on the whole screen,
+  /// `PanelStyle.margin` below the menu bar. The countdown panel's default
+  /// place and the end card's.
+  func topCentre(_ size: NSSize) -> NSRect {
+    NSRect(
+      x: (frame.midX - size.width / 2).rounded(),
+      y: (visibleFrame.maxY - PanelStyle.margin - size.height).rounded(), width: size.width, height: size.height)
+  }
 }
 
 /// Runs work later on the main thread; the tests pass a fake clock instead.
@@ -157,6 +166,70 @@ struct PanelContent: Equatable {
   var titleText: String { (paused ? "⏸ " : "") + clock + (goal.isEmpty ? "" : " " + goal) }
 }
 
+/// The sweep between updates. An update (about once a second) gives whole
+/// seconds left; the sweep moves on from it with the wall clock, so it
+/// glides instead of stepping, at a speed of 1 / total: a longer session
+/// (or an extension) moves it slower.
+///
+/// The countdown runs to the planned end while paused too (a pause does not
+/// move the planned end; see Session.swift), so the sweep keeps pace with
+/// the digits then; it stops only at the end sheet. Pure.
+struct SweepClock: Equatable {
+  var sessionId: Int
+  /// plannedEnd - startedAt, seconds.
+  var total: TimeInterval
+  /// Seconds left at `anchor`.
+  var remaining: TimeInterval
+  var anchor: Date
+  /// True while the countdown moves (running or paused).
+  var moving: Bool
+
+  /// An update is followed unless it is more than this far from where the
+  /// sweep already is; closer, the sweep carries on, so it never steps back.
+  static let snapDrift: TimeInterval = 0.5
+
+  /// From an update at `now`. `remainingSeconds` is whole seconds (the
+  /// daemon rounds down); when `plannedEnd - now` agrees with it to within
+  /// a second, that exact figure is used, so the sweep starts where the
+  /// clock really is.
+  init(_ view: SessionView, at now: Date) {
+    sessionId = view.id
+    total = view.plannedEnd.timeIntervalSince(view.startedAt)
+    anchor = now
+    moving = view.state == "running" || view.state == "paused"
+    if view.state == "ending" {
+      remaining = 0
+    } else {
+      let whole = Double(view.remainingSeconds)
+      let exact = view.plannedEnd.timeIntervalSince(now)
+      remaining = abs(exact - whole) <= 1 ? max(0, exact) : whole
+    }
+  }
+
+  /// Seconds left at `time`.
+  func remaining(at time: Date) -> TimeInterval {
+    guard moving else { return remaining }
+    return max(0, remaining - max(0, time.timeIntervalSince(anchor)))
+  }
+
+  /// 1 - remaining / total at `time`, 0 to 1.
+  func progress(at time: Date) -> Double {
+    guard total > 0 else { return 1 }
+    return min(1, max(0, (total - remaining(at: time)) / total))
+  }
+
+  /// The clock after an update at `now`: this one carried on when the
+  /// update is the same session, length and state and within `snapDrift`
+  /// of it; otherwise the update's.
+  func updated(with view: SessionView, at now: Date) -> SweepClock {
+    let fresh = SweepClock(view, at: now)
+    guard fresh.sessionId == sessionId, fresh.total == total, fresh.moving == moving, moving,
+      abs(remaining(at: now) - fresh.remaining) <= Self.snapDrift
+    else { return fresh }
+    return self
+  }
+}
+
 // MARK: Views
 
 /// Borderless, never key: clicks reach the buttons without taking focus from
@@ -172,6 +245,20 @@ final class CountdownPanel: NSPanel {
 final class CountdownPillView: NSView {
   var content = PanelContent(clock: "00:00", paused: false, progress: 0, goal: "") {
     didSet { if content != oldValue { needsDisplay = true } }
+  }
+
+  /// How much of the sweep is drawn, 0 to 1: `content.progress` at an
+  /// update, then moved on by the panel between updates. Redraws only when
+  /// the fill's edge moves by a device pixel.
+  var progress: Double = 0 {
+    didSet { if Self.fillWidth(progress, of: bounds.width, scale: scale) != Self.fillWidth(oldValue, of: bounds.width, scale: scale) { needsDisplay = true } }
+  }
+
+  private var scale: CGFloat { window?.backingScaleFactor ?? 2 }
+
+  /// The fill's width for `progress` of `width`, on whole device pixels.
+  static func fillWidth(_ progress: Double, of width: CGFloat, scale: CGFloat) -> CGFloat {
+    (width * CGFloat(min(1, max(0, progress))) * scale).rounded() / scale
   }
 
   private static let pauseGlyph = NSImage(systemSymbolName: "pause.fill", accessibilityDescription: "Paused")?
@@ -213,7 +300,7 @@ final class CountdownPillView: NSView {
   /// chip and goal included, clipped to the pill's rounded shape.
   var progressRect: NSRect {
     var rect = bounds
-    rect.size.width = (rect.width * CGFloat(content.progress)).rounded()
+    rect.size.width = Self.fillWidth(progress, of: rect.width, scale: scale)
     return rect
   }
 
@@ -587,6 +674,13 @@ final class FloatingPanel: NSObject {
   /// tracking area: entered and exited events are not guaranteed for a
   /// non-activating panel of a background app.
   private var pointerTimer: Timer?
+  /// The wall clock the sweep reads; the tests pass a fake one.
+  var clock: () -> Date = Date.init
+  /// Where the sweep is between updates.
+  private(set) var sweep: SweepClock?
+  /// Moves the sweep on about 30 times a second while the countdown moves.
+  private var sweepTimer: Timer?
+  static let sweepInterval: TimeInterval = 1.0 / 30
 
   /// `glass` false forces the pre-macOS 26 backdrop (the tests cover both).
   init(
@@ -735,14 +829,10 @@ final class FloatingPanel: NSObject {
 
   // MARK: Geometry (pure)
 
-  /// The default place: top right of `screen`, `margin` below the menu bar
-  /// and from the right edge.
+  /// The default place: top centre of `screen`, `margin` below the menu
+  /// bar, where the end card shows.
   static func defaultFrame(width: CGFloat, on screen: ScreenGeometry) -> NSRect {
-    let area = screen.visibleFrame
-    return NSRect(
-      x: (area.maxX - PanelStyle.margin - width).rounded(),
-      y: (area.maxY - PanelStyle.margin - PanelStyle.idleHeight).rounded(),
-      width: width, height: PanelStyle.idleHeight)
+    screen.topCentre(NSSize(width: width, height: PanelStyle.idleHeight))
   }
 
   /// True when `rect` is on a screen: fully inside one vertically and at
@@ -842,6 +932,11 @@ final class FloatingPanel: NSObject {
     // The lamp drifts while the session runs; paused dims and freezes it.
     lava.dimmed = content.paused
     lava.setRunning(!content.paused)
+
+    let now = clock()
+    sweep = sweep?.updated(with: view, at: now) ?? SweepClock(view, at: now)
+    advanceSweep()
+    updateSweepTimer()
   }
 
   private func startPointerPolling() {
@@ -860,6 +955,8 @@ final class FloatingPanel: NSObject {
     exitTask = nil
     pointerTimer?.invalidate()
     pointerTimer = nil
+    sweepTimer?.invalidate()
+    sweepTimer = nil
     pointerInside = false
     if isHovering { setHovering(false, animated: false) }
     lava.setRunning(false)
@@ -867,6 +964,39 @@ final class FloatingPanel: NSObject {
     isVisible = false
     panel.orderOut(nil)
   }
+
+  /// Moves the sweep to where the clock says it is now.
+  func advanceSweep() {
+    guard let sweep else { return }
+    pill.progress = sweep.progress(at: clock())
+  }
+
+  /// True while the sweep timer should run: shown, the countdown moving,
+  /// not yet full.
+  var sweepMoves: Bool {
+    guard isVisible, let sweep else { return false }
+    return sweep.moving && sweep.progress(at: clock()) < 1
+  }
+
+  private func updateSweepTimer() {
+    if !sweepMoves || headless {
+      sweepTimer?.invalidate()
+      sweepTimer = nil
+      return
+    }
+    guard sweepTimer == nil else { return }
+    let timer = Timer(timeInterval: Self.sweepInterval, repeats: true) { [weak self] _ in
+      guard let self else { return }
+      self.advanceSweep()
+      if !self.sweepMoves { self.updateSweepTimer() }
+    }
+    timer.tolerance = Self.sweepInterval / 4
+    RunLoop.main.add(timer, forMode: .common)
+    sweepTimer = timer
+  }
+
+  /// True while the 30 Hz sweep timer runs (never headless).
+  var sweepTimerRunning: Bool { sweepTimer != nil }
 
   /// Back to the default place (Reset Panel Position).
   func resetPosition() {
