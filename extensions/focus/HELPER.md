@@ -3,7 +3,7 @@
 The Swift half of Focus ([PLAN.md](PLAN.md), build steps 1 to 3 and the stats half of 4). Sources in `helper/`,
 compiled to `assets/focus-daemon` (committed). No Dock icon. The session logic
 (timer, pause, extend, end sheet state, recovery) is in `Session.swift` and
-`Core.swift`; the menu bar countdown and the end sheet draw it through the
+`Core.swift`; the countdown (floating panel or menu bar) and the end sheet draw it through the
 `SessionPresenter` protocol in `Presenter.swift`.
 
 ## Files
@@ -13,7 +13,7 @@ All in `~/.raycast/focus/` (gitignored as `/focus/`; `FOCUS_DIR` overrides the f
 | File | What |
 |---|---|
 | `focus.sock` | Unix socket, mode 0600. |
-| `config.json` | Settings. Created with defaults if missing; re-read on every request; never rewritten by the helper. |
+| `config.json` | Settings. Created with defaults if missing; re-read on every request. The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
 | `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`). |
 | `focus.lock` | `flock` held by the running instance (holds its pid). |
 | `daemon.log` | stderr of the daemon; rotated to `daemon.log.1` past 1 MB. |
@@ -105,6 +105,71 @@ fresh `update`. `SessionView.calendarTitle` is "" until the calendar can be
 looked up. Without a UI the core uses a presenter that discards every call
 (`NullPresenter`, which records them, is for tests).
 
+## Countdown panel and completion
+
+`UIPresenter.swift` owns both countdown displays and shows exactly one, per
+`countdownDisplay` in `config.json` (`"panel"`, the default, or `"menuBar"`;
+anything else is the panel). It re-reads the file whenever its modification
+time, size or inode changes, so a switch in Focus Settings shows within a
+second. Core is unchanged: everything below lives behind `SessionPresenter`.
+
+- **Floating panel** (`FloatingPanel.swift`): a borderless non-activating
+  `NSPanel` that never becomes key, on every space and over full-screen apps,
+  one level above `.floating` (so the block window, which is `.floating`,
+  never covers it; the end sheet is above both). Shown while a session is
+  running or paused; hidden at the end sheet and while the completion plays.
+  Idle it is a 34 pt pill: a 22 pt chip (radius 8) with the time in 13 pt
+  monospaced digits, then the goal in 13 pt semibold (cut at 220 pt). The
+  chip fills green from the left with `1 - remaining / (plannedEnd - start)`,
+  so an extension lowers the fill; digits over the green are drawn white.
+  Paused shows a pause glyph before the digits, a dimmer chip and fill.
+  Canvas `white 0.115 @ 93 %` over a HUD blur, 1 px border `white 10 %`,
+  radius 14.
+- **Hover**: a tracking area plus a 10 Hz pointer check while the panel shows
+  (entered and exited events are not guaranteed for a background app's
+  non-activating panel; each crossing counts once). Entering swaps the pill
+  for the 40 pt controls row: Pause (Resume while paused; one width for
+  both), Complete, "…" and a six-dot drag handle. Leaving waits 150 ms. The
+  window resizes over 0.15 s (`setFrame(_:display:animate:)`) while the two
+  rows cross-fade. It keeps its top edge, and its right edge when its middle
+  is on the right half of its screen (left edge otherwise).
+- **Pause** opens a menu: 1, 2, 5, 10 minutes, Indefinitely. A timed pause
+  calls `presenterPause()` and arms a timer in UIPresenter that calls
+  `presenterResume()` when it fires, only if that session is still paused.
+  The timer is dropped once the session shows as not paused after having
+  shown paused (resumed from the panel, the menu bar or the socket; stopped;
+  finished), for another session or idle, or when the pause never shows up
+  within 3 s (refused). Core stays untouched: the timer is UI state, and a
+  daemon restart during a timed pause leaves the session paused until Resume.
+- **Complete** calls `presenterStop()` (the end sheet asks for the rating).
+  **"…"**: Edit opens `raycast://extensions/c-wenlong/focus/focusToday`;
+  Cancel calls `presenterFinish(rating: nil, note: nil)` (finished at once,
+  reason "manual", no sheet); Move to Menu Bar writes
+  `countdownDisplay: "menuBar"` and switches at once; Reset Panel Position
+  writes `panelPosition: null` and moves the panel to the default place. The
+  menu bar item's menu gains "Move to Floating Panel", the reverse.
+- **Position**: only the handle drags the panel (`isMovableByWindowBackground`
+  is off). 0.4 s after a drag ends, the idle pill's top-left is written as
+  `panelPosition: {x, y}` in whole points, AppKit global coordinates (y up,
+  origin at the bottom left of the main display). The default place is the
+  top right of `NSScreen.main` (the screen with the key window), 12 pt below
+  the visible frame's top and from its right edge. A saved place is used only
+  if the pill lies fully inside some screen vertically and at least 40 pt
+  across; otherwise, and when its screen goes away mid-session, the default.
+- **Completion** (`Completion.swift`): when `showEndSheet` gets a session
+  whose timer ran out (`EndSheet.headline` reads "Time's up") and this UI saw
+  that session running or paused, it plays `NSSound(named: "Glass")`, orders
+  a click-through `.screenSaver` window over every screen with a soft green
+  inner glow (`#33C759`-ish, brightest at the edge, gone 90 pt in, rounded
+  corners), and a banner top centre of the main screen ("Focus session
+  completed" 14 pt semibold, "You stayed focused." 13 pt grey, a green check;
+  the panel's canvas, radius 16) one level above. Both fade in over 0.3 s,
+  fade out from 1.8 s, and are ordered out at 2.5 s, when the end sheet
+  appears. A manual stop, Cancel, and a daemon restarted at the end sheet
+  skip it and show the sheet at once. Extending or finishing (from Raycast or
+  the menu bar) during those 2.5 s drops the waiting sheet. The completion
+  also plays on the menu bar display.
+
 Launch recovery (in `FocusCore.init`): an open row whose `last_heartbeat` is
 more than 90 s old is closed with `end_reason = abandoned`, `ended_at =
 last_heartbeat` (never before the start; an open pause closes there, never
@@ -189,7 +254,8 @@ Rows are never re-pointed except by `movePending`.
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon`, signed with Kai's Apple Development identity when the keychain has it and ad hoc otherwise; `FOCUS_SIGN_IDENTITY` overrides, and an override missing from the keychain fails the build.
 - `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
-- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the end sheet and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `menubar-*.png` and `block.png` there.
+- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, and the completion's order (sound, glow, banner, sheet at 2.5 s) plus every case that skips it. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `menubar-*.png`, `panel-*.png`, `banner.png`, `glow.png` and `block.png` there.
+- `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion first), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel, banner and glow draw, plus `state.txt`; menus are logged and closed after 2 s). For a shell without Screen Recording.
 
 ## Site blocking (block page and tab watcher)
 For HELPER.md (step 3, site half): `BlockPage.swift` (HTML, pure), `BlockServer.swift` (loopback

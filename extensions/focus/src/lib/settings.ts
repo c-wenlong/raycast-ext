@@ -1,4 +1,4 @@
-import { FocusConfig } from "./config";
+import { CountdownDisplay, FocusConfig } from "./config";
 import { Calendar, calendarLabel } from "./daemon";
 
 // The decisions behind the Focus Settings form and the waiting-session
@@ -121,4 +121,19 @@ export function browserOptions(saved: string[]): Option[] {
     }
   }
   return options;
+}
+
+// Where the countdown shows while a session runs: the floating panel (the
+// default; its "…" menu can move it to the menu bar) or the menu bar item
+// (whose menu can move it back). The helper switches within a second.
+export const COUNTDOWN_OPTIONS: readonly {
+  value: CountdownDisplay;
+  title: string;
+}[] = [
+  { value: "panel", title: "Floating panel" },
+  { value: "menuBar", title: "Menu bar" },
+];
+
+export function isCountdownDisplay(value: string): value is CountdownDisplay {
+  return COUNTDOWN_OPTIONS.some((option) => option.value === value);
 }

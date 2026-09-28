@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ProfileList, ProfileRename } from "./components/ProfileList";
 import {
   CONFIG_PATH,
+  CountdownDisplay,
   FocusConfig,
   readConfig,
   writeConfig,
@@ -26,8 +27,10 @@ import {
   remapCalendarProfiles,
 } from "./lib/profiles";
 import {
+  COUNTDOWN_OPTIONS,
   NO_LOG_CALENDAR,
   browserOptions,
+  isCountdownDisplay,
   resolveLogCalendar,
   settingsChoices,
   snoozeOptions,
@@ -38,6 +41,7 @@ import {
 // Blocking half (step 4): each startable calendar's default profile, the
 // snooze length, the watched browsers, the Raycast Focus deeplink, and the
 // profiles themselves (edited in Manage Profiles, which saves on its own).
+// Countdown: the floating panel or the menu bar.
 
 function calendarIcon(calendar: Calendar): Image.ImageLike {
   return calendar.color
@@ -62,6 +66,7 @@ export default function FocusSettingsCommand() {
   const [snooze, setSnooze] = useState("180");
   const [browsers, setBrowsers] = useState<string[]>([]);
   const [raycastDeeplink, setRaycastDeeplink] = useState(false);
+  const [countdown, setCountdown] = useState<CountdownDisplay>("panel");
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -77,6 +82,7 @@ export default function FocusSettingsCommand() {
       setSnooze(String(config.snoozeSeconds));
       setBrowsers(config.browsers);
       setRaycastDeeplink(config.raycastDeeplink);
+      setCountdown(config.countdownDisplay);
       setError(null);
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -106,6 +112,7 @@ export default function FocusSettingsCommand() {
         snoozeSeconds: Number(snooze),
         browsers,
         raycastDeeplink,
+        countdownDisplay: countdown,
       });
       setLoaded({ ...loaded, config });
       setCalendarProfiles(config.calendarProfiles);
@@ -368,6 +375,24 @@ export default function FocusSettingsCommand() {
       ))}
 
       <Form.Separator />
+      <Form.Dropdown
+        id="countdownDisplay"
+        title="Countdown"
+        info="Where the time left shows during a session. The floating panel stays above every window; hover it for Pause, Complete and more. Either one can switch to the other from its own menu."
+        value={countdown}
+        onChange={(next) => {
+          if (isCountdownDisplay(next)) setCountdown(next);
+        }}
+      >
+        {COUNTDOWN_OPTIONS.map((option) => (
+          <Form.Dropdown.Item
+            key={option.value}
+            value={option.value}
+            title={option.title}
+            icon={option.value === "panel" ? Icon.AppWindow : Icon.Clock}
+          />
+        ))}
+      </Form.Dropdown>
       <Form.Checkbox
         id="raycastDeeplink"
         title="Raycast Focus"

@@ -40,7 +40,7 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 | Paused past planned end | A paused session goes straight to the end sheet when its planned end passes, same as a running one. |
 | Browsers | Chrome and Dia for now. Both expose tab URLs over AppleScript (checked on this Mac: Dia's dictionary has `active tab`, `URL`, `title`). |
 | Calendar access | EventKit through Calendar.app, which already syncs the Google account (41 CalDAV calendars found in `Calendar.sqlitedb` on 2026-09-27). No OAuth, works offline, one permission prompt. |
-| Surfaces in v1 | Menu bar countdown, full-screen block overlay, stats view, end-of-session sheet. |
+| Surfaces in v1 | Countdown (floating panel by default, or the menu bar), full-screen block overlay, stats view, end-of-session sheet. |
 | Where it lives | `extensions/focus/` in this repo. Data in `~/.raycast/focus/` (gitignored). Helper pattern copied from `extensions/notes`. |
 
 ## Parts
@@ -313,6 +313,31 @@ Each step is its own PR through the normal loop, with tests before the window.
 | 4 | Focus Settings second half (profiles, categories, browsers, snooze length, Raycast deeplink toggle), Ad-hoc Session form, Stats view with SVG chart. | Stats aggregation over fixture rows. |
 
 Estimate: four to six working days, most of it in step 3.
+
+## Countdown panel (2026-09-28)
+
+Kai asked for Raycast Focus's floating countdown. Decided while building it:
+
+- The countdown shows in a floating panel by default (`countdownDisplay`
+  `"panel"`), or in the menu bar (`"menuBar"`); never both. Focus Settings has
+  a "Countdown" field, the panel's "…" menu has Move to Menu Bar, and the menu
+  bar item's menu has Move to Floating Panel. The helper writes only this key
+  and `panelPosition` to `config.json`, keeping every other key.
+- The panel floats above every window and space, at the top right of the
+  screen with the key window by default, and moves only by its drag handle;
+  the place is saved and reset from the "…" menu. It hides at the end sheet.
+- Hover shows Pause (a menu: 1, 2, 5, 10 minutes or indefinitely), Complete
+  (the end sheet, as Stop), "…" (Edit opens Focus Today; Cancel finishes the
+  session at once with no rating, note or sheet; Move to Menu Bar; Reset
+  Panel Position) and the handle.
+- A timed pause is UI state in the helper's presenter, not a session field:
+  the session is paused as usual and resumed by the presenter when the time
+  is up, unless it was resumed or ended first. A helper restart during a
+  timed pause leaves it paused until Resume.
+- When the timer runs out (not on a manual stop or Cancel), a sound plays,
+  the screen edges glow green and a banner "Focus session completed / You
+  stayed focused." shows top centre; after 2.5 s both are gone and the end
+  sheet appears.
 
 ## Open questions
 
