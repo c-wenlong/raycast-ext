@@ -210,104 +210,6 @@ enum NotchLayout {
   }
 }
 
-/// How full the sweep is: `SweepClock`, plus what a pause does to it.
-///
-/// An ad-hoc session's pause stops its clock: the time left holds and the
-/// planned end moves on with the wall clock (see Session.swift), so a
-/// length read as `plannedEnd - startedAt` would grow and drain the fill.
-/// Here a pause freezes the fill where it was. The same time left `settle`
-/// or more after the pause began (while still paused, or at the resume)
-/// marks the session as one whose pause stops the clock; from then on its
-/// length leaves out the time spent paused (`pausedSeconds`), so the fill
-/// resumes from where it froze instead of jumping ahead. A calendar
-/// session's time left keeps falling while paused (the pause is a break
-/// inside the event): its fill keeps moving with it, over the whole span.
-/// A pause shorter than `settle` stays unclassified and is off by less than
-/// that; a pause the notch never saw (it was on another display then) counts
-/// over the whole span, as the floating panel shows it. Pure.
-struct NotchSweep: Equatable {
-  private(set) var sessionId: Int?
-  private(set) var clock: SweepClock?
-  /// The fill held while paused.
-  private(set) var frozen: Double?
-  /// Seen for this session: its pause holds the time left.
-  private(set) var pauseStopsClock = false
-  /// Seen for this session: its time left falls while paused.
-  private(set) var pauseKeepsClock = false
-  /// The first paused update of the current pause: time left and when.
-  private var pausedSince: (remaining: Int, at: Date)?
-
-  /// How long after the pause began the time left tells the two kinds
-  /// apart: whole seconds rounded down, so a clock that runs has dropped at
-  /// least one by then (the pause's own update and the next tick can share
-  /// a second).
-  static let settle: TimeInterval = 1.05
-
-  static func == (a: NotchSweep, b: NotchSweep) -> Bool {
-    a.sessionId == b.sessionId && a.clock == b.clock && a.frozen == b.frozen && a.pauseStopsClock == b.pauseStopsClock
-      && a.pauseKeepsClock == b.pauseKeepsClock && a.pausedSince?.remaining == b.pausedSince?.remaining
-      && a.pausedSince?.at == b.pausedSince?.at
-  }
-
-  /// `view` with its start moved later by the time spent paused when the
-  /// pause stops its clock, so `plannedEnd - startedAt` is the focused length.
-  private func focused(_ view: SessionView) -> SessionView {
-    guard pauseStopsClock else { return view }
-    var view = view
-    view.startedAt = view.startedAt.addingTimeInterval(TimeInterval(view.pausedSeconds))
-    return view
-  }
-
-  mutating func update(_ view: SessionView, at now: Date) {
-    if view.id != sessionId { self = NotchSweep(sessionId: view.id) }
-    switch view.state {
-    case "running":
-      // A pause just ended: the time left says what kind it was.
-      if let since = pausedSince { classify(view, since: since, at: now) }
-      pausedSince = nil
-      frozen = nil
-      let view = focused(view)
-      clock = clock?.updated(with: view, at: now) ?? SweepClock(view, at: now)
-    case "paused":
-      if let since = pausedSince {
-        classify(view, since: since, at: now)
-      } else {
-        pausedSince = (view.remainingSeconds, now)
-        frozen = clock?.progress(at: now) ?? PanelContent.progress(focused(view))
-      }
-      if pauseKeepsClock && !pauseStopsClock {
-        // A break inside the event: the fill keeps pace with the time left.
-        frozen = nil
-        clock = clock?.updated(with: view, at: now) ?? SweepClock(view, at: now)
-      } else {
-        clock = nil
-      }
-    default:
-      frozen = 1
-      clock = nil
-    }
-  }
-
-  /// The time left `settle` or more after the pause began: held, the pause
-  /// stops the clock; fallen, it does not.
-  private mutating func classify(_ view: SessionView, since: (remaining: Int, at: Date), at now: Date) {
-    guard now.timeIntervalSince(since.at) >= Self.settle else { return }
-    if view.remainingSeconds == since.remaining { pauseStopsClock = true }
-    if view.remainingSeconds < since.remaining { pauseKeepsClock = true }
-  }
-
-  private init(sessionId: Int) { self.sessionId = sessionId }
-  init() {}
-
-  func progress(at time: Date) -> Double {
-    if let frozen { return frozen }
-    return clock?.progress(at: time) ?? 0
-  }
-
-  /// True while the fill moves on its own.
-  var moving: Bool { frozen == nil && clock?.moving == true }
-}
-
 // MARK: Views
 
 /// The window's content: clicks count only inside the island's outline, so
@@ -504,7 +406,7 @@ final class NotchPanel: NSObject {
   private(set) var layoutScreen: NotchScreen?
   /// Where the card's content sits in the window, whatever the clip's size.
   private var contentRect = NSRect.zero
-  private(set) var sweep = NotchSweep()
+  private(set) var sweep = PanelSweep()
   private(set) var pointerInside = false
   private var enterTask: ScheduledTask?
   private var exitTask: ScheduledTask?

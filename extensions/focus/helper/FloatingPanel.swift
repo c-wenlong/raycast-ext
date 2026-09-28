@@ -155,8 +155,10 @@ struct PanelContent: Equatable {
 
   /// How much of the session has gone: 1 - remaining / (plannedEnd - start).
   /// Follows the digits (whole seconds); an extension raises the length and
-  /// so lowers the fill.
+  /// so lowers the fill. An ad-hoc session's length leaves out its pauses
+  /// (`PanelSweep.focused`), since they moved its planned end.
   static func progress(_ view: SessionView) -> Double {
+    let view = PanelSweep.focused(view)
     let total = view.plannedEnd.timeIntervalSince(view.startedAt)
     guard total > 0 else { return 1 }
     let remaining = view.state == "ending" ? 0 : Double(view.remainingSeconds)
@@ -172,9 +174,10 @@ struct PanelContent: Equatable {
 /// glides instead of stepping, at a speed of 1 / total: a longer session
 /// (or an extension) moves it slower.
 ///
-/// The countdown runs to the planned end while paused too (a pause does not
-/// move the planned end; see Session.swift), so the sweep keeps pace with
-/// the digits then; it stops only at the end sheet. Pure.
+/// A calendar session's countdown runs to the planned end while paused too
+/// (a pause does not move its planned end; see Session.swift), so the sweep
+/// keeps pace with the digits then; it stops only at the end sheet. What an
+/// ad-hoc session's pause does is `PanelSweep`'s business. Pure.
 struct SweepClock: Equatable {
   var sessionId: Int
   /// plannedEnd - startedAt, seconds.
@@ -229,6 +232,70 @@ struct SweepClock: Equatable {
     else { return fresh }
     return self
   }
+}
+
+/// How full the sweep is: `SweepClock`, plus what a pause does to it. Both
+/// displays (the floating panel and the notch) draw from one of these.
+///
+/// A calendar session's pause is a break inside the event: its time left
+/// keeps falling while paused, and the fill keeps pace over the whole span.
+/// An ad-hoc session's pause stops its clock (`SessionView.pauseStopsClock`,
+/// see Session.swift): the time left holds and the planned end moves on with
+/// the wall clock, so a length read as `plannedEnd - startedAt` would grow
+/// and drain the fill. Its fill freezes where it was instead, and its length
+/// leaves out the time spent paused (`pausedSeconds`), so after the resume
+/// the fill carries on from where it froze. Pure.
+struct PanelSweep: Equatable {
+  private(set) var sessionId: Int?
+  private(set) var clock: SweepClock?
+  /// The fill held while an ad-hoc session is paused.
+  private(set) var frozen: Double?
+
+  init() {}
+
+  /// `view` with its start moved later by the time spent paused when the
+  /// pause stops its clock, so `plannedEnd - startedAt` is the focused length
+  /// (the open pause counts too: `plannedEnd` has moved on by it as well).
+  static func focused(_ view: SessionView) -> SessionView {
+    guard view.pauseStopsClock else { return view }
+    var view = view
+    view.startedAt = view.startedAt.addingTimeInterval(TimeInterval(view.pausedSeconds))
+    return view
+  }
+
+  mutating func update(_ view: SessionView, at now: Date) {
+    if view.id != sessionId {
+      self = PanelSweep()
+      sessionId = view.id
+    }
+    let focused = Self.focused(view)
+    switch view.state {
+    case "paused" where view.pauseStopsClock:
+      // The daemon froze the time left at the pause's start; this update
+      // may be later than that, so the running sweep is capped at the
+      // whole-second fill the update reports (never past what the digits
+      // say), and stays fractional below it so the resume does not step.
+      if frozen == nil {
+        let reported = PanelContent.progress(view)
+        frozen = clock.map { min($0.progress(at: now), reported) } ?? reported
+      }
+      clock = nil
+    case "running", "paused":
+      frozen = nil
+      clock = clock?.updated(with: focused, at: now) ?? SweepClock(focused, at: now)
+    default:
+      frozen = 1
+      clock = nil
+    }
+  }
+
+  func progress(at time: Date) -> Double {
+    if let frozen { return frozen }
+    return clock?.progress(at: time) ?? 0
+  }
+
+  /// True while the fill moves on its own.
+  var moving: Bool { frozen == nil && clock?.moving == true }
 }
 
 // MARK: Views
@@ -678,7 +745,7 @@ final class FloatingPanel: NSObject {
   /// The wall clock the sweep reads; the tests pass a fake one.
   var clock: () -> Date = Date.init
   /// Where the sweep is between updates.
-  private(set) var sweep: SweepClock?
+  private(set) var sweep = PanelSweep()
   /// Moves the sweep on about 30 times a second while the countdown moves.
   private var sweepTimer: Timer?
   static let sweepInterval: TimeInterval = 1.0 / 30
@@ -935,8 +1002,7 @@ final class FloatingPanel: NSObject {
     lava.dimmed = content.paused
     lava.setRunning(!content.paused)
 
-    let now = clock()
-    sweep = sweep?.updated(with: view, at: now) ?? SweepClock(view, at: now)
+    sweep.update(view, at: clock())
     advanceSweep()
     updateSweepTimer()
   }
@@ -969,15 +1035,13 @@ final class FloatingPanel: NSObject {
 
   /// Moves the sweep to where the clock says it is now.
   func advanceSweep() {
-    guard let sweep else { return }
     pill.progress = sweep.progress(at: clock())
   }
 
   /// True while the sweep timer should run: shown, the countdown moving,
   /// not yet full.
   var sweepMoves: Bool {
-    guard isVisible, let sweep else { return false }
-    return sweep.moving && sweep.progress(at: clock()) < 1
+    isVisible && sweep.moving && sweep.progress(at: clock()) < 1
   }
 
   private func updateSweepTimer() {

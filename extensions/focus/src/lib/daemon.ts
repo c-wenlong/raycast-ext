@@ -57,7 +57,11 @@ export interface Session {
   // the moment of the reply).
   pausedSeconds?: number;
   // Open sessions only: whole seconds to the planned end, 0 while ending.
+  // Frozen while a session whose pause stops the clock is paused.
   remainingSeconds?: number;
+  // Open sessions only: true for an ad-hoc session, whose pause stops the
+  // clock (the time left holds; `plannedEnd` moves on by the pause).
+  pauseStopsClock?: boolean;
   // While ending, why ("timer" or "manual"), which Finish records unless
   // told otherwise; for a finished session, the recorded reason.
   endReason?: string | null;

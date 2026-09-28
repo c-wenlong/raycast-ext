@@ -393,10 +393,10 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   It keeps moving while a calendar session is paused, because that pause
   does not move the planned end and the digits keep counting down; freezing
   it would leave it behind the digits and jump at resume. While an ad-hoc
-  session is paused (2026-09-28) the digits hold and the reported end moves
-  on with the clock, so the sweep re-anchors at the same time left each
-  second; the fill is the span so far over the whole span, so it edges
-  forward during the pause and never jumps at resume.
+  session is paused the digits hold and the reported end moves on with the
+  clock, so the fill freezes with the digits and the length leaves the
+  pauses out; at the resume it carries on from where it froze (2026-09-29,
+  a review leftover: it used to edge forward during the pause).
 - Lava lamp (2026-09-28, the second half of that ask): soft pale-green
   blobs drift slowly inside the pill so it looks alive. They are drawn in
   the glass's content, over the tint and under the sweep, text and edges,
@@ -432,8 +432,10 @@ HeyClicky already does." Decided while building it:
 - Hidden while idle and while the end card shows: the card hangs right
   under the island and already says "Time's up"; the island comes back on
   an extend.
-- A pause freezes the fill (an ad-hoc session's planned end moves on while
-  paused), and the island resumes from there.
+- An ad-hoc pause freezes the fill (its planned end moves on while paused),
+  and the island resumes from there; the floating panel does the same, from
+  one shared `PanelSweep` that reads `pauseStopsClock` from the daemon
+  (2026-09-29; the island first guessed it from the digits).
 - HeyClicky and the island share the notch and the level; while a session
   runs ours covers HeyClicky's and keeps its card from opening. Kai picks
   one; nothing tries to dodge the other.

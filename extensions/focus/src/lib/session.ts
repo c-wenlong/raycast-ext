@@ -9,16 +9,19 @@ import { durationText } from "./time";
 // second), even if the reply predates that. Keeps the row from offering
 // actions the helper would refuse until the next refresh. A paused one
 // stayed paused until the deadline (where the helper closes the pause), so
-// its paused time runs on from `fetchedAt` to the deadline.
+// its paused time runs on from `fetchedAt` to the deadline. A paused ad-hoc
+// session (`pauseStopsClock`) never reaches its deadline: its clock is
+// stopped, so it is left as it is.
 export function effectiveSession<
   T extends Pick<
     Session,
-    "state" | "plannedEnd" | "endReason" | "pausedSeconds"
+    "state" | "plannedEnd" | "endReason" | "pausedSeconds" | "pauseStopsClock"
   >,
 >(session: T, fetchedAt: Date, now: Date): T {
   if (session.state !== "running" && session.state !== "paused") {
     return session;
   }
+  if (session.state === "paused" && session.pauseStopsClock) return session;
   const end = session.plannedEnd ? Date.parse(session.plannedEnd) : Number.NaN;
   if (!Number.isFinite(end) || now.getTime() < end) return session;
   const ending = { ...session, state: "ending", endReason: "timer" };
@@ -67,18 +70,34 @@ export function pausedSecondsNow(
 }
 
 // The short state text beside the session: "12 min left", "paused, 12 min
-// left", or "time's up" / "stopped" at the end sheet.
+// left", or "time's up" / "stopped" at the end sheet. A paused ad-hoc
+// session's time left is frozen (`pauseStopsClock`; its `plannedEnd` moves
+// on with the clock instead), so the reply's `remainingSeconds` is read as
+// it is rather than counted down from the planned end.
 export function sessionStatusText(
-  session: Pick<Session, "state" | "plannedEnd" | "endReason">,
+  session: Pick<
+    Session,
+    | "state"
+    | "plannedEnd"
+    | "endReason"
+    | "pauseStopsClock"
+    | "remainingSeconds"
+  >,
   now: Date,
 ): string {
   if (session.state === "ending") {
     return session.endReason === "manual" ? "stopped" : "time's up";
   }
   if (session.state === "finished") return "finished";
-  const left = session.plannedEnd
-    ? (Date.parse(session.plannedEnd) - now.getTime()) / 1000
-    : Number.NaN;
+  const frozen =
+    session.state === "paused" &&
+    session.pauseStopsClock === true &&
+    typeof session.remainingSeconds === "number";
+  const left = frozen
+    ? (session.remainingSeconds as number)
+    : session.plannedEnd
+      ? (Date.parse(session.plannedEnd) - now.getTime()) / 1000
+      : Number.NaN;
   const remaining =
     Number.isFinite(left) && left > 0 ? `${durationText(left)} left` : "ending";
   return session.state === "paused" ? `paused, ${remaining}` : remaining;
