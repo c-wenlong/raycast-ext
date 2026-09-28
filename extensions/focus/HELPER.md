@@ -258,3 +258,11 @@ backs off for 30 seconds. The in-process check
 `AEDeterminePermissionToAutomateTarget` is not used: inside the daemon it
 never returned. While a prompt is pending, macOS holds every Apple Event to
 that browser, so other tools' reads time out (-1712) until it is answered.
+
+## No calendar
+
+An ad-hoc session started with `calendarId: "none"` (`Rules.noCalendar`) is
+filed under no calendar: stats count it under "Ad hoc", `finish` replies
+`logSkipped: true` with `logPending: false`, the row keeps `log_skipped = 1`
+(schema 3) and `log_calendar_id` null, and no log event is ever written or
+waited for. The session view's calendar title reads "No calendar".

@@ -35,6 +35,8 @@ struct SessionRow: Equatable {
   var logCalendarName: String?
   var logEventId: String?
   var lastHeartbeat: Date
+  /// Started with no calendar: no log event is ever written.
+  var logSkipped: Bool = false
 
   /// The end the timer runs to: the extended end, else the planned end.
   var deadline: Date? { extendedEnd ?? plannedEnd }
@@ -57,6 +59,7 @@ struct SessionClose: Equatable {
   var note: String?
   var logCalendarId: String?
   var logCalendarName: String?
+  var logSkipped: Bool = false
 }
 
 private enum SQLValue {
@@ -91,7 +94,7 @@ private struct Row {
 }
 
 final class Database {
-  static let schemaVersion = 2
+  static let schemaVersion = 3
 
   private var handle: OpaquePointer?
 
@@ -163,6 +166,17 @@ final class Database {
           """)
       }
     }
+    if version < 3 {
+      // 1 when the session was started with no calendar ("none"): it is
+      // never written to a calendar and never waits for one.
+      try transaction {
+        try exec(
+          """
+          alter table sessions add column log_skipped integer not null default 0;
+          pragma user_version = 3;
+          """)
+      }
+    }
   }
 
   var journalMode: String? { try? scalarText("pragma journal_mode") }
@@ -173,7 +187,7 @@ final class Database {
   private static let sessionColumns = """
     id, source_event_id, calendar_id, goal, profile, planned_start, planned_end, started_at,
     ended_at, end_reason, extended_seconds, rating, note, log_calendar_id, log_calendar_name,
-    log_event_id, last_heartbeat, extended_end
+    log_event_id, last_heartbeat, extended_end, log_skipped
     """
 
   private static func session(_ row: Row) -> SessionRow {
@@ -195,7 +209,8 @@ final class Database {
       logCalendarId: row.text(13),
       logCalendarName: row.text(14),
       logEventId: row.text(15),
-      lastHeartbeat: row.date(16) ?? Date(timeIntervalSince1970: 0))
+      lastHeartbeat: row.date(16) ?? Date(timeIntervalSince1970: 0),
+      logSkipped: (row.int(18) ?? 0) != 0)
   }
 
   @discardableResult
@@ -232,12 +247,13 @@ final class Database {
       let changed = try run(
         """
         update sessions set ended_at = ?, end_reason = ?, rating = ?, note = ?, log_calendar_id = ?,
-          log_calendar_name = ?, last_heartbeat = ?
+          log_calendar_name = ?, log_skipped = ?, last_heartbeat = ?
         where id = ? and ended_at is null
         """,
         [
           SQLValue(close.endedAt), .text(close.endReason), SQLValue(close.rating), SQLValue(close.note),
-          SQLValue(close.logCalendarId), SQLValue(close.logCalendarName), SQLValue(close.endedAt), .int(id),
+          SQLValue(close.logCalendarId), SQLValue(close.logCalendarName), .int(close.logSkipped ? 1 : 0),
+          SQLValue(close.endedAt), .int(id),
         ])
       guard changed == 1 else { return false }
       try run(
@@ -260,7 +276,7 @@ final class Database {
     try rows(
       """
       select \(Database.sessionColumns) from sessions
-      where ended_at is not null and log_event_id is null and coalesce(end_reason, '') <> 'abandoned'
+      where ended_at is not null and log_event_id is null and log_skipped = 0 and coalesce(end_reason, '') <> 'abandoned'
       order by id
       """, [], Database.session)
   }
@@ -270,7 +286,7 @@ final class Database {
     try run(
       """
       update sessions set log_calendar_id = ?, log_calendar_name = ?
-      where ended_at is not null and log_event_id is null and coalesce(end_reason, '') <> 'abandoned'
+      where ended_at is not null and log_event_id is null and log_skipped = 0 and coalesce(end_reason, '') <> 'abandoned'
       """, [.text(calendarId), SQLValue(name)])
   }
 

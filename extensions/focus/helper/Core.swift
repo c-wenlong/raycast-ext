@@ -364,6 +364,7 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   private func calendarTitle(for calendarId: String) -> String {
+    if calendarId == Rules.noCalendar { return "No calendar" }
     guard calendar.accessState == "fullAccess" else { return "" }
     return calendar.calendar(id: calendarId)?.title ?? ""
   }
@@ -603,18 +604,19 @@ final class FocusCore: SessionPresenterDelegate {
       }
       reason = parsed
     }
-    let (id, logEventId) = try finishSession(rating: rating, note: note, reason: reason)
+    let (id, logEventId, skipped) = try finishSession(rating: rating, note: note, reason: reason)
     return .ok([
       "session": try sessionJSON(id),
       "logEventId": .optional(logEventId),
-      "logPending": .bool(logEventId == nil),
+      "logPending": .bool(logEventId == nil && !skipped),
+      "logSkipped": .bool(skipped),
     ])
   }
 
   /// Finish from running, paused or ending. `reason` nil records why the
   /// session reached the end sheet ("timer" or "manual"), or "manual" when
   /// it never did. Returns the session id and the log event id, if written.
-  private func finishSession(rating: Int?, note: String?, reason: EndReason?) throws -> (Int64, String?) {
+  private func finishSession(rating: Int?, note: String?, reason: EndReason?) throws -> (Int64, String?, Bool) {
     guard let open = try current() else { throw FocusError("no session is running") }
     let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
     var machine = open.machine
@@ -624,14 +626,16 @@ final class FocusCore: SessionPresenterDelegate {
 
     // Step 1: close the row and fix its destination before touching EventKit.
     let settings = config.load()
-    let logCalendarId = settings.logCalendarId
-    var logCalendarName = settings.logCalendarName
+    // A session filed under no calendar is never written to one.
+    let skipsLog = open.row.calendarId == Rules.noCalendar
+    let logCalendarId = skipsLog ? nil : settings.logCalendarId
+    var logCalendarName = skipsLog ? nil : settings.logCalendarName
     if logCalendarName == nil, let logCalendarId, calendar.accessState == "fullAccess" {
       logCalendarName = calendar.calendar(id: logCalendarId)?.displayName
     }
     let close = SessionClose(
       endedAt: machine.endedAt ?? now, endReason: (machine.endReason ?? .manual).rawValue, rating: machine.rating,
-      note: machine.note, logCalendarId: logCalendarId, logCalendarName: logCalendarName)
+      note: machine.note, logCalendarId: logCalendarId, logCalendarName: logCalendarName, logSkipped: skipsLog)
     let id = open.row.id
     guard try db.finish(id, close) else {
       active = nil
@@ -644,13 +648,17 @@ final class FocusCore: SessionPresenterDelegate {
     log("session \(id): finished (\(close.endReason))")
     publish(.dismiss)
     if settings.raycastDeeplink { openURL(RaycastDeeplink.complete) }
+    if skipsLog {
+      log("session \(id): no calendar; no log event")
+      return (id, nil, true)
+    }
 
     // Steps 2 and 3: write (or adopt) the log event now; on failure the row
     // waits for the 30-second tick.
     guard let row = try db.session(id: id) else { throw FocusError("session \(id) vanished") }
     switch try writeLogEvent(for: row) {
-    case .created(let eventId), .adopted(let eventId): return (id, eventId)
-    case .waiting: return (id, nil)
+    case .created(let eventId), .adopted(let eventId): return (id, eventId, false)
+    case .waiting: return (id, nil, false)
     }
   }
 
@@ -830,6 +838,7 @@ final class FocusCore: SessionPresenterDelegate {
         fields["note"] = .optional(row.note)
         fields["logCalendarId"] = .optional(row.logCalendarId)
         fields["logCalendarName"] = .optional(row.logCalendarName)
+        fields["logSkipped"] = .bool(row.logSkipped)
         fields["logEventId"] = .optional(row.logEventId)
         fields["pausedSeconds"] = .int(LogText.pausedSeconds(pauses, start: row.startedAt, end: endedAt))
       } else {

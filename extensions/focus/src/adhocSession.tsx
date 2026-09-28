@@ -21,6 +21,7 @@ import {
   lastAdhocCalendar,
   rememberAdhocCalendar,
   resolveAdhocMinutes,
+  NO_CALENDAR,
 } from "./lib/adhoc";
 import { FocusConfig, readConfig } from "./lib/config";
 import {
@@ -264,7 +265,7 @@ export default function AdhocSessionCommand() {
       <Form.Dropdown
         id="calendarId"
         title="Calendar"
-        info="Where the session is filed for stats. Its log event still goes to the log calendar from Focus Settings."
+        info="Where the session is filed for stats; its log event goes to the log calendar from Focus Settings. (No Calendar) keeps it in stats only and writes nothing to any calendar."
         value={calendarId}
         error={errors.calendar}
         onChange={(value) => {
@@ -273,6 +274,11 @@ export default function AdhocSessionCommand() {
           setProfile(adhocProfileFor(value, config, names));
         }}
       >
+        <Form.Dropdown.Item
+          value={NO_CALENDAR}
+          title="(No Calendar)"
+          icon={Icon.XMarkCircle}
+        />
         {calendars.map((calendar) => (
           <Form.Dropdown.Item
             key={calendar.id}

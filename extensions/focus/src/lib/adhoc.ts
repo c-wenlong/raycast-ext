@@ -7,7 +7,10 @@ import { durationText, formatClockIso } from "./time";
 // The decisions behind the Ad-hoc Session form, kept out of the view.
 
 export const ADHOC_PRESET_MINUTES = [15, 25, 45, 60, 90] as const;
-export const DEFAULT_ADHOC_MINUTES = 25;
+export const DEFAULT_ADHOC_MINUTES = 45;
+// The calendar id of a session filed under no calendar: the helper counts it
+// under "Ad hoc" in stats and never writes a log event for it.
+export const NO_CALENDAR = "none";
 // The helper takes 60 to 86400 seconds.
 export const MIN_ADHOC_MINUTES = 1;
 export const MAX_ADHOC_MINUTES = 1440;
@@ -51,6 +54,7 @@ export function initialAdhocCalendar(
   config: Pick<FocusConfig, "startableCalendars">,
 ): string | null {
   const ids = calendars.map((calendar) => calendar.id);
+  if (lastUsed === NO_CALENDAR) return NO_CALENDAR;
   if (lastUsed && ids.includes(lastUsed)) return lastUsed;
   const startable = config.startableCalendars.find((id) => ids.includes(id));
   return startable ?? ids[0] ?? null;
@@ -76,6 +80,7 @@ export function adhocCalendarGone(
   fresh: Pick<Calendar, "id">[] | null,
   calendarId: string,
 ): boolean {
+  if (calendarId === NO_CALENDAR) return false;
   return (
     fresh !== null && !fresh.some((calendar) => calendar.id === calendarId)
   );
@@ -83,15 +88,18 @@ export function adhocCalendarGone(
 
 // The toast after a start: "Focusing: Write the report", "Until 15:40 (25 min), deep profile".
 export function adhocStartedText(
-  session: Pick<Session, "goal" | "plannedEnd" | "profile">,
+  session: Pick<Session, "goal" | "plannedEnd" | "profile"> & {
+    calendarId?: string;
+  },
   minutes: number,
 ): { title: string; message: string } {
   const until = session.plannedEnd
     ? `Until ${formatClockIso(session.plannedEnd)} `
     : "";
+  const logged = session.calendarId === NO_CALENDAR ? ", no calendar" : "";
   return {
     title: `Focusing: ${session.goal}`,
-    message: `${until}(${durationText(minutes * 60)}), ${session.profile} profile`,
+    message: `${until}(${durationText(minutes * 60)}), ${session.profile} profile${logged}`,
   };
 }
 

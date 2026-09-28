@@ -33,6 +33,7 @@ struct StatsRow: Equatable {
   var logCalendarId: String?
   var logCalendarName: String?
   var logEventId: String?
+  var logSkipped: Bool = false
   var pauses: [PauseSpan] = []
   /// Every blocked_attempts row, as the log event counts them.
   var attempts: Int = 0
@@ -42,7 +43,7 @@ struct StatsRow: Equatable {
   init(
     id: Int64, goal: String, calendarId: String, sourceEventId: String? = nil, startedAt: Date, endedAt: Date?,
     endReason: String? = nil, rating: Int? = nil, note: String? = nil, logCalendarId: String? = nil,
-    logCalendarName: String? = nil, logEventId: String? = nil, pauses: [PauseSpan] = [], attempts: Int = 0,
+    logCalendarName: String? = nil, logEventId: String? = nil, logSkipped: Bool = false, pauses: [PauseSpan] = [], attempts: Int = 0,
     snoozes: Int = 0
   ) {
     self.id = id
@@ -57,6 +58,7 @@ struct StatsRow: Equatable {
     self.logCalendarId = logCalendarId
     self.logCalendarName = logCalendarName
     self.logEventId = logEventId
+    self.logSkipped = logSkipped
     self.pauses = pauses
     self.attempts = attempts
     self.snoozes = snoozes
@@ -67,11 +69,12 @@ struct StatsRow: Equatable {
       id: row.id, goal: row.goal, calendarId: row.calendarId, sourceEventId: row.sourceEventId,
       startedAt: row.startedAt, endedAt: row.endedAt, endReason: row.endReason, rating: row.rating, note: row.note,
       logCalendarId: row.logCalendarId, logCalendarName: row.logCalendarName, logEventId: row.logEventId,
+      logSkipped: row.logSkipped,
       pauses: pauses, attempts: attempts, snoozes: snoozes)
   }
 
   /// Finished and owed a log event (abandoned sessions never get one).
-  var logPending: Bool { endedAt != nil && endReason != "abandoned" && logEventId == nil }
+  var logPending: Bool { endedAt != nil && endReason != "abandoned" && logEventId == nil && !logSkipped }
 }
 
 /// How a session's calendar is named. With Calendar access, `titles` holds
@@ -287,7 +290,7 @@ enum Stats {
             "endedAt": .string(ISO.local(row.endedAt ?? row.startedAt)),
             "focusedSeconds": .int(focusedSeconds(row)), "rating": .optional(row.rating), "note": .optional(row.note),
             "endReason": .optional(row.endReason), "blockedAttempts": .int(row.attempts),
-            "snoozes": .int(row.snoozes), "logPending": .bool(row.logPending),
+            "snoozes": .int(row.snoozes), "logPending": .bool(row.logPending), "logSkipped": .bool(row.logSkipped),
           ]
         }),
     ]

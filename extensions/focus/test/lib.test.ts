@@ -23,6 +23,7 @@ import {
   lastAdhocCalendar,
   rememberAdhocCalendar,
   resolveAdhocMinutes,
+  NO_CALENDAR,
 } from "../src/lib/adhoc";
 import {
   ConfigError,
@@ -1355,7 +1356,7 @@ net.createServer((socket) => {
     "adhoc: duration is the preset unless custom minutes are filled (1 to 1440)",
     async () => {
       assert.deepEqual(ADHOC_PRESET_MINUTES, [15, 25, 45, 60, 90]);
-      assert.equal(DEFAULT_ADHOC_MINUTES, 25);
+      assert.equal(DEFAULT_ADHOC_MINUTES, 45);
       assert.deepEqual(resolveAdhocMinutes("25", ""), { ok: true, minutes: 25 });
       assert.deepEqual(resolveAdhocMinutes("90", "   "), { ok: true, minutes: 90 });
       assert.deepEqual(resolveAdhocMinutes("25", " 40 "), { ok: true, minutes: 40 });
@@ -1389,6 +1390,15 @@ net.createServer((socket) => {
 
       // The calendar is checked again right before a start.
       assert.equal(adhocCalendarGone(calendars, "b"), false);
+      // "(No Calendar)" is never gone and is remembered like any other choice.
+      assert.equal(adhocCalendarGone(calendars, NO_CALENDAR), false);
+      assert.equal(adhocCalendarGone(null, NO_CALENDAR), false);
+      assert.equal(initialAdhocCalendar(calendars, NO_CALENDAR, { startableCalendars: ["b"] }), NO_CALENDAR);
+      assert.equal(adhocProfileFor(NO_CALENDAR, { calendarProfiles: { none: "deep" } }, ["default", "deep"]), "deep");
+      assert.deepEqual(
+        adhocStartedText({ goal: "Scratch", plannedEnd: null, profile: "default", calendarId: NO_CALENDAR }, 45),
+        { title: "Focusing: Scratch", message: "(45 min), default profile, no calendar" },
+      );
       assert.equal(adhocCalendarGone(calendars, "removed"), true);
       assert.equal(adhocCalendarGone(null, "removed"), false);
     },

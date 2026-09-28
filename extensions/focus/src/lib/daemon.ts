@@ -67,6 +67,8 @@ export interface FinishResult {
   session: Session;
   logEventId: string | null;
   logPending: boolean;
+  // Started under no calendar: nothing is written to any calendar.
+  logSkipped: boolean;
 }
 
 export interface WaitingSession {
@@ -630,6 +632,7 @@ export class FocusDaemon {
       logEventId:
         typeof reply.logEventId === "string" ? reply.logEventId : null,
       logPending: reply.logPending === true,
+      logSkipped: reply.logSkipped === true,
     };
   }
 

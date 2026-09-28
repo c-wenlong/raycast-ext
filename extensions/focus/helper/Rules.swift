@@ -16,6 +16,10 @@ struct CalendarEvent: Equatable {
 }
 
 enum Rules {
+  /// The calendar id of an ad-hoc session filed under no calendar: it is
+  /// counted in stats under "Ad hoc" and never written to a calendar.
+  static let noCalendar = "none"
+
   /// An event is startable only while more than this much of it is left.
   static let minimumRemaining: TimeInterval = 60
   /// Ad-hoc sessions run between one minute and one day.
