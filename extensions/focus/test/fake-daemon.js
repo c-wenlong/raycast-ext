@@ -438,8 +438,9 @@ function createFakeDaemon(options) {
     };
   }
 
-  // One grey-on-dark rect per day, scaled to the longest; enough to see the
-  // image path work in the Raycast view. The real chart is helper/Chart.swift.
+  // A placeholder: one rect per day, scaled to the longest, and a caption
+  // saying so. It shows the image path works in the Raycast view; the real
+  // chart, with its title, grid and labels, is helper/Chart.swift.
   function writeChart(dayList) {
     if (!socketPath) return null;
     const folder = path.join(path.dirname(socketPath), "stats");
@@ -456,7 +457,7 @@ function createFakeDaemon(options) {
       fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(
         file,
-        `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="240"><path d="M0 0H640V240H0Z" fill="#1A1A1A"/>${bars}</svg>\n`,
+        `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="240"><path d="M0 0H640V240H0Z" fill="#1A1A1A"/><text x="16" y="26" font-family="-apple-system, Helvetica, sans-serif" font-size="15" fill="#8C8C8C">fake-daemon placeholder chart</text>${bars}</svg>\n`,
       );
       return file;
     } catch {

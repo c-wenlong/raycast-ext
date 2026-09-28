@@ -23,12 +23,15 @@ enum Chart {
   static let stub = "#3A3A3A"
   static let font = "-apple-system, Helvetica, sans-serif"
 
-  private static let left = 56.0
+  // Raycast's Detail shows the 640-wide chart at about 425 points, two
+  // thirds of its size, so the type is set large: 13 to 17 here reads as
+  // 9 to 11 pt there.
+  private static let left = 62.0
   /// Where the heading starts: the page margin, left of the tick labels.
   private static let margin = 16.0
   private static let right = 16.0
-  private static let top = 44.0
-  private static let bottom = 30.0
+  private static let top = 54.0
+  private static let bottom = 36.0
   private static let maxBar = 24.0
   private static let corner = 4.0
 
@@ -103,8 +106,8 @@ enum Chart {
     parts.append("<path d=\"M0 0H\(Int(width))V\(Int(height))H0Z\" fill=\"\(canvas)\"/>")
     parts.append("<clipPath id=\"plot\"><path d=\"M0 0H\(Int(width))V\(number(baseline))H0Z\"/></clipPath>")
     let heading = days.count == 1 ? "Focused time today" : "Focused time, last \(days.count) days"
-    parts.append(text(heading, x: margin, y: 22, size: 13, color: ink, weight: "600"))
-    parts.append(text(LogText.minutes(total) + " in total", x: width - right, y: 22, anchor: "end", size: 12))
+    parts.append(text(heading, x: margin, y: 26, size: 17, color: ink, weight: "600"))
+    parts.append(text(LogText.minutes(total) + " in total", x: width - right, y: 26, anchor: "end", size: 15))
 
     // Grid and ticks: a hairline per step, labelled on the left.
     var tick = 0.0
@@ -112,16 +115,18 @@ enum Chart {
       let y = (baseline - tick / axisTop * plotHeight).rounded() + 0.5
       parts.append(
         "<path d=\"M\(number(left)) \(number(y))H\(number(width - right))\" stroke=\"\(grid)\" stroke-width=\"1\"/>")
-      parts.append(text(compact(Int(tick * 60)), x: left - 8, y: y + 4, anchor: "end", size: 10))
+      parts.append(text(compact(Int(tick * 60)), x: left - 8, y: y + 4.5, anchor: "end", size: 13))
       tick += step
     }
 
     if maxSeconds == 0 {
       // Between the top gridline and the middle one, clear of both.
       parts.append(
-        text("No focused time yet", x: left + plotWidth / 2, y: top + plotHeight / 4 + 4, anchor: "middle", size: 12))
+        text("No focused time yet", x: left + plotWidth / 2, y: top + plotHeight / 4 + 5, anchor: "middle", size: 15))
     }
 
+    let valueSize = days.count <= 7 ? 14 : 12
+    let labelSize = days.count <= 7 ? 15 : 13
     for (index, day) in days.enumerated() {
       let x = left + slot * Double(index) + (slot - barWidth) / 2
       let centre = x + barWidth / 2
@@ -133,13 +138,14 @@ enum Chart {
         "<rect x=\"\(number(x))\" y=\"\(number(y))\" width=\"\(number(barWidth))\" height=\"\(number(barHeight + radius))\" rx=\"\(number(radius))\" fill=\"\(empty ? stub : accent)\" clip-path=\"url(#plot)\"><title>\(escape(title))</title></rect>"
       )
       if !empty && days.count <= 14 {
-        parts.append(text(compact(day.focusedSeconds), x: centre, y: y - 6, anchor: "middle", size: 10, color: ink))
+        parts.append(
+          text(compact(day.focusedSeconds), x: centre, y: y - 7, anchor: "middle", size: valueSize, color: ink))
       }
       let isToday = index == days.count - 1
       if let name = label(day, index: index, count: days.count, calendar: calendar) {
         let shown = isToday && days.count <= 14 ? "Today" : name
         parts.append(
-          text(shown, x: centre, y: baseline + 18, anchor: "middle", size: 11, color: isToday ? ink : muted))
+          text(shown, x: centre, y: baseline + 24, anchor: "middle", size: labelSize, color: isToday ? ink : muted))
       }
     }
     parts.append("</svg>")
