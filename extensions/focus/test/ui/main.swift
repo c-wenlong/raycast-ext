@@ -1099,6 +1099,14 @@ check("panel sweep: and moves at the focused pace", abs(panelSweep.progress(at: 
 now = t0.addingTimeInterval(80)
 panelSweep.update(session(id: 60, state: "paused", remaining: 1480, started: -1580, plannedEnd: 1480, paused: 60, adHoc: true), at: now)
 check("panel sweep: a second pause freezes again", !panelSweep.moving && abs(panelSweep.progress(at: now.addingTimeInterval(9)) - 1520.0 / 3000) < 1e-9)
+// The first paused update arrives 2 s after the pause began (the daemon
+// froze the time left at the pause's start): the running sweep would say
+// 1512 gone, the digits say 1510, and the fill is capped at the digits.
+now = t0
+panelSweep.update(session(id: 65, remaining: 1500, started: -1500, adHoc: true), at: now)
+now = t0.addingTimeInterval(12)
+panelSweep.update(session(id: 65, state: "paused", remaining: 1490, started: -1512, plannedEnd: 1490, paused: 2, adHoc: true), at: now)
+check("panel sweep: a late paused update never overshoots the digits", abs(panelSweep.progress(at: now) - 1510.0 / 3000) < 1e-9 && !panelSweep.moving, "\(panelSweep.progress(at: now))")
 // A calendar session's pause is a break inside the event: the time left
 // keeps falling, and so does the fill.
 now = t0

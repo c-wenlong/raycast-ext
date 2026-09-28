@@ -271,7 +271,14 @@ struct PanelSweep: Equatable {
     let focused = Self.focused(view)
     switch view.state {
     case "paused" where view.pauseStopsClock:
-      if frozen == nil { frozen = clock?.progress(at: now) ?? PanelContent.progress(view) }
+      // The daemon froze the time left at the pause's start; this update
+      // may be later than that, so the running sweep is capped at the
+      // whole-second fill the update reports (never past what the digits
+      // say), and stays fractional below it so the resume does not step.
+      if frozen == nil {
+        let reported = PanelContent.progress(view)
+        frozen = clock.map { min($0.progress(at: now), reported) } ?? reported
+      }
       clock = nil
     case "running", "paused":
       frozen = nil
