@@ -1611,6 +1611,26 @@ net.createServer((socket) => {
           7,
         );
 
+        // A snooze during a session counts; a waiting session moved to a
+        // writable calendar stops being pending.
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-gone", logCalendarName: "Gone (x)" }));
+        await daemon.finish({});
+        await daemon.startAdhoc({ goal: "Snoozy", durationSeconds: 600, calendarId: "cal-work" });
+        await daemon.snooze("x.com");
+        await daemon.snooze("com.apple.Calculator");
+        clock = new Date(2026, 8, 28, 0, 50, 0);
+        await daemon.finish({});
+        const waiting = await daemon.stats();
+        const snoozy = waiting.recent.find((s) => s.goal === "Snoozy");
+        assert.equal(snoozy?.snoozes, 2);
+        assert.equal(snoozy?.blockedAttempts, 2);
+        assert.equal(snoozy?.logPending, true);
+        assert.deepEqual(waiting.waiting.map((w) => w.goal), ["Running", "Snoozy"]);
+        await daemon.movePending("cal-log");
+        const moved = await daemon.stats();
+        assert.deepEqual(moved.waiting, []);
+        assert.equal(moved.recent.some((s) => s.logPending), false);
+
         const month = await daemon.stats(30);
         assert.equal(month.days.length, 30);
         assert.deepEqual(fake.state.requests.at(-1), { days: 30, cmd: "stats" });

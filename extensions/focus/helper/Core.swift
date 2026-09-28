@@ -743,9 +743,15 @@ final class FocusCore: SessionPresenterDelegate {
     guard Stats.dayRange.contains(days) else { throw FocusError("days must be 1 to 90") }
     let now = self.now
     let window = Stats.window(days: days, now: now)
-    let statsRow = { (row: SessionRow) throws -> StatsRow in
-      let counts = try self.db.attemptCounts(row.id)
-      return StatsRow(row, pauses: try self.db.pauses(row.id), attempts: counts.all, snoozes: counts.snoozed)
+    let windowRows = try db.finishedSessions(overlapping: window.start, window.end)
+    let recentRows = try db.recentSessions(limit: Stats.recentLimit)
+    // Pauses and attempts for all of them in a few queries, not two per session.
+    let ids = (windowRows + recentRows).map(\.id)
+    let pauses = try db.pauses(forSessions: ids)
+    let counts = try db.attemptCounts(forSessions: ids)
+    let statsRow = { (row: SessionRow) -> StatsRow in
+      let count = counts[row.id] ?? (0, 0)
+      return StatsRow(row, pauses: pauses[row.id] ?? [], attempts: count.all, snoozes: count.snoozed)
     }
     let access = calendar.accessState == "fullAccess"
     var titles: [String: String] = [:]
@@ -753,8 +759,7 @@ final class FocusCore: SessionPresenterDelegate {
       for info in calendar.calendars() { titles[info.id] = info.title }
     }
     let report = Stats.report(
-      windowRows: try db.finishedSessions(overlapping: window.start, window.end).map(statsRow),
-      recent: try db.recentSessions(limit: Stats.recentLimit).map(statsRow),
+      windowRows: windowRows.map(statsRow), recent: recentRows.map(statsRow),
       names: CalendarNames(access: access, titles: titles), days: days, now: now)
     var fields = Stats.json(report)
     fields["waiting"] = .array(

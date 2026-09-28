@@ -119,7 +119,7 @@ struct CalendarTotal: Equatable {
 struct DayTotal: Equatable {
   /// Local midnight that starts the day.
   var start: Date
-  /// "2026-09-22", local.
+  /// "2026-09-22": the local day, written in the Gregorian calendar.
   var date: String
   /// 1 is Sunday, as Calendar numbers weekdays.
   var weekday: Int
@@ -218,10 +218,21 @@ enum Stats {
     }
   }
 
+  /// The Gregorian calendar in `calendar`'s time zone: `date` strings and
+  /// chart labels are Gregorian whatever calendar the Mac is set to, while
+  /// the day boundaries stay local midnight.
+  static func gregorian(like calendar: Calendar) -> Calendar {
+    var gregorian = Calendar(identifier: .gregorian)
+    gregorian.timeZone = calendar.timeZone
+    gregorian.locale = calendar.locale
+    return gregorian
+  }
+
   /// Every day of the window, oldest first, zero-filled.
   static func days(_ rows: [StatsRow], days: Int, now: Date, calendar: Calendar = .current) -> [DayTotal] {
-    dayIntervals(days: days, now: now, calendar: calendar).map { day in
-      let parts = calendar.dateComponents([.year, .month, .day, .weekday], from: day.start)
+    let gregorian = gregorian(like: calendar)
+    return dayIntervals(days: days, now: now, calendar: calendar).map { day in
+      let parts = gregorian.dateComponents([.year, .month, .day, .weekday], from: day.start)
       let date = String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
       let seconds = rows.reduce(0) { $0 + focusedSeconds($1, within: day) }
       return DayTotal(start: day.start, date: date, weekday: parts.weekday ?? 1, focusedSeconds: seconds)

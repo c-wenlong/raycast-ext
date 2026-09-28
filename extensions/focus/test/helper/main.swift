@@ -1671,6 +1671,13 @@ do {
   let dstRow = statRow(17, dstStart, dstStart.addingTimeInterval(90_000))
   check("stats: a session filling the DST day counts 25 hours", Stats.days([dstRow], days: 3, now: dstNow, calendar: york).map(\.focusedSeconds) == [0, 90_000, 0])
   check("stats: dates follow the calendar's zone", Stats.days([], days: 3, now: dstNow, calendar: york).map(\.date) == ["2026-10-31", "2026-11-01", "2026-11-02"])
+  var buddhist = Calendar(identifier: .buddhist)
+  buddhist.timeZone = york.timeZone
+  check("stats: dates are Gregorian on a Buddhist calendar", Stats.days([], days: 2, now: dstNow, calendar: buddhist).map(\.date) == ["2026-11-01", "2026-11-02"])
+  var hebrew = Calendar(identifier: .hebrew)
+  hebrew.timeZone = york.timeZone
+  let hebrewDays = Stats.days([dstRow], days: 3, now: dstNow, calendar: hebrew)
+  check("stats: a Hebrew calendar keeps Gregorian dates and local days", hebrewDays.map(\.date) == ["2026-10-31", "2026-11-01", "2026-11-02"] && hebrewDays.map(\.focusedSeconds) == [0, 90_000, 0], "\(hebrewDays)")
 
   let json = Stats.json(report)
   check("stats: json averages", json["week"]?["averageRating"] == .double(3.67) && json["today"]?["averageRating"] == .double(3))
@@ -1768,6 +1775,11 @@ do {
   let svg = (try? String(contentsOfFile: chartPath, encoding: .utf8)) ?? ""
   check("stats command: the chart is written", svg.hasPrefix("<svg") && svg.components(separatedBy: "<rect").count - 1 == 7 && !svg.contains("<script"))
   check("stats command: the running session is untouched", h.send("status")["session"]?["state"] == "running")
+  let batchedPauses = try! h.db.pauses(forSessions: [Int64(first), Int64(first), 999])
+  check("stats reads: pauses by session in one query", batchedPauses.count == 1 && batchedPauses[Int64(first)] == (try! h.db.pauses(Int64(first))))
+  let batchedCounts = try! h.db.attemptCounts(forSessions: Array(1...1200).map(Int64.init))
+  check("stats reads: attempt counts over many ids in chunks", batchedCounts.count == 1 && batchedCounts[Int64(first)]?.all == 2 && batchedCounts[Int64(first)]?.snoozed == 1)
+  check("stats reads: no ids, no rows", (try! h.db.pauses(forSessions: [])).isEmpty && (try! h.db.attemptCounts(forSessions: [])).isEmpty)
 
   let month = h.send("stats", ["days": 30])
   check("stats command: days picks the window", month["days"]?.arrayValue?.count == 30 && month["days"]?[0]?["date"] == "2026-08-30")

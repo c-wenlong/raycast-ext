@@ -79,7 +79,7 @@ enum Chart {
     }
     let every = Int((Double(count) / 8).rounded(.up))
     guard (count - 1 - index) % every == 0 else { return nil }
-    let parts = calendar.dateComponents([.day, .month], from: day.start)
+    let parts = Stats.gregorian(like: calendar).dateComponents([.day, .month], from: day.start)
     return "\(parts.day ?? 0)/\(parts.month ?? 0)"
   }
 

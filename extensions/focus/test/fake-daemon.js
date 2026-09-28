@@ -267,6 +267,9 @@ function createFakeDaemon(options) {
         };
         delete session.remainingSeconds;
         const pauses = state.session._pauses.map((p) => ({ start: p.start, end: p.end === null ? now.getTime() : p.end }));
+        // The fake records no blocked attempts of its own, only snoozes; the
+        // helper stores a snooze as an attempt row too, so both count them.
+        const snoozed = state.snoozes.length;
         state.session = null;
         state.snoozes = [];
         const config = readConfig(configPath);
@@ -282,8 +285,8 @@ function createFakeDaemon(options) {
           rating: session.rating,
           note: session.note,
           endReason: session.endReason,
-          blockedAttempts: 0,
-          snoozes: 0,
+          blockedAttempts: snoozed,
+          snoozes: snoozed,
           logPending: !logCalendar,
         });
         if (!logCalendar) {
@@ -325,6 +328,10 @@ function createFakeDaemon(options) {
           return { ok: false, error: `Calendar ${request.calendarId} is not writable.` };
         }
         const written = state.waiting.length;
+        const moved = new Set(state.waiting.map((item) => item.sessionId));
+        for (const item of state.history) {
+          if (moved.has(item.id)) item.logPending = false;
+        }
         state.waiting = [];
         return { ok: true, written, adopted: 0, stillWaiting: 0 };
       }
