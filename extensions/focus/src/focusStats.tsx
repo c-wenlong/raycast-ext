@@ -8,6 +8,7 @@ import {
   showToast,
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EditSessionForm } from "./components/EditSessionForm";
 import { MoveWaitingAction } from "./components/MoveWaitingAction";
 import { FocusConfig, readConfig } from "./lib/config";
 import {
@@ -316,6 +317,12 @@ export default function FocusStatsCommand() {
         actions={
           <ActionPanel>
             <Action.CopyToClipboard title="Copy Goal" content={session.goal} />
+            <Action.Push
+              title="Edit Session"
+              icon={Icon.Pencil}
+              shortcut={{ modifiers: ["cmd"], key: "e" }}
+              target={<EditSessionForm session={session} onUpdated={reload} />}
+            />
             {refresh}
             {deleteAction(session.id)}
           </ActionPanel>

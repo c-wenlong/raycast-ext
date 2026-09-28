@@ -65,6 +65,12 @@ export interface Session {
   // Finish: the Settings override when set, else the session's own calendar.
   logCalendarId?: string | null;
   logCalendarName?: string | null;
+  // Finished sessions: the review, and the log event (null while it waits,
+  // and for a session that never gets one).
+  rating?: number | null;
+  note?: string | null;
+  logEventId?: string | null;
+  logSkipped?: boolean;
 }
 
 export interface FinishResult {
@@ -121,6 +127,85 @@ export function deleteToastText(
   return verb === "discarded"
     ? { title }
     : { title, message: "It had no calendar event" };
+}
+
+// `updateSession`: a finished or abandoned session's new rating and note.
+// null clears either; the client always sends both.
+export interface UpdateSessionRequest {
+  rating: number | null;
+  note: string | null;
+}
+
+// The `updateSession` reply. The row always has the new rating and note when
+// this comes back; its log event's notes were rewritten only when the event
+// still carries the session's markers, and `warning` says why not otherwise.
+export interface UpdateResult {
+  session: Session;
+  logEventUpdated: boolean;
+  warning: string | null;
+}
+
+// Edit Session's form: the rating dropdown's value ("none" or "1" to "5")
+// and the note field.
+export const NO_RATING = "none";
+
+export interface EditSessionValues {
+  rating: string;
+  note: string;
+}
+
+export function editSessionValues(session: {
+  rating: number | null;
+  note: string | null;
+}): EditSessionValues {
+  const rating = session.rating;
+  return {
+    rating:
+      rating !== null && Number.isInteger(rating) && rating >= 1 && rating <= 5
+        ? String(rating)
+        : NO_RATING,
+    note: session.note ?? "",
+  };
+}
+
+export function editSessionRequest(
+  values: EditSessionValues,
+): UpdateSessionRequest {
+  const rating = Number(values.rating);
+  const note = values.note.replace(/\s+/g, " ").trim();
+  return {
+    rating:
+      values.rating !== NO_RATING && Number.isInteger(rating) ? rating : null,
+    note: note || null,
+  };
+}
+
+// The toast after Edit Session: says whether the calendar event changed too.
+export function updateToastText(result: UpdateResult): {
+  title: string;
+  message?: string;
+} {
+  const title = "Session updated";
+  if (result.logEventUpdated) {
+    return { title, message: "Its calendar event was updated too" };
+  }
+  if (result.warning) {
+    return {
+      title: `${title}, calendar event unchanged`,
+      message: result.warning,
+    };
+  }
+  const session = result.session;
+  const waiting =
+    !session.logEventId &&
+    session.logSkipped !== true &&
+    session.endReason !== "abandoned";
+  return {
+    title,
+    message: waiting
+      ? "Its calendar event is not written yet and will show the change"
+      : "It has no calendar event",
+  };
 }
 
 export interface WaitingSession {
@@ -774,6 +859,41 @@ export class FocusDaemon {
     return {
       deleted: true,
       logEventRemoved: reply.logEventRemoved === true,
+      warning:
+        typeof reply.warning === "string" && reply.warning.trim()
+          ? reply.warning
+          : null,
+    };
+  }
+
+  // Changes a finished or abandoned session's rating and note (the open one
+  // is refused by the helper), and its log event's notes when the event is
+  // still ours. The note is sent on one line, a blank one as null.
+  async updateSession(
+    sessionId: number,
+    request: UpdateSessionRequest,
+  ): Promise<UpdateResult> {
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      throw new RangeError("updateSession takes a positive whole session id.");
+    }
+    const { rating } = request;
+    if (
+      rating !== null &&
+      (!Number.isInteger(rating) || rating < 1 || rating > 5)
+    ) {
+      throw new RangeError(
+        "rating must be null or a whole number from 1 to 5.",
+      );
+    }
+    const note = request.note?.replace(/\s+/g, " ").trim() || null;
+    const reply = await this.request("updateSession", {
+      sessionId,
+      rating,
+      note,
+    });
+    return {
+      session: field<Session>(reply, "session", isObject),
+      logEventUpdated: reply.logEventUpdated === true,
       warning:
         typeof reply.warning === "string" && reply.warning.trim()
           ? reply.warning

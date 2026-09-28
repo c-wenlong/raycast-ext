@@ -37,10 +37,14 @@ import {
   DaemonError,
   EXTEND_MINUTES,
   FocusDaemon,
+  NO_RATING,
   calendarLabel,
   deleteToastText,
+  editSessionRequest,
+  editSessionValues,
   finishToastText,
   sendRequest,
+  updateToastText,
 } from "../src/lib/daemon";
 import {
   blockingText,
@@ -3328,6 +3332,394 @@ net.createServer((socket) => {
       } finally {
         await fake.close();
       }
+    },
+  ],
+
+  // ---- updateSession: client, fake daemon, form values and toast text ----
+  [
+    "daemon: updateSession round-trips against the fake daemon",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      let clock = new Date(2026, 8, 28, 9, 0, 0);
+      const fake = createFakeDaemon({
+        socketPath,
+        configPath,
+        now: () => clock,
+      });
+      await fake.listen();
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      const finishOne = async (goal: string, calendarId = "cal-work") => {
+        const started = await daemon.startAdhoc({
+          goal,
+          durationSeconds: 600,
+          calendarId,
+        });
+        clock = new Date(clock.getTime() + 10 * 60 * 1000);
+        const done = await daemon.finish({ rating: 3, note: "before" });
+        return { id: started.id, logEventId: done.logEventId };
+      };
+      const eventOf = (id: number) =>
+        fake.state.calendarEvents.find(
+          (e: { sessionId: number }) => e.sessionId === id,
+        );
+      try {
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
+
+        // Rating and note changed: the history row and the event follow.
+        const logged = await finishOne("Logged");
+        assert.match(eventOf(logged.id).notes, /Rating: ★★★☆☆\nNote: before/);
+        const updated = await daemon.updateSession(logged.id, {
+          rating: 5,
+          note: "after",
+        });
+        assert.equal(updated.logEventUpdated, true);
+        assert.equal(updated.warning, null);
+        assert.equal(updated.session.id, logged.id);
+        assert.equal(updated.session.state, "finished");
+        assert.equal(updated.session.rating, 5);
+        assert.equal(updated.session.note, "after");
+        assert.deepEqual(fake.state.requests.at(-1), {
+          sessionId: logged.id,
+          rating: 5,
+          note: "after",
+          cmd: "updateSession",
+        });
+        const notes = eventOf(logged.id).notes;
+        assert.match(notes, /Rating: ★★★★★\nNote: after/);
+        assert.doesNotMatch(notes, /before/);
+        assert.match(notes, new RegExp(`focus-session: ${logged.id}`));
+        const row = (await daemon.stats()).recent.find(
+          (r) => r.id === logged.id,
+        );
+        assert.equal(row?.rating, 5);
+        assert.equal(row?.note, "after");
+        assert.deepEqual(updateToastText(updated), {
+          title: "Session updated",
+          message: "Its calendar event was updated too",
+        });
+
+        // Clearing both; a multi-line note goes on one line, a blank one as null.
+        const cleared = await daemon.updateSession(logged.id, {
+          rating: null,
+          note: "  \n ",
+        });
+        assert.deepEqual(fake.state.requests.at(-1), {
+          sessionId: logged.id,
+          rating: null,
+          note: null,
+          cmd: "updateSession",
+        });
+        assert.equal(cleared.session.rating, null);
+        assert.equal(cleared.session.note, null);
+        assert.match(
+          eventOf(logged.id).notes,
+          /Rating: none\nEnded: manually\n\n/,
+        );
+        assert.doesNotMatch(eventOf(logged.id).notes, /Note:/);
+        await daemon.updateSession(logged.id, {
+          rating: 2,
+          note: "two\nlines ",
+        });
+        assert.equal(fake.state.requests.at(-1).note, "two lines");
+        assert.match(eventOf(logged.id).notes, /Note: two lines/);
+
+        // The event's markers are gone: the row changes, the event stays.
+        const rewritten = await finishOne("Rewritten");
+        eventOf(rewritten.id).notes = "My own notes";
+        const warned = await daemon.updateSession(rewritten.id, {
+          rating: 4,
+          note: null,
+        });
+        assert.equal(warned.logEventUpdated, false);
+        assert.match(warned.warning ?? "", /focus-session marker/);
+        assert.equal(warned.session.rating, 4);
+        assert.equal(eventOf(rewritten.id).notes, "My own notes");
+        assert.deepEqual(updateToastText(warned), {
+          title: "Session updated, calendar event unchanged",
+          message: warned.warning,
+        });
+
+        // Kai's own text in the event stays; only the review lines change.
+        const annotated = await finishOne("Annotated");
+        const own = `Mine above\n${eventOf(annotated.id).notes}\nMine below`;
+        eventOf(annotated.id).notes = own;
+        const kept = await daemon.updateSession(annotated.id, {
+          rating: 1,
+          note: null,
+        });
+        assert.equal(kept.logEventUpdated, true);
+        assert.equal(
+          eventOf(annotated.id).notes,
+          own.replace("Rating: ★★★☆☆\nNote: before", "Rating: ★☆☆☆☆"),
+        );
+        // Its Rating line removed: kept as it is, with a warning.
+        const lineless = eventOf(annotated.id).notes.replace(
+          "Rating: ★☆☆☆☆\n",
+          "",
+        );
+        eventOf(annotated.id).notes = lineless;
+        const noLine = await daemon.updateSession(annotated.id, {
+          rating: 5,
+          note: "x",
+        });
+        assert.equal(noLine.logEventUpdated, false);
+        assert.match(noLine.warning ?? "", /Rating line/);
+        assert.equal(eventOf(annotated.id).notes, lineless);
+
+        // The event is gone: warns, the row still changes.
+        const gone = await finishOne("Gone");
+        fake.state.calendarEvents = fake.state.calendarEvents.filter(
+          (e: { sessionId: number }) => e.sessionId !== gone.id,
+        );
+        const missing = await daemon.updateSession(gone.id, {
+          rating: 1,
+          note: "gone",
+        });
+        assert.equal(missing.logEventUpdated, false);
+        assert.match(missing.warning ?? "", /not found in Calendar/);
+        assert.equal(
+          (await daemon.stats()).recent.find((r) => r.id === gone.id)?.note,
+          "gone",
+        );
+
+        // No calendar access: the same.
+        const blind = await finishOne("Blind");
+        fake.state.calendarAccess = "denied";
+        const denied = await daemon.updateSession(blind.id, {
+          rating: 5,
+          note: null,
+        });
+        assert.equal(denied.logEventUpdated, false);
+        assert.match(denied.warning ?? "", /calendar access is denied/);
+        assert.match(eventOf(blind.id).notes, /Rating: ★★★☆☆/);
+        fake.state.calendarAccess = "fullAccess";
+
+        // No calendar: nothing to rewrite, no warning.
+        const scratch = await finishOne("Scratch", NO_CALENDAR);
+        const events = JSON.stringify(fake.state.calendarEvents);
+        const noCal = await daemon.updateSession(scratch.id, {
+          rating: 4,
+          note: "fine",
+        });
+        assert.equal(noCal.logEventUpdated, false);
+        assert.equal(noCal.warning, null);
+        assert.equal(noCal.session.logSkipped, true);
+        assert.equal(JSON.stringify(fake.state.calendarEvents), events);
+        assert.deepEqual(updateToastText(noCal), {
+          title: "Session updated",
+          message: "It has no calendar event",
+        });
+
+        // Waiting: the event written later carries the edit.
+        writeFileSync(
+          configPath,
+          JSON.stringify({ logCalendarId: "cal-gone" }),
+        );
+        const waiting = await finishOne("Waiting");
+        const waited = await daemon.updateSession(waiting.id, {
+          rating: 2,
+          note: "later",
+        });
+        assert.deepEqual(updateToastText(waited), {
+          title: "Session updated",
+          message:
+            "Its calendar event is not written yet and will show the change",
+        });
+        await daemon.movePending("cal-log");
+        assert.match(eventOf(waiting.id).notes, /Rating: ★★☆☆☆\nNote: later/);
+
+        // The open session and an unknown id are refused.
+        const open = await daemon.startAdhoc({
+          goal: "Open",
+          durationSeconds: 600,
+          calendarId: "cal-work",
+        });
+        await rejectsWith(
+          daemon.updateSession(open.id, { rating: 5, note: null }),
+          "daemon",
+          /still open; finish it before editing it/,
+        );
+        await rejectsWith(
+          daemon.updateSession(4242, { rating: 5, note: null }),
+          "daemon",
+          /no session with id 4242/,
+        );
+
+        // Checked before anything is sent.
+        const sent = fake.state.requests.length;
+        await assert.rejects(
+          daemon.updateSession(0, { rating: 5, note: null }),
+          RangeError,
+        );
+        await assert.rejects(
+          daemon.updateSession(1.5, { rating: 5, note: null }),
+          RangeError,
+        );
+        await assert.rejects(
+          daemon.updateSession(logged.id, { rating: 6, note: null }),
+          RangeError,
+        );
+        await assert.rejects(
+          daemon.updateSession(logged.id, { rating: 0, note: null }),
+          RangeError,
+        );
+        await assert.rejects(
+          daemon.updateSession(logged.id, { rating: 2.5, note: null }),
+          RangeError,
+        );
+        assert.equal(fake.state.requests.length, sent);
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  [
+    "daemon: updateSession rejects a malformed reply and drops an empty warning",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      let reply: Record<string, unknown> = { ok: true };
+      const server = await scriptedServer(socketPath, (_raw, socket) => {
+        socket.end(`${JSON.stringify(reply)}\n`);
+      });
+      const daemon = new FocusDaemon({
+        socketPath,
+        binaryPath: "/nonexistent",
+      });
+      const session = { id: 3, goal: "G", state: "finished" };
+      try {
+        await rejectsWith(
+          daemon.updateSession(3, { rating: null, note: null }),
+          "protocol",
+          /"session"/,
+        );
+        reply = { ok: true, session, logEventUpdated: false, warning: "  " };
+        assert.deepEqual(
+          await daemon.updateSession(3, { rating: 4, note: "x" }),
+          { session, logEventUpdated: false, warning: null },
+        );
+        reply = { ok: true, session, logEventUpdated: "yes" };
+        assert.equal(
+          (await daemon.updateSession(3, { rating: 4, note: null }))
+            .logEventUpdated,
+          false,
+        );
+        reply = { ok: false, error: "unknown command: updateSession" };
+        await rejectsWith(
+          daemon.updateSession(3, { rating: null, note: null }),
+          "daemon",
+          /unknown command/,
+        );
+        // Both fields are always sent, null included.
+        assert.deepEqual(JSON.parse(server.received[0]), {
+          sessionId: 3,
+          rating: null,
+          note: null,
+          cmd: "updateSession",
+        });
+      } finally {
+        await server.close();
+      }
+    },
+  ],
+  [
+    "editSessionValues and editSessionRequest: map the form both ways",
+    async () => {
+      assert.deepEqual(editSessionValues({ rating: 4, note: "Shipped" }), {
+        rating: "4",
+        note: "Shipped",
+      });
+      assert.deepEqual(editSessionValues({ rating: null, note: null }), {
+        rating: NO_RATING,
+        note: "",
+      });
+      // Anything the dropdown cannot show reads as no rating.
+      assert.equal(editSessionValues({ rating: 7, note: null }).rating, "none");
+      assert.equal(
+        editSessionValues({ rating: 2.5, note: null }).rating,
+        "none",
+      );
+      assert.deepEqual(editSessionRequest({ rating: "5", note: " after " }), {
+        rating: 5,
+        note: "after",
+      });
+      assert.deepEqual(editSessionRequest({ rating: NO_RATING, note: "" }), {
+        rating: null,
+        note: null,
+      });
+      assert.deepEqual(
+        editSessionRequest({ rating: "1", note: "two\n  lines" }),
+        { rating: 1, note: "two lines" },
+      );
+      // Round trip: the prefilled form submitted as is changes nothing.
+      for (const session of [
+        { rating: 3, note: "kept" },
+        { rating: null, note: null },
+      ]) {
+        assert.deepEqual(
+          editSessionRequest(editSessionValues(session)),
+          session,
+        );
+      }
+    },
+  ],
+  [
+    "updateToastText: says whether the calendar event changed",
+    async () => {
+      const session = {
+        id: 1,
+        goal: "G",
+        state: "finished" as const,
+        startedAt: "",
+        plannedEnd: null,
+        calendarId: "cal-work",
+        profile: "default",
+        sourceEventId: null,
+      };
+      assert.deepEqual(
+        updateToastText({
+          session: { ...session, logEventId: "e1" },
+          logEventUpdated: true,
+          warning: null,
+        }),
+        {
+          title: "Session updated",
+          message: "Its calendar event was updated too",
+        },
+      );
+      assert.deepEqual(
+        updateToastText({
+          session: { ...session, logEventId: "e1" },
+          logEventUpdated: false,
+          warning:
+            "calendar access is denied, so the log event was not updated",
+        }),
+        {
+          title: "Session updated, calendar event unchanged",
+          message:
+            "calendar access is denied, so the log event was not updated",
+        },
+      );
+      const quiet = (extra: Record<string, unknown>) =>
+        updateToastText({
+          session: { ...session, logEventId: null, ...extra },
+          logEventUpdated: false,
+          warning: null,
+        }).message;
+      assert.equal(
+        quiet({}),
+        "Its calendar event is not written yet and will show the change",
+      );
+      assert.equal(quiet({ logSkipped: true }), "It has no calendar event");
+      assert.equal(
+        quiet({ endReason: "abandoned" }),
+        "It has no calendar event",
+      );
     },
   ],
 ];

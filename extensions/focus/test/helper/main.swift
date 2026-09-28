@@ -112,6 +112,26 @@ final class FakeCalendar: CalendarBackend {
     saved.remove(at: index)
     removed.append(id)
   }
+
+  /// Event ids whose notes updateEventNotes replaced, in order.
+  var notesUpdated: [String] = []
+  var failUpdate = false
+  /// Runs inside updateEventNotes before the notes are compared (someone
+  /// editing the event between the check and the save).
+  var onUpdate: (() -> Void)?
+
+  func updateEventNotes(id: String, from expected: String?, to notes: String) throws {
+    onUpdate?()
+    if failUpdate { throw Boom() }
+    guard let index = saved.firstIndex(where: { $0.id == id }) else { throw Boom() }
+    guard saved[index].draft.notes == expected else {
+      throw FocusError("its notes changed while it was being updated")
+    }
+    saved[index].draft.notes = notes
+    notesUpdated.append(id)
+  }
+
+  func notes(of id: String?) -> String? { saved.first { $0.id == id }?.draft.notes }
 }
 
 // MARK: - Rules: startable filter, the 60 s edge, all-day, duration
@@ -2456,6 +2476,201 @@ do {
   let afterId = relaunched.send("status")["session"]?["id"] ?? .null
   let running = relaunched.send("deleteSession", ["sessionId": afterId])
   check("deleteSession: a running session", running["deleted"] == true && relaunched.send("status")["session"] == .null && !relaunched.core.ticking && relaunched.lastView == nil, running.serialized())
+}
+
+// MARK: - Editing a past session
+
+do {
+  // LogText.replacingReview, pure.
+  let base = "Source: x\nBlocked attempts: none\nRating: ★★★☆☆\nNote: old\nEnded: manually\n\nfocus-session: 7\nfocus-started: 2026-09-28T01:00:00Z"
+  check("replacingReview: both lines replaced", LogText.replacingReview(in: base, rating: 5, note: "new") == base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★\nNote: new"))
+  check("replacingReview: clearing drops the note line", LogText.replacingReview(in: base, rating: nil, note: nil) == base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: none"))
+  let bare = base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: none")
+  check("replacingReview: a note line is added below the rating", LogText.replacingReview(in: bare, rating: 1, note: " a\nb ") == base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★☆☆☆☆\nNote: a b"))
+  check("replacingReview: no note stays no note", LogText.replacingReview(in: bare, rating: 2, note: "  ") == bare.replacingOccurrences(of: "Rating: none", with: "Rating: ★★☆☆☆"))
+  let crlf = base.replacingOccurrences(of: "\n", with: "\r\n")
+  check("replacingReview: CRLF lines keep their endings", LogText.replacingReview(in: crlf, rating: 4, note: nil) == crlf.replacingOccurrences(of: "Rating: ★★★☆☆\r\nNote: old\r\n", with: "Rating: ★★★★☆\r\n"))
+  let kais = "Rating: great session\n" + base
+  check("replacingReview: Kai's own Rating line is not Focus's", LogText.replacingReview(in: kais, rating: 5, note: nil) == "Rating: great session\n" + base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★"))
+  let afterMarkers = bare.replacingOccurrences(of: "Rating: none\n", with: "") + "\nRating: ★★★★★"
+  check("replacingReview: nil without a Rating line above the markers", LogText.replacingReview(in: afterMarkers, rating: 3, note: nil) == nil)
+  let kaisReview = "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + base
+  check("replacingReview: Kai's own review lines above Focus's block are kept", LogText.replacingReview(in: kaisReview, rating: nil, note: nil) == "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + bare)
+  let kaisNote = base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old\nEnded: manually", with: "Rating: ★★★☆☆\nEnded: manually\nNote: mine")
+  check("replacingReview: Kai's Note line below the block is kept", LogText.replacingReview(in: kaisNote, rating: 2, note: nil) == kaisNote.replacingOccurrences(of: "Rating: ★★★☆☆", with: "Rating: ★★☆☆☆"))
+  let inserted = base.replacingOccurrences(of: "Note: old\n", with: "Note: old\nMy line\n")
+  check("replacingReview: nil when a line was put inside the block", LogText.replacingReview(in: inserted, rating: 5, note: nil) == nil)
+  check("replacingReview: nil without the attempts line above the rating", LogText.replacingReview(in: base.replacingOccurrences(of: "Blocked attempts: none\n", with: ""), rating: 5, note: nil) == nil)
+  check("replacingReview: nil for notes with no Rating line", LogText.replacingReview(in: "My own notes", rating: 3, note: nil) == nil)
+  check("LogText: the description uses the same review lines", LogText.ratingLine(nil) == "Rating: none" && LogText.noteLine(" \n") == nil && LogText.noteLine("a\nb") == "Note: a b")
+}
+
+do {
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  func finished(
+    _ goal: String, from start: Date, to end: Date, calendarId: String = "work", rating: JSONValue = 3,
+    note: JSONValue = "before"
+  ) -> (Int64, String?) {
+    clock.now = start
+    let id = h.send("startAdhoc", ["goal": .string(goal), "durationSeconds": 3600, "calendarId": .string(calendarId)])["session"]?["id"]?.intValue ?? 0
+    clock.now = end
+    let reply = h.send("finish", ["rating": rating, "note": note])
+    return (Int64(id), reply["logEventId"]?.stringValue)
+  }
+  func update(_ id: Int64, _ fields: [String: JSONValue]) -> JSONValue {
+    var all = fields
+    all["sessionId"] = .int(Int(id))
+    return h.send("updateSession", all)
+  }
+
+  // Rating and note changed: the row and the event's notes follow.
+  let (id, eventId) = finished("Write", from: at(9, 0), to: at(9, 30))
+  let before = h.fake.notes(of: eventId) ?? ""
+  check("updateSession setup: the event has the old rating and note", before.contains("Rating: ★★★☆☆") && before.contains("Note: before"), before)
+  let reply = update(id, ["rating": 5, "note": "after"])
+  check("updateSession: ok, the event updated, no warning", reply["ok"] == true && reply["logEventUpdated"] == true && reply["warning"] == nil, reply.serialized())
+  check("updateSession: the reply carries the updated session", reply["session"]?["id"] == .int(Int(id)) && reply["session"]?["state"] == "finished" && reply["session"]?["rating"] == 5 && reply["session"]?["note"] == "after", reply.serialized())
+  let row = try! h.db.session(id: id)
+  check("updateSession: the row has the new rating and note", row?.rating == 5 && row?.note == "after")
+  check("updateSession: the row's end and log fields are unchanged", row?.endedAt == at(9, 30) && row?.endReason == "manual" && row?.logEventId == eventId && row?.logCalendarId == "log")
+  let after = h.fake.notes(of: eventId) ?? ""
+  check("updateSession: the event's notes show the new stars and note", after.contains("Rating: ★★★★★") && after.contains("Note: after") && !after.contains("before"), after)
+  check("updateSession: the event's notes are the full description, markers kept", after == LogText.description(try! h.core.logSummary(for: row!)) && LogText.notes(after, identify: id, startedAt: at(9, 0)), after)
+  check("updateSession: the same event is rewritten, not a new one", h.fake.notesUpdated == [eventId ?? ""] && h.fake.saved.count == 1 && h.fake.creates == 1)
+  let recent = h.send("stats")["recent"]?.arrayValue?.first
+  check("updateSession: stats show the new rating and note", recent?["rating"] == 5 && recent?["note"] == "after", recent?.serialized() ?? "")
+  check("updateSession: it is logged", h.logs.contains("session \(id): rating and note edited") && h.logs.contains("session \(id): log event \(eventId ?? "") updated"))
+
+  // A field left out keeps its value; the note is squashed onto one line.
+  let noteOnly = update(id, ["note": "  two\nlines  "])
+  check("updateSession: a missing rating is kept", noteOnly["session"]?["rating"] == 5 && noteOnly["session"]?["note"] == "two lines", noteOnly.serialized())
+  check("updateSession: the event has the one-line note", (h.fake.notes(of: eventId) ?? "").contains("Note: two lines\n"))
+  let ratingOnly = update(id, ["rating": 2])
+  check("updateSession: a missing note is kept", ratingOnly["session"]?["rating"] == 2 && ratingOnly["session"]?["note"] == "two lines", ratingOnly.serialized())
+
+  // Clearing both: null rating, null note (a blank note clears too).
+  let cleared = update(id, ["rating": nil, "note": nil])
+  check("updateSession: null clears the rating and the note", cleared["logEventUpdated"] == true && cleared["session"]?["rating"] == .null && cleared["session"]?["note"] == .null, cleared.serialized())
+  check("updateSession: the row is cleared", (try! h.db.session(id: id))?.rating == nil && (try! h.db.session(id: id))?.note == nil)
+  let clearedNotes = h.fake.notes(of: eventId) ?? ""
+  check("updateSession: the event says no rating and has no note line", clearedNotes.contains("Rating: none") && !clearedNotes.contains("Note:"), clearedNotes)
+  _ = update(id, ["note": "x"])
+  check("updateSession: a blank note clears it", update(id, ["note": "  \n "])["session"]?["note"] == .null)
+
+  // Refusals leave the row alone.
+  _ = update(id, ["rating": 4, "note": "kept"])
+  let updates = h.fake.notesUpdated.count
+  check("updateSession: rating 6 is refused", update(id, ["rating": 6]) == ["ok": false, "error": "rating must be 1 to 5"])
+  check("updateSession: rating 0 is refused", update(id, ["rating": 0])["ok"] == false)
+  check("updateSession: a string rating is refused", update(id, ["rating": "5"])["error"] == "rating must be a whole number")
+  check("updateSession: a number note is refused", update(id, ["note": 5])["error"] == "note must be a string")
+  check("updateSession: refusals change nothing", (try! h.db.session(id: id))?.rating == 4 && (try! h.db.session(id: id))?.note == "kept" && h.fake.notesUpdated.count == updates)
+  check("updateSession: an unknown id is refused", h.send("updateSession", ["sessionId": 4242, "rating": 3]) == ["ok": false, "error": "no session with id 4242"])
+  check("updateSession: sessionId is required", h.send("updateSession", ["rating": 3])["error"] == "sessionId is required")
+  check("updateSession: sessionId must be whole", h.send("updateSession", ["sessionId": .double(1.5)])["ok"] == false)
+
+  // The open session is refused, running and at the end sheet.
+  clock.now = at(10, 0)
+  let openId = Int64(h.send("startAdhoc", ["goal": "Open", "durationSeconds": 1800, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0)
+  let open = update(openId, ["rating": 5, "note": "early"])
+  check("updateSession: the open session is refused", open == ["ok": false, "error": .string("session \(openId) is still open; finish it before editing it")], open.serialized())
+  _ = h.send("stop")
+  check("updateSession: the session at the end sheet is refused", update(openId, ["rating": 5])["ok"] == false && h.send("status")["session"]?["state"] == "ending")
+  check("updateSession: the open row is untouched", (try! h.db.session(id: openId))?.rating == nil && (try! h.db.session(id: openId))?.note == nil)
+  check("Database.updateReview: an open row is not changed", (try! h.db.updateReview(openId, rating: 5, note: "x")) == false && (try! h.db.session(id: openId))?.rating == nil)
+  clock.now = at(10, 20)
+  let finishedOpen = h.send("finish", ["rating": 1])
+  check("updateSession: the refused session finishes with its own rating", finishedOpen["session"]?["rating"] == 1 && finishedOpen["session"]?["note"] == .null, finishedOpen.serialized())
+
+  // The event's markers are gone (Kai rewrote the notes): the row changes, the event does not.
+  let (mineId, mineEvent) = finished("Rewritten", from: at(11, 0), to: at(11, 30))
+  if let index = h.fake.saved.firstIndex(where: { $0.id == mineEvent }) {
+    h.fake.saved[index].draft.notes = "My own notes about this block"
+  }
+  let mine = update(mineId, ["rating": 5, "note": "after"])
+  check(
+    "updateSession: an event without the marker is kept, with a warning",
+    mine["ok"] == true && mine["logEventUpdated"] == false && mine["warning"]?.stringValue?.contains("focus-session marker") == true
+      && mine["session"]?["rating"] == 5, mine.serialized())
+  check("updateSession: the unmarked event's notes are untouched", h.fake.notes(of: mineEvent) == "My own notes about this block")
+  check("updateSession: the unmarked session's row is updated anyway", (try! h.db.session(id: mineId))?.note == "after")
+
+  // The marker for this id but another start (a reused id): not ours.
+  let (reusedId, reusedEvent) = finished("Reused id", from: at(12, 0), to: at(12, 30))
+  let foreign = "Source: ad hoc\n\(LogText.marker(reusedId))\n\(LogText.startedLine(at(8, 0)))"
+  if let index = h.fake.saved.firstIndex(where: { $0.id == reusedEvent }) { h.fake.saved[index].draft.notes = foreign }
+  let reused = update(reusedId, ["rating": 1])
+  check("updateSession: the id marker with another start is not ours", reused["logEventUpdated"] == false && reused["warning"] != nil && h.fake.notes(of: reusedEvent) == foreign, reused.serialized())
+
+  // Unavailable calendar, no access, a failed save: the row changes, the reply warns.
+  let (offlineId, offlineEvent) = finished("Offline", from: at(13, 0), to: at(13, 30))
+  let offlineNotes = h.fake.notes(of: offlineEvent)
+  h.fake.unavailable = ["log"]
+  let offline = update(offlineId, ["rating": 5])
+  h.fake.unavailable = []
+  check("updateSession: an unavailable calendar warns", offline["ok"] == true && offline["logEventUpdated"] == false && offline["warning"]?.stringValue?.contains("not found") == true && (try! h.db.session(id: offlineId))?.rating == 5 && h.fake.notes(of: offlineEvent) == offlineNotes, offline.serialized())
+  h.fake.accessState = "denied"
+  let denied = update(offlineId, ["rating": 4])
+  h.fake.accessState = "fullAccess"
+  check("updateSession: without calendar access the row changes and the event does not", denied["ok"] == true && denied["logEventUpdated"] == false && denied["warning"]?.stringValue?.contains("calendar access is denied") == true && (try! h.db.session(id: offlineId))?.rating == 4 && h.fake.notes(of: offlineEvent) == offlineNotes, denied.serialized())
+  h.fake.failUpdate = true
+  let failed = update(offlineId, ["rating": 3])
+  h.fake.failUpdate = false
+  check("updateSession: a failed save warns and keeps the row change", failed["logEventUpdated"] == false && failed["warning"]?.stringValue?.contains("updating the log event failed") == true && (try! h.db.session(id: offlineId))?.rating == 3, failed.serialized())
+  let healed = update(offlineId, ["rating": 3])
+  check("updateSession: a later edit catches the event up", healed["logEventUpdated"] == true && (h.fake.notes(of: offlineEvent) ?? "").contains("Rating: ★★★☆☆"), healed.serialized())
+
+  // Kai added his own text but kept the markers: only the review lines change.
+  let (keptId, keptEvent) = finished("Annotated", from: at(13, 40), to: at(13, 50))
+  let generated = h.fake.notes(of: keptEvent) ?? ""
+  let annotated = "My own thoughts\n\n" + generated.replacingOccurrences(of: "Blocked attempts:", with: "Aside: kept\nBlocked attempts:") + "\nPS: also mine"
+  if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = annotated }
+  let annotatedReply = update(keptId, ["rating": 5, "note": "after"])
+  let expected = annotated.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: before", with: "Rating: ★★★★★\nNote: after")
+  check("updateSession: Kai's own text in the event is kept", annotatedReply["logEventUpdated"] == true && h.fake.notes(of: keptEvent) == expected, h.fake.notes(of: keptEvent) ?? "")
+
+  // The Rating line is gone: nothing to put the review in, so the event stays.
+  let noRatingLine = generated.replacingOccurrences(of: "Rating: ★★★☆☆\n", with: "")
+  if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = noRatingLine }
+  let lineGone = update(keptId, ["rating": 2])
+  check("updateSession: an event without its Rating line is kept, with a warning", lineGone["logEventUpdated"] == false && lineGone["warning"]?.stringValue?.contains("Rating line") == true && h.fake.notes(of: keptEvent) == noRatingLine && (try! h.db.session(id: keptId))?.rating == 2, lineGone.serialized())
+
+  // The notes change between the check and the save: never overwritten.
+  if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = generated }
+  h.fake.onUpdate = {
+    if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = "Changed meanwhile" }
+  }
+  let raced = update(keptId, ["rating": 4])
+  h.fake.onUpdate = nil
+  check("updateSession: notes changed meanwhile are not overwritten", raced["logEventUpdated"] == false && raced["warning"]?.stringValue?.contains("its notes changed while it was being updated") == true && h.fake.notes(of: keptEvent) == "Changed meanwhile", raced.serialized())
+
+  // No calendar: the row changes, no calendar is touched, no warning.
+  let (scratchId, scratchEvent) = finished("Scratch", from: at(14, 0), to: at(14, 10), calendarId: Rules.noCalendar)
+  let touched = h.fake.notesUpdated.count
+  let scratch = update(scratchId, ["rating": 5, "note": "fine"])
+  check("updateSession: a no-calendar session", scratchEvent == nil && scratch["ok"] == true && scratch["logEventUpdated"] == false && scratch["warning"] == nil && scratch["session"]?["rating"] == 5 && h.fake.notesUpdated.count == touched, scratch.serialized())
+
+  // Waiting for its log calendar: the event written later carries the edit.
+  try! #"{"logCalendarId": "gone", "logCalendarName": "Old Log (Google)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  let (waitingId, waitingEvent) = finished("Waiting", from: at(15, 0), to: at(15, 10))
+  let waiting = update(waitingId, ["rating": 2, "note": "later"])
+  check("updateSession: a waiting session has no event to update yet", waitingEvent == nil && waiting["logEventUpdated"] == false && waiting["warning"] == nil, waiting.serialized())
+  let moved = h.send("movePending", ["calendarId": "log"])
+  let written = h.fake.saved.last { $0.draft.title == "Waiting" }?.draft.notes ?? ""
+  check("updateSession: the waiting session's event is written with the edit", moved["written"] == 1 && written.contains("Rating: ★★☆☆☆") && written.contains("Note: later"), written)
+}
+
+do {
+  // An abandoned session can be rated too; it has no log event.
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  let id = Int64(h.send("startAdhoc", ["goal": "Crashed", "durationSeconds": 1800, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0)
+  let relaunched = h.relaunch(at: at(9, 20))
+  check("updateSession setup: abandoned", (try! relaunched.db.session(id: id))?.endReason == "abandoned")
+  let reply = relaunched.send("updateSession", ["sessionId": .int(Int(id)), "rating": 2, "note": "helper died"])
+  check("updateSession: an abandoned session", reply["ok"] == true && reply["logEventUpdated"] == false && reply["warning"] == nil && reply["session"]?["rating"] == 2 && reply["session"]?["endReason"] == "abandoned", reply.serialized())
+  check("updateSession: an abandoned session still never gets a log event", relaunched.send("pending")["waiting"] == [] && relaunched.fake.creates == 0)
 }
 
 print("\(count - failures)/\(count) passed")

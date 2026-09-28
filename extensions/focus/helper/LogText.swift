@@ -101,10 +101,8 @@ enum LogText {
     }
 
     lines.append("Blocked attempts: \(attemptsText(summary.attempts))")
-    lines.append("Rating: \(summary.rating.map(stars) ?? "none")")
-    if let note = summary.note.map(oneLine), !note.isEmpty {
-      lines.append("Note: \(note)")
-    }
+    lines.append(ratingLine(summary.rating))
+    if let line = noteLine(summary.note) { lines.append(line) }
 
     var ended = summary.endReason == "timer" ? "Ended: when the timer ran out" : "Ended: manually"
     if summary.extendedSeconds > 0 {
@@ -115,6 +113,58 @@ enum LogText {
     lines.append("")
     lines.append(marker(summary.sessionId))
     lines.append(startedLine(summary.startedAt))
+    return lines.joined(separator: "\n")
+  }
+
+  static func ratingLine(_ rating: Int?) -> String { "Rating: \(rating.map(stars) ?? "none")" }
+
+  /// "Note: <one line>", or nil for no note (the line is left out).
+  static func noteLine(_ note: String?) -> String? {
+    guard let text = note.map(oneLine), !text.isEmpty else { return nil }
+    return "Note: \(text)"
+  }
+
+  /// Edit Session: `notes` with only the review changed, in the block Focus
+  /// wrote. That block is found by its shape, as `description` writes it:
+  /// a "Blocked attempts: " line, then "Rating: " with "none" or five stars,
+  /// then optionally one "Note: " line, then an "Ended: " line, all above the
+  /// marker lines (the last such run there, the one next to the markers).
+  /// Its Rating line is replaced and its Note line replaced, added or
+  /// dropped; every other line, including a "Rating:" or "Note:" line Kai
+  /// added in Calendar, stays as it is. Nil when no such block is left.
+  static func replacingReview(in notes: String, rating: Int?, note: String?) -> String? {
+    var lines = notes.components(separatedBy: "\n")
+    let bare = { (index: Int) -> String in
+      let line = lines[index]
+      return line.hasSuffix("\r") ? String(line.dropLast()) : line
+    }
+    let end =
+      lines.firstIndex { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("focus-session: ") }
+      ?? lines.count
+    let generated = Set(["none"] + (1...5).map(stars))
+    let isRating = { (index: Int) -> Bool in
+      let line = bare(index)
+      return line.hasPrefix("Rating: ") && generated.contains(String(line.dropFirst("Rating: ".count)))
+    }
+    // The review block: attempts, rating, maybe a note, then how it ended.
+    let block = { (index: Int) -> (rating: Int, hasNote: Bool)? in
+      guard index >= 1, bare(index - 1).hasPrefix("Blocked attempts: "), isRating(index) else { return nil }
+      if index + 1 < end, bare(index + 1).hasPrefix("Ended: ") { return (index, false) }
+      if index + 2 < end, bare(index + 1).hasPrefix("Note: "), bare(index + 2).hasPrefix("Ended: ") {
+        return (index, true)
+      }
+      return nil
+    }
+    guard let found = (0..<end).reversed().lazy.compactMap(block).first else { return nil }
+    let index = found.rating
+    let ending = lines[index].hasSuffix("\r") ? "\r" : ""
+    lines[index] = ratingLine(rating) + ending
+    switch (found.hasNote, noteLine(note)) {
+    case (true, let line?): lines[index + 1] = line + ending
+    case (true, nil): lines.remove(at: index + 1)
+    case (false, let line?): lines.insert(line + ending, at: index + 1)
+    case (false, nil): break
+    }
     return lines.joined(separator: "\n")
   }
 

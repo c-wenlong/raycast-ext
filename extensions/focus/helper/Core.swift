@@ -42,6 +42,11 @@ protocol CalendarBackend: LogCalendarStore {
   /// Deletes the event with this identifier. `deleteSession` only calls it
   /// after `loggedEvent(id:)` showed the event carries the session's markers.
   func removeEvent(id: String) throws
+  /// Replaces the notes of the event with this identifier, only while they
+  /// are still `expected` (what `updateSession` read through `loggedEvent(id:)`,
+  /// checked for the session's markers and built `notes` from); throws
+  /// otherwise, so notes changed in between are never overwritten.
+  func updateEventNotes(id: String, from expected: String?, to notes: String) throws
 }
 
 /// The presenter until a UI attaches (and in a headless daemon). Unlike
@@ -209,6 +214,7 @@ final class FocusCore: SessionPresenterDelegate {
       case "movePending": return try movePending(request)
       case "stats": return try statsReply(request)
       case "deleteSession": return try deleteSession(request)
+      case "updateSession": return try updateSession(request)
       case "blocking":
         _ = try current()
         return .ok(blocker.statusFields())
@@ -760,6 +766,81 @@ final class FocusCore: SessionPresenterDelegate {
       try calendar.removeEvent(id: eventId)
     } catch {
       return "removing the log event failed (\(error.localizedDescription)), so it was left in Calendar"
+    }
+    return nil
+  }
+
+  // MARK: Editing a past session
+
+  /// `updateSession {sessionId, rating?, note?}`: changes a finished or
+  /// abandoned session's rating and note. A field left out keeps its value;
+  /// null clears it. The note is squashed onto one line, and a blank one is
+  /// null. The row is written first; then, when the row has a log event whose
+  /// notes still carry this session's markers, the Rating and Note lines of
+  /// those notes are replaced (everything else, Kai's own text included,
+  /// stays). An event that cannot be updated never fails the request: the
+  /// reply says `logEventUpdated: false` with a warning.
+  private func updateSession(_ request: Request) throws -> Reply {
+    guard let number = try request.int("sessionId") else { throw FocusError("sessionId is required") }
+    let id = Int64(number)
+    guard let row = try db.session(id: id) else { throw FocusError("no session with id \(id)") }
+    guard row.endedAt != nil else {
+      throw FocusError("session \(id) is still open; finish it before editing it")
+    }
+    var rating = row.rating
+    if request.fields["rating"] != nil {
+      rating = try request.int("rating")
+      if let rating, !(1...5).contains(rating) { throw FocusError("rating must be 1 to 5") }
+    }
+    var note = row.note
+    if request.fields["note"] != nil {
+      let text = try request.string("note").map(LogText.oneLine)
+      note = (text?.isEmpty == false) ? text : nil
+    }
+    guard try db.updateReview(id, rating: rating, note: note),
+      let updated = try db.session(id: id)
+    else { throw FocusError("no finished session with id \(id)") }
+    log("session \(id): rating and note edited")
+
+    var fields: [String: JSONValue] = ["session": sessionJSON(updated), "logEventUpdated": false]
+    if let eventId = updated.logEventId {
+      if let warning = rewriteLogEvent(eventId, of: updated) {
+        log("session \(id): log event \(eventId) not updated: \(warning)")
+        fields["warning"] = .string(warning)
+      } else {
+        log("session \(id): log event \(eventId) updated")
+        fields["logEventUpdated"] = true
+      }
+    }
+    return .ok(fields)
+  }
+
+  /// Puts the row's rating and note into its log event's notes, if the event
+  /// is still the one this session wrote (both marker lines, as for delete)
+  /// and still has the review block Focus wrote (`LogText.replacingReview`).
+  /// Only its Rating and Note lines change, and only while the notes are
+  /// still the ones checked here. Returns nil when updated, else why it was
+  /// left as it was.
+  private func rewriteLogEvent(_ eventId: String, of row: SessionRow) -> String? {
+    let access = calendar.accessState
+    guard access == "fullAccess" else {
+      return "calendar access is \(access), so the log event was not updated"
+    }
+    guard let event = calendar.loggedEvent(id: eventId) else {
+      return "the log event was not found in Calendar (deleted already, or its calendar is unavailable), so it was not updated"
+    }
+    guard LogText.notes(event.notes, identify: row.id, startedAt: row.startedAt) else {
+      return "the log event's notes no longer carry this session's focus-session marker, so it was not updated"
+    }
+    guard let notes = event.notes, let rewritten = LogText.replacingReview(in: notes, rating: row.rating, note: row.note)
+    else {
+      return "the log event's notes no longer have the Rating line in the block Focus wrote, so it was not updated"
+    }
+    do {
+      try calendar.updateEventNotes(id: eventId, from: notes, to: rewritten)
+    } catch {
+      let reason = (error as? FocusError)?.message ?? error.localizedDescription
+      return "updating the log event failed (\(reason)), so it still shows the old rating and note"
     }
     return nil
   }

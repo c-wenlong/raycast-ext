@@ -29,6 +29,10 @@
 // UTC start) and `state.calendarAccess` is "fullAccess" (otherwise the reply
 // warns). Log events are kept in `state.calendarEvents` ({id, calendarId,
 // sessionId, notes}) so tests can rewrite notes or check what was removed.
+// Their notes carry "Rating:" and "Note:" lines, which `updateSession`
+// replaces (nothing else) under the same marker and access rules (the reply
+// warns when the event is missing, rewritten or out of reach, or has lost its
+// Rating line; the history row changes anyway).
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -172,14 +176,18 @@ function createFakeDaemon(options) {
   // A log event whose notes end with the helper's two marker lines.
   function writeLogEvent(item, calendarId) {
     const id = `log-${item.id}`;
-    state.calendarEvents.push({
-      id,
-      calendarId,
-      sessionId: item.id,
-      notes: `Source: fake\n\n${markerLines(item.id, item.startedAt).join("\n")}`,
-    });
+    state.calendarEvents.push({ id, calendarId, sessionId: item.id, notes: logNotes(item) });
     item.logEventId = id;
     return id;
+  }
+
+  // A shortened LogText.description: the review block (attempts, rating,
+  // note, how it ended), then the markers.
+  function logNotes(item) {
+    const lines = ["Source: fake", "Blocked attempts: none", `Rating: ${stars(item.rating)}`];
+    if (item.note) lines.push(`Note: ${item.note}`);
+    lines.push("Ended: manually");
+    return [...lines, "", ...markerLines(item.id, item.startedAt)].join("\n");
   }
 
   // The helper's two marker lines (LogText.marker, LogText.startedLine):
@@ -197,12 +205,121 @@ function createFakeDaemon(options) {
     const index = state.calendarEvents.findIndex((e) => e.id === eventId);
     if (index < 0) return "the log event was not found in Calendar (deleted already, or its calendar is unavailable)";
     // Both lines, as the helper checks: a reused id with another start is not ours.
-    const lines = state.calendarEvents[index].notes.split(/\r?\n/).map((line) => line.trim());
-    if (!markerLines(sessionId, startedAt).every((marker) => lines.includes(marker))) {
+    if (!carriesMarkers(state.calendarEvents[index], sessionId, startedAt)) {
       return "the log event's notes no longer carry this session's focus-session marker, so it was left in Calendar";
     }
     state.calendarEvents.splice(index, 1);
     return null;
+  }
+
+  function carriesMarkers(event, sessionId, startedAt) {
+    const lines = event.notes.split(/\r?\n/).map((line) => line.trim());
+    return markerLines(sessionId, startedAt).every((marker) => lines.includes(marker));
+  }
+
+  // Returns null when the notes were rewritten, else why they were not.
+  function rewriteLogEvent(item) {
+    if (state.calendarAccess !== "fullAccess") {
+      return `calendar access is ${state.calendarAccess}, so the log event was not updated`;
+    }
+    const event = state.calendarEvents.find((e) => e.id === item.logEventId);
+    if (!event) {
+      return "the log event was not found in Calendar (deleted already, or its calendar is unavailable), so it was not updated";
+    }
+    if (!carriesMarkers(event, item.id, item.startedAt)) {
+      return "the log event's notes no longer carry this session's focus-session marker, so it was not updated";
+    }
+    const rewritten = replacingReview(event.notes, item.rating, item.note);
+    if (rewritten === null) {
+      return "the log event's notes no longer have the Rating line in the block Focus wrote, so it was not updated";
+    }
+    event.notes = rewritten;
+    return null;
+  }
+
+  // LogText.replacingReview: the review block Focus wrote is found by its
+  // shape (Blocked attempts, Rating, maybe Note, Ended; the last one above
+  // the markers) and only its Rating and Note lines change; null without one.
+  function replacingReview(notes, rating, note) {
+    const lines = notes.split("\n");
+    let end = lines.findIndex((line) => line.trim().startsWith("focus-session: "));
+    if (end < 0) end = lines.length;
+    let index = -1;
+    let hasNote = false;
+    for (let i = end - 1; i >= 1 && index < 0; i--) {
+      if (!lines[i - 1].startsWith("Blocked attempts: ") || !/^Rating: (none|[★☆]{5})$/.test(lines[i])) continue;
+      if (i + 1 < end && lines[i + 1].startsWith("Ended: ")) index = i;
+      else if (i + 2 < end && lines[i + 1].startsWith("Note: ") && lines[i + 2].startsWith("Ended: ")) {
+        index = i;
+        hasNote = true;
+      }
+    }
+    if (index < 0) return null;
+    lines[index] = `Rating: ${stars(rating)}`;
+    const noteLine = note ? `Note: ${note}` : null;
+    if (hasNote && noteLine) lines[index + 1] = noteLine;
+    else if (hasNote) lines.splice(index + 1, 1);
+    else if (noteLine) lines.splice(index + 1, 0, noteLine);
+    return lines.join("\n");
+  }
+
+  const stars = (rating) => (typeof rating === "number" ? "★".repeat(rating) + "☆".repeat(5 - rating) : "none");
+
+  // The helper's updateSession: a field left out keeps its value, null
+  // clears it; the open session is refused.
+  function updateSession(request) {
+    const id = request.sessionId;
+    if (id === undefined || id === null) return { ok: false, error: "sessionId is required" };
+    if (!Number.isInteger(id)) return { ok: false, error: "sessionId must be a whole number" };
+    const item = state.history.find((s) => s.id === id);
+    if (!item) {
+      if (state.session && state.session.id === id) {
+        return { ok: false, error: `session ${id} is still open; finish it before editing it` };
+      }
+      return { ok: false, error: `no session with id ${id}` };
+    }
+    let rating = item.rating;
+    if ("rating" in request && request.rating !== null) {
+      if (!Number.isInteger(request.rating)) return { ok: false, error: "rating must be a whole number" };
+      if (request.rating < 1 || request.rating > 5) return { ok: false, error: "rating must be 1 to 5" };
+      rating = request.rating;
+    } else if ("rating" in request) {
+      rating = null;
+    }
+    let note = item.note;
+    if ("note" in request && request.note !== null) {
+      if (typeof request.note !== "string") return { ok: false, error: "note must be a string" };
+      note = request.note.replace(/\s+/g, " ").trim() || null;
+    } else if ("note" in request) {
+      note = null;
+    }
+    item.rating = rating;
+    item.note = note;
+    const reply = { ok: true, session: historyWire(item), logEventUpdated: false };
+    if (item.logEventId) {
+      const warning = rewriteLogEvent(item);
+      if (warning) reply.warning = warning;
+      else reply.logEventUpdated = true;
+    }
+    return reply;
+  }
+
+  // A history row as the helper's finished-session JSON.
+  function historyWire(item) {
+    return {
+      id: item.id,
+      goal: item.goal,
+      state: "finished",
+      startedAt: item.startedAt,
+      endedAt: item.endedAt,
+      calendarId: item.calendarId,
+      sourceEventId: item.sourceEventId,
+      endReason: item.endReason,
+      rating: item.rating,
+      note: item.note,
+      logEventId: item.logEventId || null,
+      logSkipped: item.logSkipped === true,
+    };
   }
 
   function deleteSession(request) {
@@ -421,6 +538,8 @@ function createFakeDaemon(options) {
         return stats(request, now);
       case "deleteSession":
         return deleteSession(request);
+      case "updateSession":
+        return updateSession(request);
       case "pending":
         return { ok: true, waiting: state.waiting };
       case "retryPending": {
