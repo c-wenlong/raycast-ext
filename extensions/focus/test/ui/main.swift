@@ -4,7 +4,7 @@
 // BlockEngine behind the app blocker. Run with scripts/test-ui.sh.
 // Pass a folder to also write sheet.png, card-0s.png, card-2.5s.png,
 // card-over-glow.png, menubar-*.png, panel-*.png (panel-fallback.png is the
-// pre-macOS 26 backdrop), glow.png and block.png there.
+// pre-macOS 26 backdrop), notch-*.png, glow.png and block.png there.
 //
 // Nothing shows on screen: the status item lives in a private NSStatusBar
 // and the sheet is ordered in far off screen without becoming key.
@@ -71,6 +71,11 @@ let laptop = ScreenGeometry(
 let external = ScreenGeometry(
   frame: NSRect(x: 1512, y: 0, width: 1920, height: 1080), visibleFrame: NSRect(x: 1512, y: 0, width: 1920, height: 1055))
 var screenList = [laptop, external]
+// The notch's screen: this MacBook's (a 185 x 32 notch), or a plain one.
+let notched = NotchScreen(
+  frame: laptop.frame, notch: NSRect(x: 663, y: 950, width: 185, height: 32), barHeight: 32)
+let plain = NotchScreen(frame: NSRect(x: 0, y: 0, width: 1920, height: 1080), notch: nil, barHeight: 25)
+var notchScreen: NotchScreen? = notched
 let configDir = NSTemporaryDirectory() + "focus-ui-tests-\(getpid())"
 try? FileManager.default.removeItem(atPath: configDir)
 try! FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
@@ -82,12 +87,14 @@ try! #"{"countdownDisplay": "menuBar", "snoozeSeconds": 300, "futureKey": {"keep
 var logged: [String] = []
 let ui = UIPresenter(
   statusBar: NSStatusBar(), clock: { now }, settings: ConfigFile(path: configPath), scheduler: scheduler, sound: sound,
-  screens: { screenList }, log: { logged.append($0) })
+  screens: { screenList }, notchScreen: { notchScreen }, log: { logged.append($0) })
 ui.endSheet.headless = true
 ui.floating.headless = true
+ui.notch.headless = true
 ui.completion.headless = true
 var popped: [String] = []
 ui.floating.popUpMenu = { menu, _ in popped.append(menu.title) }
+ui.notch.popUpMenu = { menu, _ in popped.append("notch " + menu.title) }
 var opened: [URL] = []
 ui.openURL = { opened.append($0) }
 // The end card's hover poll reads this instead of the real mouse.
@@ -159,7 +166,7 @@ func perform(_ item: NSMenuItem) {
 let running = session()
 ui.update(running)
 let info = "Work · until \(MenuBar.timeOfDay(running.plannedEnd))"
-let move = ["---", "Move to Floating Panel"]
+let move = ["---", "Move to Floating Panel", "Move to Notch"]
 check("running menu", visibleTitles() == [info, "---", "Pause", "Extend", "Stop"] + move, "\(visibleTitles())")
 check("info line disabled", !bar.infoItem.isEnabled)
 check(
@@ -384,6 +391,12 @@ check("both keys in the written defaults", FocusConfig().json["countdownDisplay"
 check("a position writes whole points", PanelPosition(x: 10.4, y: 20.6).json == ["x": 10, "y": 21])
 let roundTrip = FocusConfig(json: .object(FocusConfig(json: ["countdownDisplay": "menuBar", "panelPosition": ["x": 3, "y": 4]]).json.objectValue!))
 check("the keys round-trip", roundTrip.countdownDisplay == .menuBar && roundTrip.panelPosition == PanelPosition(x: 3, y: 4))
+check("countdownDisplay notch reads", FocusConfig(json: ["countdownDisplay": "notch"]).countdownDisplay == .notch)
+var notchConfig = FocusConfig()
+notchConfig.countdownDisplay = .notch
+check("notch writes and reads back", notchConfig.json["countdownDisplay"] == "notch"
+  && FocusConfig(json: notchConfig.json).countdownDisplay == .notch)
+check("Notch is not case-folded", FocusConfig(json: ["countdownDisplay": "Notch"]).countdownDisplay == .panel)
 
 func fileFields() -> [String: JSONValue] {
   (try? JSONValue.parse(String(contentsOfFile: configPath, encoding: .utf8)))?.objectValue ?? [:]
@@ -880,7 +893,7 @@ check("Complete stops (the end sheet asks for the rating)", fake.calls == ["stop
 floating.moreButton.performClick(nil)
 check("… opens its menu", popped.last == "More", "\(popped)")
 let moreTitles = floating.moreMenu.items.map { $0.isSeparatorItem ? "---" : $0.title }
-check("… menu items", moreTitles == ["Edit", "Cancel", "---", "Move to Menu Bar", "Reset Panel Position"], "\(moreTitles)")
+check("… menu items", moreTitles == ["Edit", "Cancel", "---", "Move to Menu Bar", "Move to Notch", "Reset Panel Position"], "\(moreTitles)")
 perform(floating.moreMenu.items[0])
 check("Edit opens Focus Today", opened == [URL(string: "raycast://extensions/c-wenlong/focus/focusToday")!], "\(opened)")
 perform(floating.moreMenu.items[1])
@@ -990,7 +1003,7 @@ floating.mouseExited()
 scheduler.advance(1)
 
 // Reset Panel Position.
-perform(floating.moreMenu.items[4])
+perform(floating.moreMenu.items[5])
 check("Reset clears the saved position", fileFields()["panelPosition"] == .null, "\(String(describing: fileFields()["panelPosition"]))")
 check("and moves the panel to the default place", floating.frame == FloatingPanel.defaultFrame(width: floating.frame.width, on: laptop) && floating.anchoredRight, "\(floating.frame)")
 check("config writes logged no problem", logged.isEmpty, "\(logged)")
@@ -1002,6 +1015,291 @@ check("at the end sheet the panel is hidden", !floating.isVisible && sheet.isVis
 ui.update(session(id: 30, remaining: 300, started: -600))
 check("extended: sheet gone, panel back", !sheet.isVisible && floating.isVisible)
 ui.update(nil)
+
+
+// MARK: Notch
+
+let notch = ui.notch
+notch.clock = { now }
+var notchPointer = away
+notch.pointerLocation = { notchPointer }
+
+// Geometry, pure: HeyClicky's island on this MacBook is 33 tall and hangs
+// from the top edge centred on the notch.
+let wing25 = NotchLayout.wing(PanelContent(clock: "25:00", paused: false, progress: 0, goal: ""))
+check("notch: a wing is the clock plus 12 and 10", wing25 == ceil(NSAttributedString(string: "25:00", attributes: [.font: NotchStyle.clockFont]).size().width) + 22, "\(wing25)")
+check("notch: every mm:ss has the same wing, paused too", NotchLayout.wing(PanelContent(clock: "00:07", paused: true, progress: 0, goal: "x")) == wing25)
+check("notch: an hour or more widens it", NotchLayout.wing(PanelContent(clock: "1:02:05", paused: false, progress: 0, goal: "")) > wing25)
+let strip = NotchLayout.strip(wing: 60, on: notched)
+check("notch: the strip is the notch plus a wing each side, 33 tall, from the top edge", strip == NSRect(x: 603, y: 949, width: 305, height: 33), "\(strip)")
+check("notch: the strip is centred on the notch", abs(strip.midX - 755.5) <= 0.5 && strip.maxY == 982)
+check("notch: it covers the notch", strip.minX < 663 && strip.maxX > 848 && strip.minY < 950)
+let plainStrip = NotchLayout.strip(wing: 60, on: plain)
+check("notch: no notch: hangs from the top centre, 12 pt between the wings, a point under the menu bar", plainStrip == NSRect(x: 894, y: 1054, width: 132, height: 26), "\(plainStrip)")
+let rowWidth = notch.rowWidth
+check("notch: the row is Pause, Complete and …", rowWidth == FloatingPanel.pauseSlot + notch.completeButton.preferredWidth + notch.moreButton.preferredWidth + 12)
+let contentSize = NotchLayout.contentSize(rowWidth: rowWidth, strip: strip)
+let card = NotchLayout.card(content: contentSize, strip: strip, on: notched)
+check("notch: the card's content is the pill over the controls", contentSize.height == 40 + 8 + 28 && contentSize.width >= rowWidth && contentSize.width >= strip.width - 32)
+check("notch: the card hangs from the top edge, 130 tall, as wide as the strip or the content", card.maxY == 982 && card.height == 130
+  && card.width == max(strip.width, contentSize.width + 32) && abs(card.midX - strip.midX) <= 0.5, "\(card)")
+let plainCard = NotchLayout.card(content: NotchLayout.contentSize(rowWidth: rowWidth, strip: plainStrip), strip: plainStrip, on: plain)
+check("notch: a narrow strip opens into a wider card", plainCard.width == rowWidth + 32 && plainCard.width > plainStrip.width && plainCard.height == 25 + 8 + 76 + 14 && abs(plainCard.midX - 960) <= 0.5, "\(plainCard)")
+check("notch: the window holds the card, the strip and the flares", NotchLayout.window(card: card, strip: strip) == card.union(strip).insetBy(dx: -8, dy: 0))
+check("notch: the pointer counts on the strip or the notch", NotchLayout.hoverRect(strip: strip, on: notched) == strip.union(notched.notch!)
+  && NotchLayout.hoverRect(strip: plainStrip, on: plain) == plainStrip)
+let start = NotchLayout.interpolate(strip, card, 0)
+let end = NotchLayout.interpolate(strip, card, 1)
+let middle = NotchLayout.interpolate(strip, card, 0.5)
+check("notch: from the strip (radius 11) to the card (radius 15)", start.rect == strip && start.radius == 11 && end.rect == card && end.radius == 15)
+check("notch: half way is half way, top edge kept", abs(middle.rect.height - (33 + 130) / 2) < 0.01 && middle.rect.maxY == 982 && middle.radius == 13)
+check("notch: growing eases out, shrinking in and out", NotchLayout.eased(0, growing: true) == 0 && NotchLayout.eased(1, growing: true) == 1
+  && NotchLayout.eased(0.5, growing: true) > 0.8 && abs(NotchLayout.eased(0.5, growing: false) - 0.5) < 1e-9 && NotchLayout.eased(2, growing: false) == 1)
+let island = NotchLayout.path(body: NSRect(x: 100, y: 0, width: 305, height: 33), radius: 11)
+check("notch: the outline flares 8 pt out along the top edge", island.bounds == NSRect(x: 92, y: 0, width: 321, height: 33), "\(island.bounds)")
+check("notch: inside, and not at the rounded bottom corners or under the flares",
+  island.contains(NSPoint(x: 250, y: 16)) && island.contains(NSPoint(x: 101, y: 16)) && !island.contains(NSPoint(x: 100.5, y: 0.5))
+    && !island.contains(NSPoint(x: 404.5, y: 0.5)) && island.contains(NSPoint(x: 95, y: 32.8)) && !island.contains(NSPoint(x: 95, y: 26)))
+check("notch: this Mac's screen is found", NSScreen.screens.isEmpty || NotchScreen.current() != nil)
+if let real = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
+  let found = NotchScreen.from(real)
+  check("notch: a real notch sits between the menu bar's two halves", found.notch.map { $0.height == real.safeAreaInsets.top && $0.maxY == real.frame.maxY && $0.width > 100 && $0.width < 260 } == true && found.barHeight == real.safeAreaInsets.top, "\(found)")
+}
+
+// The sweep and pauses. An ad-hoc session's pause holds the time left while
+// its planned end moves on (Session.swift): the fill freezes, and after the
+// pause the length leaves the paused time out, so it resumes where it froze.
+let t0 = now
+var notchSweep = NotchSweep()
+notchSweep.update(session(id: 60, remaining: 1500, started: -1500), at: now)
+check("notch sweep: running is the truth at an update", notchSweep.progress(at: now) == 0.5 && notchSweep.moving)
+check("notch sweep: moving on between updates", abs(notchSweep.progress(at: now.addingTimeInterval(1)) - 1501.0 / 3000) < 1e-9)
+now = t0.addingTimeInterval(10)
+notchSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1510, plannedEnd: 1490), at: now)
+let pausedAt = notchSweep.progress(at: now)
+check("notch sweep: pausing holds where it was", abs(pausedAt - 1510.0 / 3000) < 1e-9 && !notchSweep.moving)
+now = t0.addingTimeInterval(11)
+notchSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1511, plannedEnd: 1490, paused: 1), at: now)
+check("notch sweep: one second on, not yet sure what kind of pause", !notchSweep.pauseStopsClock && !notchSweep.pauseKeepsClock && notchSweep.progress(at: now) == pausedAt)
+now = t0.addingTimeInterval(70)
+notchSweep.update(session(id: 60, state: "paused", remaining: 1490, started: -1570, plannedEnd: 1490, paused: 60), at: now)
+check("notch sweep: the time left held: a pause that stops the clock", notchSweep.pauseStopsClock && !notchSweep.pauseKeepsClock)
+check("notch sweep: the planned end moving on while paused does not drain it", notchSweep.progress(at: now.addingTimeInterval(5)) == pausedAt)
+notchSweep.update(session(id: 60, remaining: 1490, started: -1570, plannedEnd: 1490, paused: 60), at: now)
+check("notch sweep: resumed, it carries on from where it froze (the pause left out)", notchSweep.moving && abs(notchSweep.progress(at: now) - pausedAt) < 1e-9)
+check("notch sweep: and moves at the focused pace", abs(notchSweep.progress(at: now.addingTimeInterval(1)) - 1511.0 / 3000) < 1e-9)
+// A calendar session's pause is a break inside the event: the time left
+// keeps falling, and so does the fill.
+now = t0
+notchSweep.update(session(id: 62, remaining: 1500, started: -1500), at: now)
+notchSweep.update(session(id: 62, state: "paused", remaining: 1500, started: -1500), at: now)
+check("notch sweep: a new session starts afresh", notchSweep.sessionId == 62 && !notchSweep.pauseStopsClock && notchSweep.progress(at: now) == 0.5)
+now = t0.addingTimeInterval(2)
+notchSweep.update(session(id: 62, state: "paused", remaining: 1498, started: -1502, paused: 2), at: now)
+check("notch sweep: the time left fell while paused: the fill keeps pace", notchSweep.pauseKeepsClock && notchSweep.moving
+  && abs(notchSweep.progress(at: now) - 1502.0 / 3000) < 1e-9 && abs(notchSweep.progress(at: now.addingTimeInterval(1)) - 1503.0 / 3000) < 1e-9)
+now = t0.addingTimeInterval(5)
+notchSweep.update(session(id: 62, remaining: 1495, started: -1505, paused: 5), at: now)
+check("notch sweep: resumed, the whole span still counts", abs(notchSweep.progress(at: now) - 1505.0 / 3000) < 1e-9)
+// A pause shorter than two ticks is told apart at the resume.
+now = t0
+notchSweep.update(session(id: 63, remaining: 1500, started: -1500), at: now)
+notchSweep.update(session(id: 63, state: "paused", remaining: 1500, started: -1500), at: now)
+now = t0.addingTimeInterval(1.2)
+notchSweep.update(session(id: 63, remaining: 1500, started: -1501.2, plannedEnd: 1500, paused: 1), at: now)
+check("notch sweep: a 1.2 s ad-hoc pause, seen only at the resume: no jump", notchSweep.pauseStopsClock && abs(notchSweep.progress(at: now) - 0.5) < 1e-3)
+now = t0
+notchSweep.update(session(id: 64, remaining: 1500, started: -1500), at: now)
+notchSweep.update(session(id: 64, state: "paused", remaining: 1500, started: -1500), at: now)
+now = t0.addingTimeInterval(1.2)
+notchSweep.update(session(id: 64, remaining: 1498, started: -1501.2, plannedEnd: 1498.8, paused: 1), at: now)
+check("notch sweep: a 1.2 s calendar pause, seen at the resume: the whole span", notchSweep.pauseKeepsClock && !notchSweep.pauseStopsClock
+  && abs(notchSweep.progress(at: now) - 1501.2 / 3000) < 1e-3)
+now = t0
+notchSweep.update(session(id: 61, state: "paused", remaining: 600, started: -600), at: now)
+check("notch sweep: another session paused from the start: its own fill", notchSweep.progress(at: now) == 0.5)
+notchSweep.update(session(id: 61, state: "ending", remaining: 0, started: -1200, plannedEnd: 0), at: now)
+check("notch sweep: full and still at the end sheet", notchSweep.progress(at: now.addingTimeInterval(5)) == 1 && !notchSweep.moving)
+
+// Routing: the notch display shows only the notch.
+ui.update(nil)
+ui.setDisplay(.notch)
+check("Move to Notch writes the display", fileFields()["countdownDisplay"] == "notch", "\(fileFields())")
+check("and keeps other keys", fileFields()["futureKey"] == ["keep": [1, 2]] && fileFields()["snoozeSeconds"] == 300)
+check("idle: the notch shows nothing (the notch is just the notch)", !notch.isVisible && !notch.window.isVisible)
+ui.update(session(remaining: 1500, started: -1500))
+check("notch display: the island shows", notch.isVisible && notch.window.isVisible)
+check("notch display: the panel and the menu bar item stay hidden", !floating.isVisible && !bar.statusItem.isVisible)
+let notchStrip = notch.stripRect
+check("notch: laid out on the notch's screen", notch.layoutScreen == notched && notchStrip == NotchLayout.strip(wing: wing25, on: notched), "\(notchStrip)")
+check("notch: the window is the card and strip with the flares, pinned to the top", notch.frame == NotchLayout.window(card: notch.cardRect, strip: notchStrip) && notch.frame.maxY == 982)
+check("notch: collapsed, the island is the strip", !notch.isExpanded && notch.expansion == 0 && notch.islandRect == notchStrip)
+check("notch: collapsed, the window lets every click through", notch.window.ignoresMouseEvents)
+check("notch: the strip shows the time and the fill", notch.strip.content.clock == "25:00" && !notch.strip.content.paused && notch.strip.progress == 0.5)
+check("notch: the strip's view covers the strip; the card's content is hidden", notch.strip.frame == notch.local(notchStrip) && !notch.strip.isHidden && notch.card.isHidden && notch.card.alphaValue == 0)
+check("notch: the island view is drawn at the strip", notch.island.body == notch.local(notchStrip) && notch.island.radius == 11)
+check("notch: HeyClicky's level, one above the status items", notch.window.level.rawValue == NSWindow.Level.statusBar.rawValue + 1
+  && notch.window.level.rawValue < NSWindow.Level.screenSaver.rawValue)
+check("notch: on every space and over full-screen apps, never key, no shadow", notch.window.collectionBehavior.contains(.canJoinAllSpaces)
+  && notch.window.collectionBehavior.contains(.fullScreenAuxiliary) && notch.window.styleMask.contains(.nonactivatingPanel)
+  && !notch.window.canBecomeKey && !notch.window.hasShadow && !notch.window.isOpaque)
+check("notch: the ring sits in the right wing, on the menu bar band's middle", abs(notch.strip.ringRect.midX - (notch.strip.bounds.maxX - wing25 / 2)) <= 0.5
+  && abs(notch.strip.ringRect.midY - (notch.strip.bounds.maxY - 16)) <= 0.5, "\(notch.strip.ringRect)")
+check("notch: the time is read out", notch.strip.accessibilityLabel() == "Focus: 25:00 left, Deep Work")
+
+// Hover: resting on it opens the card; leaving closes it after a moment.
+notch.pointerMoved(inside: true)
+scheduler.advance(0.4)
+check("notch: not open before the pointer has rested 0.5 s", !notch.isExpanded)
+scheduler.advance(0.1)
+check("notch: open after 0.5 s", notch.isExpanded && notch.expansion == 1 && notch.islandRect == notch.cardRect)
+check("notch: open, the card takes clicks", !notch.window.ignoresMouseEvents)
+func notchHit(_ point: NSPoint) -> NSView? {
+  notch.root.hitTest(notch.root.convert(point, to: notch.root.superview))
+}
+let openCard = notch.local(notch.cardRect)
+let pauseCentre = notch.pauseButton.convert(NSPoint(x: notch.pauseButton.bounds.midX, y: notch.pauseButton.bounds.midY), to: notch.root)
+check("notch: a click on Pause reaches it", notchHit(pauseCentre) === notch.pauseButton, "\(String(describing: notchHit(pauseCentre)))")
+check("notch: the clear corners and flare tips never react", notchHit(NSPoint(x: openCard.minX + 1, y: openCard.minY + 1)) == nil
+  && notchHit(NSPoint(x: openCard.maxX - 1, y: openCard.minY + 1)) == nil && notchHit(NSPoint(x: 1, y: openCard.maxY - 9)) == nil)
+check("notch: the card's content shows, the strip's is gone", !notch.card.isHidden && notch.card.alphaValue == 1 && notch.strip.isHidden && notch.strip.alphaValue == 0)
+check("notch: the island view is drawn at the card", notch.island.body == notch.local(notch.cardRect) && notch.island.radius == 15)
+check("notch: the pill shows what the panel shows", notch.pill.content.titleText == "25:00 Deep Work" && notch.pill.progress == 0.5
+  && notch.pill.frame.height == 40 && notch.slab.frame == notch.pill.frame && notch.edges.frame == notch.pill.frame)
+let cardInWindow = notch.local(notch.cardRect)
+let row = [notch.pauseButton, notch.completeButton, notch.moreButton].map { $0.convert($0.bounds, to: notch.root) }
+check("notch: the controls sit under the pill inside the card, centred", row.allSatisfy { cardInWindow.contains($0) && $0.maxY <= notch.pill.convert(notch.pill.bounds, to: notch.root).minY - 8 + 0.01 }
+  && abs((row.first!.minX + row.last!.maxX) / 2 - cardInWindow.midX) <= 1, "\(row) \(cardInWindow)")
+check("notch: the pill spans the card's content and sits below the menu bar band", notch.pill.convert(notch.pill.bounds, to: notch.root).maxY <= cardInWindow.maxY - 32 - 8 + 0.01
+  && notch.pill.frame.width == notch.card.frame.width)
+check("notch: Pause, Complete, … (no drag handle)", notch.pauseButton.title == "Pause" && notch.completeButton.title == "Complete"
+  && notch.moreButton.accessibilityLabel() == "More" && !notch.card.subviews.contains { $0 is DragHandleView })
+notch.pointerMoved(inside: false)
+scheduler.advance(0.1)
+notch.pointerMoved(inside: true)
+scheduler.advance(0.3)
+check("notch: back within the exit delay: still open", notch.isExpanded)
+notch.pointerMoved(inside: false)
+scheduler.advance(0.1)
+check("notch: still open 0.1 s after leaving", notch.isExpanded)
+scheduler.advance(0.05)
+check("notch: closed 0.15 s after leaving", !notch.isExpanded && notch.expansion == 0 && notch.islandRect == notchStrip && notch.window.ignoresMouseEvents
+  && notch.card.isHidden && !notch.strip.isHidden && notch.strip.alphaValue == 1)
+notch.pointerMoved(inside: true)
+scheduler.advance(0.3)
+notch.pointerMoved(inside: false)
+scheduler.advance(1)
+check("notch: passing over it quicker than 0.5 s never opens it", !notch.isExpanded)
+
+// The poll: the notch itself counts, then the whole card once open.
+notchPointer = NSPoint(x: 755, y: 975)
+notch.checkPointer()
+scheduler.advance(0.5)
+check("notch: the pointer on the notch opens it", notch.isExpanded)
+notchPointer = NSPoint(x: notch.cardRect.midX, y: notch.cardRect.minY + 5)
+notch.checkPointer()
+scheduler.advance(0.5)
+check("notch: anywhere on the open card keeps it open", notch.isExpanded && notch.hoverRect == notch.cardRect)
+notchPointer = NSPoint(x: notch.cardRect.midX, y: notch.cardRect.minY - 5)
+notch.checkPointer()
+scheduler.advance(0.15)
+check("notch: below the card closes it", !notch.isExpanded && notch.hoverRect == NotchLayout.hoverRect(strip: notchStrip, on: notched))
+notchPointer = NSPoint(x: notchStrip.minX + 2, y: 980)
+notch.checkPointer()
+scheduler.advance(0.5)
+check("notch: a wing counts too", notch.isExpanded)
+notchPointer = away
+notch.checkPointer()
+scheduler.advance(0.2)
+
+// Paused: dimmed strip with ⏸ in the ring, Resume on the card; the fill holds.
+ui.update(session(remaining: 1500, started: -1500))
+let fillBeforePause = notch.strip.progress
+ui.update(session(state: "paused", remaining: 1500, started: -1500))
+check("notch paused: the strip says so", notch.strip.content.paused && notch.strip.accessibilityLabel() == "Focus: paused, 25:00 left, Deep Work")
+check("notch paused: same width", notch.stripRect == notchStrip)
+now = now.addingTimeInterval(30)
+ui.update(session(state: "paused", remaining: 1500, started: -1530, plannedEnd: 1500))
+check("notch paused: an ad-hoc end moving on leaves the fill where it was", notch.strip.progress == fillBeforePause && notch.pill.progress == fillBeforePause, "\(notch.strip.progress)")
+notch.setExpanded(true, animated: false)
+check("notch paused: the card offers Resume", notch.pauseButton.title == "Resume" && notch.pauseButton.currentSymbol == "play" && notch.pauseButton.frame.width == FloatingPanel.pauseSlot)
+fake.calls.removeAll()
+notch.pauseButton.performClick(nil)
+check("notch: Resume resumes", fake.calls == ["resume"], "\(fake.calls)")
+ui.update(session(remaining: 1500, started: -1530, plannedEnd: 1500, paused: 30))
+check("notch: resumed, the button reads Pause", notch.pauseButton.title == "Pause" && !notch.strip.content.paused)
+check("notch: resumed, the fill carries on from where it froze", notch.strip.progress == fillBeforePause, "\(notch.strip.progress) \(fillBeforePause)")
+
+// The card's controls, as the panel's.
+fake.calls.removeAll()
+notch.pauseButton.performClick(nil)
+check("notch: Pause opens the pause menu", popped.last == "notch Pause", "\(popped)")
+check("notch: its choices are the panel's", notch.pauseMenu.items.map { $0.isSeparatorItem ? "---" : $0.title } == ["1 minute", "2 minutes", "5 minutes", "10 minutes", "---", "Indefinitely"])
+check("notch: still open after the menu (the pointer never left)", notch.isExpanded)
+perform(notch.pauseMenu.items[0])
+check("notch: 1 minute pauses and arms the timer", fake.calls == ["pause"] && ui.timedPause?.sessionId == 7, "\(fake.calls)")
+ui.update(session(state: "paused", remaining: 1500, started: -1530, plannedEnd: 1500))
+scheduler.advance(60)
+check("notch: and resumes after a minute", fake.calls == ["pause", "resume"], "\(fake.calls)")
+ui.update(session(remaining: 1440, started: -1590, plannedEnd: 1440))
+fake.calls.removeAll()
+notch.completeButton.performClick(nil)
+check("notch: Complete stops (the end card asks)", fake.calls == ["stop"], "\(fake.calls)")
+notch.moreButton.performClick(nil)
+check("notch: … opens its menu", popped.last == "notch More", "\(popped)")
+check("notch: … menu items", notch.moreMenu.items.map { $0.isSeparatorItem ? "---" : $0.title } == ["Edit", "Cancel", "---", "Move to Floating Panel", "Move to Menu Bar"])
+opened.removeAll()
+perform(notch.moreMenu.items[0])
+check("notch: Edit opens Focus Today", opened == [UIPresenter.editURL])
+perform(notch.moreMenu.items[1])
+check("notch: Cancel finishes with no rating and no note", fake.calls == ["stop", "finish nil nil"], "\(fake.calls)")
+
+// Moving between the three displays.
+perform(notch.moreMenu.items[3])
+check("notch: Move to Floating Panel writes the display", fileFields()["countdownDisplay"] == "panel")
+check("notch: the panel shows, the island goes (closed)", floating.isVisible && !notch.isVisible && !notch.isExpanded && !bar.statusItem.isVisible)
+perform(floating.moreMenu.items[4])
+check("panel: Move to Notch writes the display", fileFields()["countdownDisplay"] == "notch")
+check("panel: the island shows, the panel goes", notch.isVisible && !floating.isVisible && !bar.statusItem.isVisible)
+notch.setExpanded(true, animated: false)
+perform(notch.moreMenu.items[4])
+check("notch: Move to Menu Bar writes the display", fileFields()["countdownDisplay"] == "menuBar")
+check("notch: the menu bar item shows, the island goes", bar.statusItem.isVisible && !notch.isVisible && !floating.isVisible)
+perform(bar.moveToNotchItem)
+check("menu bar: Move to Notch writes the display", fileFields()["countdownDisplay"] == "notch")
+check("menu bar: the island shows, the item goes", notch.isVisible && !bar.statusItem.isVisible && !floating.isVisible)
+check("config writes kept every other key", fileFields()["futureKey"] == ["keep": [1, 2]] && fileFields()["snoozeSeconds"] == 300)
+
+// The end card: the island steps aside; extended, it comes back.
+now = now.addingTimeInterval(1)
+ui.update(session(id: 31, state: "ending", remaining: 0, plannedEnd: 0))
+ui.showEndSheet(session(id: 31, state: "ending", remaining: 0, plannedEnd: 0))
+check("notch: hidden while the end card shows", !notch.isVisible && sheet.isVisible && !bar.statusItem.isVisible)
+ui.update(session(id: 31, remaining: 300, started: -600))
+check("notch: extended from the card: the card goes, the island is back", !sheet.isVisible && notch.isVisible)
+ui.dismissEndSheet()
+
+// Another screen: a Mac without a notch, and the notch screen coming back.
+notchScreen = plain
+ui.update(session(id: 31, remaining: 299, started: -601))
+check("notch: no notch: hangs from the top centre", notch.layoutScreen == plain && notch.stripRect == NotchLayout.strip(wing: wing25, on: plain) && notch.frame.maxY == 1080)
+notchScreen = notched
+ui.update(session(id: 31, remaining: 298, started: -602))
+check("notch: back on the notch", notch.stripRect == notchStrip)
+notchScreen = nil
+ui.update(session(id: 31, remaining: 297, started: -603))
+check("notch: no screen at all: left where it was", notch.stripRect == notchStrip)
+notchScreen = notched
+
+// update(nil) hides it, closed.
+notch.setExpanded(true, animated: false)
+ui.update(nil)
+check("notch: update(nil) hides it, closed", !notch.isVisible && !notch.window.isVisible && !notch.isExpanded && notch.expansion == 0)
+notch.pointerMoved(inside: true)
+scheduler.advance(1)
+check("notch: hidden, the pointer never opens it", !notch.isExpanded)
+notch.pointerMoved(inside: false)
+ui.setDisplay(.panel)
 
 // MARK: Completion and the end card
 
@@ -1550,6 +1848,18 @@ if CommandLine.arguments.count > 1 {
   ui.update(session(goal: "Deep Work", state: "paused", remaining: 1350, started: -1350))
   render(floating.chrome, "panel-hover-paused.png", background: desktop)
   floating.setHovering(false, animated: false)
+  // The notch island at 2x over the desktop grey (the menu bar band shows
+  // grey here; on screen it is the black menu bar): collapsed, paused, open.
+  ui.setDisplay(.notch)
+  ui.update(session(goal: "Deep Work", remaining: 1350, started: -1350))
+  render(ui.notch.root, "notch-collapsed.png", background: desktop, pad: 0)
+  ui.update(session(goal: "Deep Work", state: "paused", remaining: 1350, started: -1350))
+  render(ui.notch.root, "notch-paused.png", background: desktop, pad: 0)
+  ui.update(session(goal: "Deep Work", remaining: 1350, started: -1350))
+  ui.notch.setExpanded(true, animated: false)
+  render(ui.notch.root, "notch-open.png", background: desktop, pad: 0)
+  ui.notch.setExpanded(false, animated: false)
+  ui.setDisplay(.panel)
   // The chrome is what renders headless: the painted tint, the sweep, the
   // chip and the edges, without the glass's blur of the desktop. The
   // fallback's denser tint half way for comparison.

@@ -43,7 +43,7 @@ end-of-session sheet, app and site blocking, stats), is
   selected startable calendar (default "default"), the snooze length (1, 3, 5
   or 10 minutes), the browsers whose tabs are watched (Google Chrome, Dia),
   "Also start Raycast Focus", a summary line per profile, and Countdown
-  (Floating panel or Menu bar). Saving writes
+  (Floating panel, Menu bar or Notch). Saving writes
   `config.json` (unknown keys kept) and applies to the next session.
   **Manage Profiles** (`⌘⇧P`) lists the profiles with Edit, Add (`⌘N`) and
   Delete (`⌃X`; "default" can be edited, never deleted or renamed). A profile
@@ -99,8 +99,8 @@ All four steps of [PLAN.md](PLAN.md) are merged (2026-09-28). While a session
 runs (and while its end sheet waits) the helper blocks apps and sites from the
 session's profile: a blocked app is hidden behind a native block page with one
 Snooze button, and a blocked host in Chrome or Dia is sent to the same page
-served on loopback. A floating panel shows the countdown (or the menu bar,
-per the Countdown setting; see "Countdown" below); the native end sheet
+served on loopback. A floating panel shows the countdown (or the menu bar or
+the notch, per the Countdown setting; see "Countdown" below); the native end sheet
 takes the rating and note. Focus Today's Finish form
 ([src/components/FinishSessionForm.tsx](src/components/FinishSessionForm.tsx))
 stays as a headless fallback. macOS asks once per binary path for Calendar
@@ -124,8 +124,19 @@ once. It
 stays for a second, fades out slowly over the next 5 seconds and then
 finishes the session with no rating or note; hovering it holds it, and
 clicking it or typing a note keeps it until you press Finish or Extend.
-Focus Settings' Countdown field (or the menu bar item's "Move to Floating
-Panel") switches between the panel and the menu bar.
+Focus Settings' Countdown field (or each display's own "Move to …" items)
+switches between the panel, the menu bar and the notch.
+
+With Countdown set to Notch the time left sits beside the MacBook's notch,
+in a black island that merges with it (HeyClicky's shape): the time on the
+left, a small green ring on the right, ⏸ in the ring while paused. Rest the
+pointer on it for half a second and it drops into a card with the panel's
+pill and Pause, Complete and "…" (Edit, Cancel, Move to Floating Panel, Move
+to Menu Bar); move away and it folds back. On a Mac without a notch the same
+island hangs from the top centre. It hides between sessions and while the
+end card shows. HeyClicky uses the same spot: while a session runs the
+island covers HeyClicky's and keeps its card from opening, so use one or the
+other there.
 
 ## Development
 

@@ -225,6 +225,19 @@ const cases: Case[] = [
       const saved = JSON.parse(readFileSync(file, "utf8"));
       assert.equal(saved.countdownDisplay, "panel");
       assert.deepEqual(saved.panelPosition, { x: 1204, y: 870 });
+      // The notch, as the helper's "Move to Notch" writes it, reads back and
+      // survives a Settings save that keeps it.
+      writeFileSync(
+        file,
+        JSON.stringify({ ...saved, countdownDisplay: "notch" }),
+      );
+      assert.equal((await readConfig(file)).countdownDisplay, "notch");
+      await writeConfig({ countdownDisplay: "notch" }, file);
+      assert.equal(
+        JSON.parse(readFileSync(file, "utf8")).countdownDisplay,
+        "notch",
+      );
+      assert.equal((await readConfig(file)).countdownDisplay, "notch");
       // Bad values fall back: an unknown display is the panel, a position
       // that is not two finite numbers is null.
       for (const [display, position] of [
@@ -232,6 +245,7 @@ const cases: Case[] = [
         [3, [1, 2]],
         [null, { x: 1 }],
         ["menubar", "top right"],
+        ["Notch", null],
       ] as const) {
         writeFileSync(
           file,
@@ -2203,11 +2217,12 @@ net.createServer((socket) => {
     },
   ],
   [
-    "settings: the Countdown field offers the floating panel and the menu bar",
+    "settings: the Countdown field offers the floating panel, the menu bar and the notch",
     async () => {
       assert.deepEqual(COUNTDOWN_OPTIONS, [
         { value: "panel", title: "Floating panel" },
         { value: "menuBar", title: "Menu bar" },
+        { value: "notch", title: "Notch" },
       ]);
       // The default is the first choice, so a fresh form shows the panel.
       assert.equal(
@@ -2216,7 +2231,9 @@ net.createServer((socket) => {
       );
       assert.ok(isCountdownDisplay("panel"));
       assert.ok(isCountdownDisplay("menuBar"));
+      assert.ok(isCountdownDisplay("notch"));
       assert.ok(!isCountdownDisplay("menubar"));
+      assert.ok(!isCountdownDisplay("Notch"));
       assert.ok(!isCountdownDisplay(""));
     },
   ],

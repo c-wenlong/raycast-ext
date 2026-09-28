@@ -9,7 +9,7 @@ import Foundation
 // Its menu holds the session's calendar and planned end, then Pause or
 // Resume, Extend ▸ and Stop; every action goes to the presenter delegate.
 // Shown only when config.json has `countdownDisplay: "menuBar"` (UIPresenter
-// decides); "Move to Floating Panel" switches back to the panel.
+// decides); "Move to Floating Panel" and "Move to Notch" switch away.
 
 final class MenuBar: NSObject {
   weak var delegate: SessionPresenterDelegate?
@@ -29,8 +29,11 @@ final class MenuBar: NSObject {
   let extendItem = NSMenuItem(title: "Extend", action: nil, keyEquivalent: "")
   let stopItem = NSMenuItem(title: "Stop", action: nil, keyEquivalent: "")
   let moveItem = NSMenuItem(title: "Move to Floating Panel", action: nil, keyEquivalent: "")
+  let moveToNotchItem = NSMenuItem(title: "Move to Notch", action: nil, keyEquivalent: "")
   /// "Move to Floating Panel" was chosen.
   var onMoveToPanel: (() -> Void)?
+  /// "Move to Notch" was chosen.
+  var onMoveToNotch: (() -> Void)?
   private var extendOptions: [Int] = []
 
   /// `statusBar` is the system bar in the daemon; the tests pass a private
@@ -53,8 +56,13 @@ final class MenuBar: NSObject {
     moveItem.target = self
     moveItem.action = #selector(moveToPanel)
     moveItem.image = Self.symbol("macwindow")
+    moveToNotchItem.target = self
+    moveToNotchItem.action = #selector(moveToNotch)
+    moveToNotchItem.image = Self.symbol("macbook")
     menu.autoenablesItems = false
-    for item in [infoItem, .separator(), pauseItem, extendItem, stopItem, .separator(), moveItem] { menu.addItem(item) }
+    for item in [infoItem, .separator(), pauseItem, extendItem, stopItem, .separator(), moveItem, moveToNotchItem] {
+      menu.addItem(item)
+    }
     statusItem.menu = menu
   }
 
@@ -169,6 +177,7 @@ final class MenuBar: NSObject {
   }
 
   @objc private func moveToPanel() { onMoveToPanel?() }
+  @objc private func moveToNotch() { onMoveToNotch?() }
 
   // MARK: Drawing
 

@@ -11,7 +11,7 @@ import Foundation
 //
 // On hover the pill swaps to its controls: Pause (a menu: 1, 2, 5, 10
 // minutes or indefinitely; Resume while paused), Complete, "…" (Edit,
-// Cancel, Move to Menu Bar, Reset Panel Position) and a drag handle at the
+// Cancel, Move to Menu Bar, Move to Notch, Reset Panel Position) and a drag handle at the
 // right edge, the only place the panel can be dragged from. Every action
 // goes to `actions` (UIPresenter), which talks to the session logic and to
 // config.json.
@@ -85,6 +85,7 @@ protocol FloatingPanelActions: AnyObject {
   func panelEdit()
   func panelCancel()
   func panelMoveToMenuBar()
+  func panelMoveToNotch()
   func panelResetPosition()
   /// The panel was dragged; `topLeft` is the idle pill's new top-left.
   func panelMoved(topLeft: NSPoint)
@@ -786,6 +787,7 @@ final class FloatingPanel: NSObject {
       ("Cancel", "xmark.circle", #selector(cancelChosen)),
       ("", "", nil),
       ("Move to Menu Bar", "menubar.rectangle", #selector(moveChosen)),
+      ("Move to Notch", "macbook", #selector(moveToNotchChosen)),
       ("Reset Panel Position", "arrow.counterclockwise", #selector(resetChosen)),
     ] as [(String, String, Selector?)] {
       guard let action else {
@@ -1176,5 +1178,6 @@ final class FloatingPanel: NSObject {
   @objc private func editChosen() { actions?.panelEdit() }
   @objc private func cancelChosen() { actions?.panelCancel() }
   @objc private func moveChosen() { actions?.panelMoveToMenuBar() }
+  @objc private func moveToNotchChosen() { actions?.panelMoveToNotch() }
   @objc private func resetChosen() { actions?.panelResetPosition() }
 }

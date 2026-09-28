@@ -165,14 +165,16 @@ export function browserOptions(saved: string[]): Option[] {
 }
 
 // Where the countdown shows while a session runs: the floating panel (the
-// default; its "…" menu can move it to the menu bar) or the menu bar item
-// (whose menu can move it back). The helper switches within a second.
+// default), the menu bar item, or an island at the notch (HeyClicky's
+// shape; a black strip at the top centre on a Mac without one). Each one's
+// own menu can move it to the other two. The helper switches within a second.
 export const COUNTDOWN_OPTIONS: readonly {
   value: CountdownDisplay;
   title: string;
 }[] = [
   { value: "panel", title: "Floating panel" },
   { value: "menuBar", title: "Menu bar" },
+  { value: "notch", title: "Notch" },
 ];
 
 export function isCountdownDisplay(value: string): value is CountdownDisplay {

@@ -42,7 +42,7 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 | What pause means | A calendar session (it has a source event) takes a break inside the event: the end stays at the event's end and the countdown keeps falling. An ad-hoc session asked for a length, so pause stops the clock: the time left holds while paused and the planned end (with any extension) moves later by the pause on resume. Timed pauses resume the same way. (Kai, 2026-09-28.) |
 | Browsers | Chrome and Dia for now. Both expose tab URLs over AppleScript (checked on this Mac: Dia's dictionary has `active tab`, `URL`, `title`). |
 | Calendar access | EventKit through Calendar.app, which already syncs the Google account (41 CalDAV calendars found in `Calendar.sqlitedb` on 2026-09-27). No OAuth, works offline, one permission prompt. |
-| Surfaces in v1 | Countdown (floating panel by default, or the menu bar), full-screen block overlay, stats view, end-of-session sheet. |
+| Surfaces in v1 | Countdown (floating panel by default, or the menu bar or the notch), full-screen block overlay, stats view, end-of-session sheet. |
 | Where it lives | `extensions/focus/` in this repo. Data in `~/.raycast/focus/` (gitignored). Helper pattern copied from `extensions/notes`. |
 
 ## Parts
@@ -405,6 +405,38 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   top. CoreAnimation only; the lamp freezes while the panel is hidden,
   while the session is paused (and dims), and under Reduce Motion.
 
+## Notch countdown (2026-09-29)
+
+Kai: "Let's add the notch for the focus session ... try to replicate what
+HeyClicky already does." Decided while building it:
+
+- A third display, `countdownDisplay: "notch"`, alongside the panel and the
+  menu bar; one shows at a time. Settings' Countdown field lists "Notch";
+  the panel's "…" and the menu bar item's menu gain Move to Notch; the
+  island's "…" has Move to Floating Panel and Move to Menu Bar.
+- The look copies HeyClicky, measured on this MacBook: a pure black island
+  one point taller than the menu bar, flaring into the top edge, rounded
+  bottom corners, content left and right of the notch, dropping into a
+  taller card on hover. HeyClicky's collapsed island is 256 × 33 with a
+  status badge on the left; its card is 440 × 478, black at the top easing
+  to `#1C1C1B`. It opens after about 0.6 s of rest, grows in about 0.3 s
+  with a small spring, and folds back about 0.1 s after the pointer leaves,
+  in about 0.3 s. It shows nothing at all when it has nothing to say.
+- Ours: the time on the left, a progress ring on the right (⏸ in it while
+  paused), 305 × 33 on this Mac; the card holds exactly the floating panel's
+  content (pill, then Pause, Complete, "…"; no drag handle, the island does
+  not move) and opens after 0.5 s of rest, over 0.25 s eased, closing 0.15 s
+  after the pointer leaves. No glass inside the card: the window server's
+  glass would show the desktop through the black, so the pill's dark green
+  tint is painted.
+- Hidden while idle and while the end card shows: the card hangs right
+  under the island and already says "Time's up"; the island comes back on
+  an extend.
+- A pause freezes the fill (an ad-hoc session's planned end moves on while
+  paused), and the island resumes from there.
+- HeyClicky and the island share the notch and the level; while a session
+  runs ours covers HeyClicky's and keeps its card from opening. Kai picks
+  one; nothing tries to dodge the other.
 ## End card (2026-09-28)
 
 Kai asked for the end sheet to replace the completion banner, float for

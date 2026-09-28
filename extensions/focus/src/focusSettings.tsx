@@ -45,7 +45,13 @@ import {
 // Blocking half (step 4): each startable calendar's default profile, the
 // snooze length, the watched browsers, the Raycast Focus deeplink, and the
 // profiles themselves (edited in Manage Profiles, which saves on its own).
-// Countdown: the floating panel or the menu bar.
+// Countdown: the floating panel, the menu bar or the notch.
+
+const COUNTDOWN_ICONS: Record<CountdownDisplay, Icon> = {
+  panel: Icon.AppWindow,
+  menuBar: Icon.Clock,
+  notch: Icon.Monitor,
+};
 
 function calendarIcon(calendar: Calendar): Image.ImageLike {
   return calendar.color
@@ -382,7 +388,7 @@ export default function FocusSettingsCommand() {
       <Form.Dropdown
         id="countdownDisplay"
         title="Countdown"
-        info="Where the time left shows during a session. The floating panel stays above every window; hover it for Pause, Complete and more. Either one can switch to the other from its own menu."
+        info="Where the time left shows during a session. The floating panel stays above every window; hover it for Pause, Complete and more. Notch shows it beside the notch; rest the pointer there for the same controls. Each one can switch to the others from its own menu."
         value={countdown}
         onChange={(next) => {
           if (isCountdownDisplay(next)) setCountdown(next);
@@ -393,7 +399,7 @@ export default function FocusSettingsCommand() {
             key={option.value}
             value={option.value}
             title={option.title}
-            icon={option.value === "panel" ? Icon.AppWindow : Icon.Clock}
+            icon={COUNTDOWN_ICONS[option.value]}
           />
         ))}
       </Form.Dropdown>
