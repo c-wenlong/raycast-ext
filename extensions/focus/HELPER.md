@@ -53,6 +53,7 @@ sqlite stores UTC.
 | `blocking` | `sessionId` (the open session, or null), `active` (bool: running or at the end sheet), `profile` (name, null when idle), `profileFallbackFrom` (the unknown name asked for, else null), `mode` ("blocklist", "allowlist" or null), `blockedApps`, `blockedHosts` (blocklist mode; sorted), `allowedApps`, `allowedHosts` (allowlist mode), `snoozeSeconds`, `snoozed: [{kind, target, until}]` |
 | `snooze {target, kind?}` | `kind` ("app" or "site"), `target` (hosts normalized), `until`. Lets an app (bundle id) or a host (and its subdomains) through for `snoozeSeconds`. Without `kind`: an app the session blocked or the profile lists, else a host the profile blocks, else an app when it reads as a bundle id (`com.`, `net.`, ... with three or more labels), else a host. No token, the socket is local and already trusted. Refused while blocking is off. |
 | `stats {days?}` | `today`, `week` (`{focusedSeconds, sessions, averageRating}`), `perCalendar: [{calendarId, calendarTitle, focusedSeconds, sessions}]`, `days: [{date, focusedSeconds}]`, `recent: [{id, goal, calendarTitle, startedAt, endedAt, focusedSeconds, rating, note, endReason, blockedAttempts, snoozes, logPending}]`, `waiting: [{sessionId, goal, logCalendarName, endedAt}]`, `chartPath`. `days` 1 to 90, default 7. See "Stats" below. |
+| `deleteSession {sessionId}` | `deleted` (true), `logEventRemoved` (bool), `warning` (only when a log event was kept). Removes the session with its pauses and blocked attempts; the open session is discarded first. An unknown id is `ok: false`, "no session with id N". See "Deleting a session" below. |
 | `quit` | `{ok: true}`, then the daemon exits |
 
 A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sourceEventId, extendedSeconds, pausedSeconds}`.
@@ -294,10 +295,38 @@ so neither a recreated `focus.db` reusing an id nor an event Kai moved can fool 
 waiting; a read-only calendar keeps waiting; otherwise the event is created.
 Rows are never re-pointed except by `movePending`.
 
+## Deleting a session
+
+`deleteSession {sessionId}` removes a session for good (Focus Stats' Delete
+Session and Focus Today's Discard Session, both `⌃X` with no confirmation).
+
+- The row, its `pauses` and its `blocked_attempts` go in one transaction
+  (children first: foreign keys are on and do not cascade). Deleting frees
+  the id, so sqlite may give it to the next session; the log event markers
+  carry the start time too, so an old event is never mistaken for the new
+  session's.
+- The open session (running, paused or at the end sheet) is ended as
+  Cancel ends it: no rating, the panel and end sheet dismissed, the tick
+  stopped, blocking off, `raycast://focus/complete` opened when
+  `raycastDeeplink` is on. Nothing is written for it: its row is deleted in
+  the same step instead of first being closed as finished, so there is never
+  a finished row for the 30-second tick to log. `status` is null and
+  `pending` has nothing for it afterwards.
+- A finished row with a `log_event_id` then has its log event removed through
+  `CalendarBackend.removeEvent(id:)` (`EKEventStore.remove`), but only after
+  `loggedEvent(id:)` shows its notes still carry both marker lines of this
+  session (`focus-session: <id>` and `focus-started: <UTC start>`, the test
+  recovery adopts by), so an event Kai rewrote, or his own event, is never
+  deleted. The row is deleted first either way. Without full access, with the
+  event not found (deleted by hand, or its calendar unavailable), with the
+  markers gone, or when the remove fails, the event stays: `logEventRemoved:
+  false` and a `warning` saying which. A waiting, no-calendar or abandoned row
+  has no event: `logEventRemoved: false` and no warning.
+
 ## Build and test
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon`, signed with Kai's Apple Development identity when the keychain has it and ad hoc otherwise; `FOCUS_SIGN_IDENTITY` overrides, and an override missing from the keychain fails the build.
-- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
+- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery, `deleteSession` (a finished session with its event, pauses and attempts; an event whose markers are gone or name another start; an unavailable calendar, no access and a failed remove; no calendar; waiting; the open session running, paused and at the end sheet; unknown and malformed ids). Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
 - `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, the completion (sound, glow, the card at once, no banner) plus every case that skips it, and the end card: its compact layout (360 wide, stars and note on one row, extend and Finish on the next, labels fitting), top centre of the given screen above the glow, alpha 1 at 0.5 s and 1 s, then falling (about 0.5 at 3.5 s, 0.2 at 5 s) and never raised by `update`, `presenterFinish(nil, nil)` and alpha 0 at 6 s, hover (poll and tracking area) resetting the hold and fade, a click on bare card, a star click, a digit, a typed character, a key in the note, Extend and Finish each cancelling it, keys in the grace period not counting, a refresh keeping the countdown, manual stop, paused past the end, a restart at the sheet, and extended or finished elsewhere. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `card-0s.png`, `card-2.5s.png` (alpha 0.7), `card-over-glow.png`, `menubar-*.png`, `panel-*.png`, `glow.png` and `block.png` there.
 - `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion with the card), `FOCUS_UI_DEMO_HOVER=<from>-<to>` (seconds after the card shows: the poll sees the pointer over the card in that window, the real pointer otherwise; tracking-area crossings and uses of the card are logged), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel and glow draw, plus `state.txt`; menus are logged and closed after 2 s; while the card shows, every 0.25 s `card-<ms>.png` at its alpha, `screen-<ms>.png` with the glow and the card where they are, and a line in `card.txt`). For a shell without Screen Recording. `FOCUS_DIR` must be short: the socket path has a length limit.
 

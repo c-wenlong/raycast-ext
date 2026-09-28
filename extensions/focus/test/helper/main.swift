@@ -87,9 +87,26 @@ final class FakeCalendar: CalendarBackend {
   func createEvent(_ draft: LogEventDraft, in calendarId: String) throws -> String {
     creates += 1
     if failCreate { throw Boom() }
-    let id = "log-\(saved.count + 1)"
+    let id = "log-\(saved.count + removed.count + 1)"
     saved.append((calendarId, id, draft))
     return id
+  }
+
+  var removed: [String] = []
+  var failRemove = false
+  /// Calendars whose events cannot be read (as if unsubscribed or offline).
+  var unavailable: Set<String> = []
+
+  func loggedEvent(id: String) -> LoggedEvent? {
+    guard let event = saved.first(where: { $0.id == id }), !unavailable.contains(event.calendarId) else { return nil }
+    return LoggedEvent(id: event.id, start: event.draft.start, end: event.draft.end, notes: event.draft.notes)
+  }
+
+  func removeEvent(id: String) throws {
+    if failRemove { throw Boom() }
+    guard let index = saved.firstIndex(where: { $0.id == id }) else { throw Boom() }
+    saved.remove(at: index)
+    removed.append(id)
   }
 }
 
@@ -1827,6 +1844,161 @@ do {
   let other = Harness(clock: clock, dir: blocked)
   let noChart = other.send("stats")
   check("stats command: a chart that cannot be written gives a null path", noChart["ok"] == true && noChart["chartPath"] == .null && other.logs.contains { $0.contains("could not write the stats chart") }, noChart.serialized())
+}
+
+// MARK: - Deleting sessions
+
+do {
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
+  func finished(_ goal: String, from start: Date, to end: Date, calendarId: String = "work") -> (Int64, String?) {
+    clock.now = start
+    let id = h.send("startAdhoc", ["goal": .string(goal), "durationSeconds": 3600, "calendarId": .string(calendarId)])["session"]?["id"]?.intValue ?? 0
+    clock.now = end
+    let reply = h.send("finish", ["rating": 3])
+    return (Int64(id), reply["logEventId"]?.stringValue)
+  }
+
+  // A finished session with a log event, a pause and blocked attempts; a
+  // second one that must survive.
+  clock.now = at(9, 0)
+  let firstId = Int64(h.send("startAdhoc", ["goal": "Write", "durationSeconds": 1800, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0)
+  clock.now = at(9, 5)
+  _ = h.send("pause")
+  clock.now = at(9, 7)
+  _ = h.send("resume")
+  try! h.db.addAttempt(firstId, BlockedAttempt(at: at(9, 8), kind: "site", target: "x.com", outcome: "blocked"))
+  try! h.db.addAttempt(firstId, BlockedAttempt(at: at(9, 9), kind: "app", target: "com.example.game", outcome: "snoozed"))
+  clock.now = at(9, 30)
+  let firstEvent = h.send("finish", ["rating": 4])["logEventId"]?.stringValue ?? ""
+  let (keptId, keptEvent) = finished("Keep me", from: at(10, 0), to: at(10, 20))
+  try! h.db.addAttempt(keptId, BlockedAttempt(at: at(10, 5), kind: "site", target: "x.com", outcome: "blocked"))
+  check("delete setup: two log events", !firstEvent.isEmpty && keptEvent != nil && h.fake.saved.count == 2)
+  check("delete setup: children exist", !(try! h.db.pauses(firstId)).isEmpty && (try! h.db.attempts(firstId)).count == 2)
+
+  let reply = h.send("deleteSession", ["sessionId": .int(Int(firstId))])
+  check("deleteSession: a finished session with a log event", reply == ["ok": true, "deleted": true, "logEventRemoved": true], reply.serialized())
+  check("deleteSession: its log event is removed", h.fake.removed == [firstEvent] && !h.fake.saved.contains { $0.id == firstEvent })
+  check("deleteSession: the row is gone", (try! h.db.session(id: firstId)) == nil)
+  check("deleteSession: its pauses and blocked attempts are gone", (try! h.db.pauses(firstId)).isEmpty && (try! h.db.attempts(firstId)).isEmpty)
+  check(
+    "deleteSession: other sessions and their rows are untouched",
+    (try! h.db.session(id: keptId)) != nil && (try! h.db.attempts(keptId)).count == 1 && h.fake.saved.map(\.id) == [keptEvent ?? ""])
+  let recent = h.send("stats")["recent"]?.arrayValue ?? []
+  check("deleteSession: stats no longer list it", recent.map { $0["goal"]?.stringValue ?? "" } == ["Keep me"], "\(recent)")
+  check("deleteSession: the same id again is unknown", h.send("deleteSession", ["sessionId": .int(Int(firstId))])["error"] == .string("no session with id \(firstId)"))
+  check("deleteSession: it is logged", h.logs.contains("session \(firstId): deleted") && h.logs.contains("session \(firstId): log event \(firstEvent) removed"))
+
+  // The event's notes lost the marker (Kai rewrote them): the row goes, the event stays.
+  let (rewrittenId, rewrittenEvent) = finished("Rewritten", from: at(11, 0), to: at(11, 30))
+  if let index = h.fake.saved.firstIndex(where: { $0.id == rewrittenEvent }) {
+    h.fake.saved[index].draft.notes = "My own notes about this block"
+  }
+  let rewritten = h.send("deleteSession", ["sessionId": .int(Int(rewrittenId))])
+  check(
+    "deleteSession: an event without the marker is kept, with a warning",
+    rewritten["ok"] == true && rewritten["deleted"] == true && rewritten["logEventRemoved"] == false
+      && rewritten["warning"]?.stringValue?.contains("focus-session marker") == true, rewritten.serialized())
+  check("deleteSession: the unmarked event is still in the calendar", h.fake.saved.contains { $0.id == rewrittenEvent } && !h.fake.removed.contains(rewrittenEvent ?? ""))
+  check("deleteSession: the unmarked session's row is gone anyway", (try! h.db.session(id: rewrittenId)) == nil)
+
+  // The marker for this id but another start (a recreated focus.db reusing the id): kept.
+  let (reusedId, reusedEvent) = finished("Reused id", from: at(12, 0), to: at(12, 30))
+  if let index = h.fake.saved.firstIndex(where: { $0.id == reusedEvent }) {
+    h.fake.saved[index].draft.notes = "Source: ad hoc\n\(LogText.marker(reusedId))\n\(LogText.startedLine(at(8, 0)))"
+  }
+  let reused = h.send("deleteSession", ["sessionId": .int(Int(reusedId))])
+  check("deleteSession: the id marker with another start is not ours", reused["logEventRemoved"] == false && reused["warning"] != nil && h.fake.saved.contains { $0.id == reusedEvent }, reused.serialized())
+
+  // The log calendar cannot be read, then no access at all, then a failed remove.
+  let (offlineId, offlineEvent) = finished("Offline", from: at(13, 0), to: at(13, 30))
+  h.fake.unavailable = ["log"]
+  let offline = h.send("deleteSession", ["sessionId": .int(Int(offlineId))])
+  check(
+    "deleteSession: an unavailable calendar keeps the event and warns", offline["deleted"] == true && offline["logEventRemoved"] == false
+      && offline["warning"]?.stringValue?.contains("not found") == true && (try! h.db.session(id: offlineId)) == nil, offline.serialized())
+  h.fake.unavailable = []
+  check("deleteSession: the offline event was not touched", h.fake.saved.contains { $0.id == offlineEvent })
+  let (deniedId, deniedEvent) = finished("Denied", from: at(14, 0), to: at(14, 30))
+  h.fake.accessState = "denied"
+  let denied = h.send("deleteSession", ["sessionId": .int(Int(deniedId))])
+  check(
+    "deleteSession: without calendar access the row goes and the event stays", denied["ok"] == true && denied["logEventRemoved"] == false
+      && denied["warning"]?.stringValue?.contains("calendar access is denied") == true && (try! h.db.session(id: deniedId)) == nil
+      && h.fake.saved.contains { $0.id == deniedEvent }, denied.serialized())
+  h.fake.accessState = "fullAccess"
+  let (failId, failEvent) = finished("Stuck", from: at(15, 0), to: at(15, 30))
+  h.fake.failRemove = true
+  let failed = h.send("deleteSession", ["sessionId": .int(Int(failId))])
+  check("deleteSession: a failed remove warns and still deletes the row", failed["logEventRemoved"] == false && failed["warning"]?.stringValue?.contains("removing the log event failed") == true && (try! h.db.session(id: failId)) == nil && h.fake.saved.contains { $0.id == failEvent }, failed.serialized())
+  h.fake.failRemove = false
+
+  // No calendar ("none"): nothing to remove, no warning.
+  let (noCalId, noCalEvent) = finished("Scratch", from: at(16, 0), to: at(16, 10), calendarId: Rules.noCalendar)
+  let removedBefore = h.fake.removed
+  let noCal = h.send("deleteSession", ["sessionId": .int(Int(noCalId))])
+  check("deleteSession: a no-calendar session", noCalEvent == nil && noCal == ["ok": true, "deleted": true, "logEventRemoved": false] && (try! h.db.session(id: noCalId)) == nil && h.fake.removed == removedBefore, noCal.serialized())
+
+  // Waiting for a log calendar that is gone: deleted, and no longer pending.
+  try! #"{"logCalendarId": "gone", "logCalendarName": "Old Log (Google)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  let (waitingId, _) = finished("Waiting", from: at(17, 0), to: at(17, 10))
+  check("deleteSession setup: the session waits", h.send("pending")["waiting"]?.arrayValue?.count == 1)
+  let waiting = h.send("deleteSession", ["sessionId": .int(Int(waitingId))])
+  check("deleteSession: a waiting session", waiting == ["ok": true, "deleted": true, "logEventRemoved": false], waiting.serialized())
+  check("deleteSession: pending is clean after deleting a waiting session", h.send("pending")["waiting"] == [] && h.send("stats")["waiting"] == [])
+  check("deleteSession: retry has nothing left to write", h.send("retryPending") == ["ok": true, "written": 0, "adopted": 0, "stillWaiting": 0])
+  try! #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+
+  // Refusals.
+  check("deleteSession: an unknown id is refused", h.send("deleteSession", ["sessionId": 4242]) == ["ok": false, "error": "no session with id 4242"])
+  check("deleteSession: sessionId is required", h.send("deleteSession")["error"] == "sessionId is required")
+  check("deleteSession: sessionId must be a number", h.send("deleteSession", ["sessionId": "7"])["ok"] == false)
+  check("deleteSession: sessionId must be whole", h.send("deleteSession", ["sessionId": .double(1.5)])["ok"] == false)
+}
+
+do {
+  // The open session: ended as Cancel ends it, with no rating and no log event, then deleted.
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"logCalendarId": "log", "raycastDeeplink": true}"#, clock: clock)
+  let id = Int64(h.send("startAdhoc", ["goal": "Discard me", "durationSeconds": 1500, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0)
+  try! h.db.addAttempt(id, BlockedAttempt(at: at(9, 1), kind: "site", target: "x.com", outcome: "blocked"))
+  clock.now = at(9, 2)
+  _ = h.send("pause")
+  check("discard setup: running, paused, blocking", h.core.ticking && h.lastView?.state == "paused" && h.send("blocking")["sessionId"] == .int(Int(id)))
+  let dismissals = h.presenter.dismissals
+  let opened = h.opened.count
+  clock.now = at(9, 3)
+  let reply = h.send("deleteSession", ["sessionId": .int(Int(id))])
+  check("deleteSession: the open session", reply == ["ok": true, "deleted": true, "logEventRemoved": false], reply.serialized())
+  check("deleteSession: the open session's status is null", h.send("status")["session"] == .null)
+  check("deleteSession: the open session's row and children are gone", (try! h.db.session(id: id)) == nil && (try! h.db.pauses(id)).isEmpty && (try! h.db.attempts(id)).isEmpty && (try! h.db.openSession()) == nil)
+  check("deleteSession: no log event is written for it", h.fake.creates == 0 && h.fake.saved.isEmpty)
+  check("deleteSession: pending is clean", h.send("pending")["waiting"] == [] && h.send("retryPending") == ["ok": true, "written": 0, "adopted": 0, "stillWaiting": 0])
+  check("deleteSession: the panel and sheet are dismissed and the tick stops", h.presenter.dismissals == dismissals + 1 && h.lastView == nil && !h.core.ticking)
+  let blocking = h.send("blocking")
+  check("deleteSession: blocking is off", blocking["sessionId"] == .null && blocking["active"] == false, blocking.serialized())
+  check("deleteSession: the Raycast complete deeplink opens as Cancel does", h.opened.count == opened + 1 && h.opened.last == RaycastDeeplink.complete)
+  check("deleteSession: discarding is logged", h.logs.contains("session \(id): discarded"))
+  check("deleteSession: nothing to finish after a discard", h.send("finish")["error"] == "no session is running")
+  h.core.tick()
+  check("deleteSession: the next tick writes nothing", h.fake.creates == 0)
+
+  // At the end sheet, then a new session starts cleanly (sqlite may reuse the id).
+  clock.now = at(9, 10)
+  let next = Int64(h.send("startAdhoc", ["goal": "Next", "durationSeconds": 600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0)
+  _ = h.send("stop")
+  check("discard setup: at the end sheet", h.send("status")["session"]?["state"] == "ending" && h.presenter.endSheets.count == 1)
+  let sheetDismissals = h.presenter.dismissals
+  let ending = h.send("deleteSession", ["sessionId": .int(Int(next))])
+  check("deleteSession: a session at the end sheet", ending["deleted"] == true && h.send("status")["session"] == .null && h.presenter.dismissals == sheetDismissals + 1 && (try! h.db.session(id: next)) == nil, ending.serialized())
+  clock.now = at(9, 20)
+  let again = h.send("startAdhoc", ["goal": "After", "durationSeconds": 600, "calendarId": "work"])
+  check("deleteSession: a session starts after a discard", again["ok"] == true && again["session"]?["state"] == "running", again.serialized())
+  let relaunched = h.relaunch(at: at(9, 20, 30))
+  check("deleteSession: a relaunch finds only the new session", relaunched.send("status")["session"]?["goal"] == "After")
+  let afterId = relaunched.send("status")["session"]?["id"] ?? .null
+  let running = relaunched.send("deleteSession", ["sessionId": afterId])
+  check("deleteSession: a running session", running["deleted"] == true && relaunched.send("status")["session"] == .null && !relaunched.core.ticking && relaunched.lastView == nil, running.serialized())
 }
 
 print("\(count - failures)/\(count) passed")
