@@ -14,7 +14,7 @@ All in `~/.raycast/focus/` (gitignored as `/focus/`; `FOCUS_DIR` overrides the f
 |---|---|
 | `focus.sock` | Unix socket, mode 0600. |
 | `config.json` | Settings. Created with defaults if missing; re-read on every request. `logCalendarId` (with `logCalendarName`, its "Title (account)") is the optional override: null (the default) sends each session's log event to its own calendar, an id sends every session's event there (see "Log event and recovery"). The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
-| `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`). |
+| `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`, the end the timer runs to when it is not `planned_end`: extensions, plus for an ad-hoc session its closed pauses). |
 | `focus.lock` | `flock` held by the running instance (holds its pid). |
 | `daemon.log` | stderr of the daemon; rotated to `daemon.log.1` past 1 MB. |
 
@@ -42,9 +42,9 @@ sqlite stores UTC.
 | `status` | `session`: null or the open session (below) |
 | `start {eventId, start?}` | `session`. Runs until the event's planned end. |
 | `startAdhoc {goal, durationSeconds, calendarId, profile?}` | `session`. `durationSeconds` 60 to 86400; planned start is now. |
-| `pause` | `session`, now paused. Only from running. |
-| `resume` | `session`, now running. Only from paused. |
-| `extend {seconds}` | `session`. `seconds` 60 to 86400, from running, paused or ending; ending returns to running (same session, same row). |
+| `pause` | `session`, now paused. Only from running. A calendar session's clock keeps running to its planned end; an ad-hoc session's stops (see below). |
+| `resume` | `session`, now running. Only from paused. An ad-hoc session's `plannedEnd` moves later by the pause's length. |
+| `extend {seconds}` | `session`. `seconds` 60 to 86400, from running, paused or ending; ending returns to running (same session, same row). While an ad-hoc session is paused it adds to the end as it stands. |
 | `stop` | `session`, now ending (the end sheet shows). Only from running or paused. |
 | `finish {rating?, note?, reason?}` | `session` (finished), `logEventId` (string or null), `logPending` (bool). From running, paused or ending. `rating` 1 to 5; `reason` "timer" or "manual", default: why the session reached the end sheet, or "manual" if it never did. |
 | `pending` | `waiting: [{sessionId, goal, endedAt, logCalendarId, logCalendarName, reason}]`; `reason` is the last try's (null before one): "calendar access is …", "calendar <name> is not in Calendar.app", "calendar <name> is read-only, so it cannot take the log event; move the waiting sessions to a writable calendar", "the session has no calendar to log to; move the waiting sessions to a calendar", or a failed search or save |
@@ -59,9 +59,24 @@ sqlite stores UTC.
 A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sourceEventId, extendedSeconds, pausedSeconds}`.
 `plannedEnd` includes extensions. While open, `state` is "running", "paused" or
 "ending" (at the end sheet), plus `remainingSeconds` (whole seconds to
-`plannedEnd`, 0 while ending) and `endReason` (null, or while ending "timer" or
-"manual": what Finish records). A finished session has `state: "finished"` plus
+`plannedEnd`, 0 while ending), `endReason` (null, or while ending "timer" or
+"manual": what Finish records) and `pauseStopsClock` (true for an ad-hoc
+session). A finished session has `state: "finished"` plus
 `endedAt, endReason, rating, note, logCalendarId, logCalendarName, logEventId`.
+
+What a pause does (Kai, 2026-09-28):
+
+- A calendar session (`sourceEventId` set) keeps its planned end: while
+  paused `remainingSeconds` keeps falling, and the session reaches the end
+  sheet at `plannedEnd` even if still paused.
+- An ad-hoc session (`sourceEventId` null, "(No Calendar)" included) asked
+  for a length, so a pause stops its clock: while paused `remainingSeconds`
+  stays at its value when the pause began and `plannedEnd` is the end it
+  would have if resumed now (it moves on a second a second, so `plannedEnd -
+  now` stays the time left). It never reaches the end sheet by time while
+  paused. Resume (from the socket, the panel, the menu bar, or a timed pause
+  running out) moves the planned end later by the pause's length; so do stop
+  and finish from paused. `extendedSeconds` stays the extensions asked for.
 
 Details the client should know:
 
@@ -78,17 +93,26 @@ Details the client should know:
 `SessionMachine` (`Session.swift`) is the lifecycle from PLAN.md as a pure value
 type: `start`, `pause`, `resume`, `extend`, `stop`, `finish`, `tick` and
 `abandon` in, the transition that happened out (`reachedDeadline` when a tick
-finds the planned end passed while running or paused). The deadline is wall
-clock: pausing does not move it. Reaching the end sheet closes an open pause,
-at the planned end for the timer and at the stop for a manual stop, because
-blocking is back on while the sheet waits. Extend from the end sheet counts from
-now when the planned end is already behind (`max(plannedEnd, now) + seconds`), so
-+5 after the sheet waited ten minutes still gives five minutes; `extended_seconds`
-adds up what was asked for.
+finds the planned end passed while running, or paused for a calendar
+session). It is built with `pauseStopsClock` (true for ad hoc, from the row's
+null `source_event_id`). A calendar session's deadline is wall clock: pausing
+does not move it. An ad-hoc session's pause freezes `remainingSeconds(at:)`
+at the pause's start, a tick never reaches the deadline while it is paused,
+and closing the pause (resume, stop, finish, abandon) adds its length to
+`plannedEnd`; `effectiveEnd(at:)` is `plannedEnd` plus the open pause so far,
+what `status` and `SessionView` report. Reaching the end sheet closes an open
+pause, at the planned end for the timer and at the stop for a manual stop,
+because blocking is back on while the sheet waits. Extend from the end sheet
+counts from now when the planned end is already behind (`max(plannedEnd, now)
++ seconds`), so +5 after the sheet waited ten minutes still gives five minutes;
+a paused ad-hoc session's extension adds to its `plannedEnd` as it stands;
+`extended_seconds` adds up what was asked for.
 
 `FocusCore` persists each transition in one transaction before changing memory:
 a `pauses` row on pause, `resumed_at` on resume, `extended_seconds` and
-`extended_end` on extend, and `end_reason` on the still-open row while it is at
+`extended_end` on extend, `extended_end` again when an ad-hoc pause closes
+(so a restart after a resume keeps the moved end, and one mid-pause restores
+the frozen time left from the open pause row), and `end_reason` on the still-open row while it is at
 the end sheet ("timer" or "manual"; cleared by an extension, overwritten by
 Finish). Everything runs on one serial queue (`FocusCore.queue`: pass the
 daemon's work queue in `init(queue:)`, or the core makes its own and every entry
@@ -137,9 +161,14 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   and snapped to otherwise; a new session, a new length (an extension) or a
   new state starts afresh. A 30 Hz timer moves it while the panel shows and
   the countdown moves, and the pill redraws only when the fill's edge
-  crosses a device pixel. A pause does not move the planned end (the
-  countdown keeps running, see `Session.swift`), so the sweep keeps pace
-  with the digits while paused; it stops at the end sheet and when hidden.
+  crosses a device pixel. A calendar session's pause does not move the
+  planned end (the countdown keeps running, see `Session.swift`), so the
+  sweep keeps pace with the digits while paused; it stops at the end sheet
+  and when hidden. A paused ad-hoc session's `plannedEnd` moves on with the
+  clock and its digits hold still, so each update re-anchors the sweep at the
+  same time left; the fill (span so far over the whole span, the pause
+  included) edges forward while paused and carries on without a jump at
+  resume.
 - **Glass** (`Glass.swift`): radius 14. On macOS 26 the window's content is
   a clear `NSGlassEffectView` (window non-opaque, clear background) and the
   chrome paints the tint on it, sRGB `(0.10, 0.26, 0.19) @ 72 %`, which
@@ -208,8 +237,9 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   the wider, taller controls row both fit in the visible frame (below the
   menu bar, clear of the Dock) of the screen it overlaps most.
 - **Completion** (`Completion.swift`): when `showEndSheet` gets a session
-  this UI saw running or paused (the timer ran out, the planned end passed
-  while paused, or Complete/Stop was pressed; Cancel never reaches the card),
+  this UI saw running or paused (the timer ran out, a calendar session's
+  planned end passed while paused, or Complete/Stop was pressed; Cancel
+  never reaches the card),
   it plays `NSSound(named: "Glass")` and
   orders a click-through `.screenSaver` window over every screen with a soft
   green vignette (`#2ECC71` at 85 % right at the edge, easing to nothing
@@ -263,7 +293,9 @@ more than 90 s old is closed with `end_reason = abandoned`, `ended_at =
 last_heartbeat` (never before the start; an open pause closes there, never
 before it began), no rating, no log event, and the sheet is dismissed. A fresher
 one (the helper restarted quickly) is resumed as running, paused (an open pause
-row) or at the end sheet (`end_reason` set), and the timer carries on.
+row) or at the end sheet (`end_reason` set), and the timer carries on. A paused
+ad-hoc session comes back with its time left frozen at the open pause's start
+(its stored `extended_end` holds only the pauses already closed).
 
 With `raycastDeeplink` on in config, start also opens
 `raycast://focus/start?goal=<goal>&duration=<seconds left>&mode=block` and
@@ -391,7 +423,7 @@ Session and Focus Today's Discard Session, both `⌃X` with no confirmation).
 ## Build and test
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon`, signed with Kai's Apple Development identity when the keychain has it and ad hoc otherwise; `FOCUS_SIGN_IDENTITY` overrides, and an override missing from the keychain fails the build.
-- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery, the log destination (the override, an ad-hoc session's calendar, a calendar session's event calendar, `none` skipped with and without the override, a read-only calendar waiting until moved, an unknown calendar, Finish without access naming the calendar later, and rows with no destination healed on retry and on the tick, or left waiting without access or a real calendar), `deleteSession` (a finished session with its event, pauses and attempts; an event whose markers are gone or name another start; an unavailable calendar, no access and a failed remove; no calendar; waiting; the open session running, paused and at the end sheet; unknown and malformed ids). Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
+- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, what a pause does (a calendar session keeps its end and reaches the sheet while paused; an ad-hoc session freezes the time left, moves the end by each pause, extends from a pause, never reaches the sheet while paused, stops as "manual" from a long pause, and keeps all of it across restarts mid-pause and after a resume, with the log's "Focused" line and stats excluding the pauses), UI delegate calls, and abandoned versus resumed launch recovery, the log destination (the override, an ad-hoc session's calendar, a calendar session's event calendar, `none` skipped with and without the override, a read-only calendar waiting until moved, an unknown calendar, Finish without access naming the calendar later, and rows with no destination healed on retry and on the tick, or left waiting without access or a real calendar), `deleteSession` (a finished session with its event, pauses and attempts; an event whose markers are gone or name another start; an unavailable calendar, no access and a failed remove; no calendar; waiting; the open session running, paused and at the end sheet; unknown and malformed ids). Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
 - `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, the completion (sound, glow, the card at once, no banner) plus every case that skips it, and the end card: its compact layout (360 wide, stars and note on one row, extend and Finish on the next, labels fitting), top centre of the given screen above the glow, alpha 1 at 0.5 s and 1 s, then falling (about 0.5 at 3.5 s, 0.2 at 5 s) and never raised by `update`, `presenterFinish(nil, nil)` and alpha 0 at 6 s, hover (poll and tracking area) resetting the hold and fade, a click on bare card, a star click, a digit, a typed character, a key in the note, Extend and Finish each cancelling it, keys in the grace period not counting, a refresh keeping the countdown, manual stop, paused past the end, a restart at the sheet, and extended or finished elsewhere. The glass: its setup on this system (glass or HUD blur, radius, clear style, no `tintColor`, the painted tint), the edges' geometry and a pixel sample of what they draw (bright top and left rim, dark bottom, nothing outside the corners), the chip border, the sweep's lit edge, and the pre-macOS 26 backdrop forced on (same fixed size, hover included). The smooth sweep: the truth at an update, moving on at 1 / total (a 10 min session five times as fast as a 50 min one), capped at full, the exact planned end or the whole seconds, the next tick carried on with no step, 0.4 s behind ignored, 0.6 s off snapped, an extension lowering and slowing it, a new session afresh, paused keeping pace, still and full at the end sheet, and in the panel the fill moving about 2.2 pt in half a second of a 60 s session between updates, on device pixels, and stopping when hidden. The default place at top centre, the same rect as the end card. The lava lamp: for 300 seeds, five blobs whose drift stays inside the pill with sizes, alphas, periods and colours in range; a seed repeats its blobs; each disc's x, y and scale loops (eased, autoreversing, infinite, between the blob's points); stop freezes the clock and start carries on from it; dimmed at 45 %; Reduce Motion keeps it still, and switching it applies at once without starting a stopped lamp; in the panel it sits under the pill, runs while a running session shows, and freezes when paused (dimmed) or hidden. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `card-0s.png`, `card-2.5s.png` (alpha 0.7), `card-over-glow.png`, `menubar-*.png`, `panel-*.png` (the chrome without the glass's blur; `panel-fallback.png` is the pre-macOS 26 tint), `glow.png` and `block.png` there.
 - `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion with the card), `FOCUS_UI_DEMO_HOVER=<from>-<to>` (seconds after the card shows: the poll sees the pointer over the card in that window, the real pointer otherwise; tracking-area crossings and uses of the card are logged), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel and glow draw, plus `state.txt`; menus are logged and closed after 2 s; while the card shows, every 0.25 s `card-<ms>.png` at its alpha, `screen-<ms>.png` with the glow and the card where they are, and a line in `card.txt`). For a shell without Screen Recording. `FOCUS_DIR` must be short: the socket path has a length limit.
 

@@ -13,11 +13,20 @@
 //   running | paused | ending ──finish──▶ finished
 //   running | paused | ending ──abandon─▶ abandoned (recovery at launch only)
 //
-// The deadline is wall-clock: pausing does not move it, so a paused session
-// reaches the end sheet when its planned end passes, exactly like a running
-// one. Reaching the end sheet closes an open pause (blocking is back on while
-// the sheet waits), at the deadline for the timer and at the stop time for a
-// manual stop.
+// What a pause does to the deadline depends on the session (Kai, 2026-09-28):
+//
+// - A calendar session (it has a source event) runs to the event's end. Its
+//   deadline is wall-clock: pausing does not move it, so a paused session
+//   reaches the end sheet when its planned end passes, exactly like a running
+//   one. Reaching the end sheet closes an open pause (blocking is back on
+//   while the sheet waits), at the deadline for the timer and at the stop
+//   time for a manual stop.
+// - An ad-hoc session asked for a length, so a pause stops its clock
+//   (`pauseStopsClock`): while paused the time left stays where it was, the
+//   deadline never passes, and closing the pause (resume, stop, finish,
+//   abandon) moves the planned end later by the pause's length. While paused,
+//   `effectiveEnd(at:)` is the planned end moved on by the pause so far: the
+//   end the session would have if it were resumed now.
 
 import Foundation
 
@@ -68,8 +77,11 @@ struct SessionMachine: Equatable {
   static let extendRange = 60...86_400
 
   private(set) var state: SessionState = .idle
+  /// True for an ad-hoc session: a pause stops the clock and moves the end.
+  let pauseStopsClock: Bool
   private(set) var startedAt: Date?
-  /// The end the timer runs to, extensions included.
+  /// The end the timer runs to: extensions included, and for an ad-hoc
+  /// session every closed pause too (an open one is added by `effectiveEnd`).
   private(set) var plannedEnd: Date?
   /// Sum of the extensions asked for.
   private(set) var extendedSeconds = 0
@@ -81,11 +93,21 @@ struct SessionMachine: Equatable {
   private(set) var rating: Int?
   private(set) var note: String?
 
-  init() {}
+  /// `pauseStopsClock` true for an ad-hoc session (no source event).
+  init(pauseStopsClock: Bool = false) {
+    self.pauseStopsClock = pauseStopsClock
+  }
 
   /// An open session read back from sqlite after a quick restart. An open
   /// pause means paused; an ending reason means it was at the end sheet.
-  init(restoring startedAt: Date, plannedEnd: Date, extendedSeconds: Int, pauses: [PauseSpan], endingReason: EndReason?) {
+  /// `plannedEnd` is the stored deadline: for an ad-hoc session it already
+  /// holds every closed pause, so an open one keeps the time left frozen at
+  /// its start.
+  init(
+    restoring startedAt: Date, plannedEnd: Date, extendedSeconds: Int, pauses: [PauseSpan], endingReason: EndReason?,
+    pauseStopsClock: Bool = false
+  ) {
+    self.pauseStopsClock = pauseStopsClock
     self.startedAt = startedAt
     self.plannedEnd = plannedEnd
     self.extendedSeconds = extendedSeconds
@@ -102,9 +124,30 @@ struct SessionMachine: Equatable {
 
   // MARK: Derived numbers
 
-  /// Whole seconds until the planned end; 0 once ending or closed.
+  /// The start of the open pause, if the session is paused.
+  private var openPauseStart: Date? {
+    guard state == .paused, let last = pauses.last, last.end == nil else { return nil }
+    return last.start
+  }
+
+  /// True while an ad-hoc session is paused: its clock is not moving.
+  var isClockStopped: Bool { pauseStopsClock && openPauseStart != nil }
+
+  /// The end the session runs to as of `now`: the planned end, moved on by
+  /// the open pause so far while an ad-hoc session is paused.
+  func effectiveEnd(at now: Date) -> Date? {
+    guard let plannedEnd else { return nil }
+    guard pauseStopsClock, let pausedAt = openPauseStart else { return plannedEnd }
+    return plannedEnd.addingTimeInterval(max(0, now.timeIntervalSince(pausedAt)))
+  }
+
+  /// Whole seconds until the planned end; 0 once ending or closed. Frozen at
+  /// the pause's start while an ad-hoc session is paused.
   func remainingSeconds(at now: Date) -> Int {
     guard state == .running || state == .paused, let plannedEnd else { return 0 }
+    if pauseStopsClock, let pausedAt = openPauseStart {
+      return Rules.remainingSeconds(until: plannedEnd, now: pausedAt)
+    }
     return Rules.remainingSeconds(until: plannedEnd, now: now)
   }
 
@@ -175,8 +218,12 @@ struct SessionMachine: Equatable {
       guard state.isOpen, let plannedEnd else { return .failure(refusal("extend")) }
       // From the end sheet the extension counts from now when the deadline
       // is already behind (the sheet may have waited), so +5 always gives
-      // five more minutes; otherwise it moves the planned end.
-      self.plannedEnd = max(plannedEnd, at).addingTimeInterval(TimeInterval(seconds))
+      // five more minutes; otherwise it moves the planned end. A paused
+      // ad-hoc session's deadline is never behind (its clock is stopped, and
+      // the stored end may be, since the open pause is not in it yet), so
+      // the extension adds to its end as it stands.
+      let base = isClockStopped ? plannedEnd : max(plannedEnd, at)
+      self.plannedEnd = base.addingTimeInterval(TimeInterval(seconds))
       extendedSeconds += seconds
       let fromEnding = state == .ending
       if fromEnding {
@@ -207,7 +254,10 @@ struct SessionMachine: Equatable {
       return .success(.finished(endReason!))
 
     case .tick(let at):
-      guard state == .running || state == .paused, let plannedEnd, at >= plannedEnd else { return .success(.none) }
+      // A paused ad-hoc session never reaches its deadline: its clock is stopped.
+      guard state == .running || state == .paused, !isClockStopped, let plannedEnd, at >= plannedEnd else {
+        return .success(.none)
+      }
       closeOpenPause(at: plannedEnd)
       state = .ending
       endingReason = .timer
@@ -225,10 +275,16 @@ struct SessionMachine: Equatable {
     }
   }
 
-  /// Ends an open pause at `at`, never before the pause began.
+  /// Ends an open pause at `at`, never before the pause began. For an
+  /// ad-hoc session the planned end moves later by the pause's length, so
+  /// the time left carries on from where the pause froze it.
   private mutating func closeOpenPause(at: Date) {
     guard let last = pauses.indices.last, pauses[last].end == nil else { return }
-    pauses[last].end = max(at, pauses[last].start)
+    let end = max(at, pauses[last].start)
+    pauses[last].end = end
+    if pauseStopsClock, let plannedEnd {
+      self.plannedEnd = plannedEnd.addingTimeInterval(end.timeIntervalSince(pauses[last].start))
+    }
   }
 }
 
