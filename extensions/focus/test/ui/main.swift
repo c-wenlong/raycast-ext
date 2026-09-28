@@ -831,6 +831,28 @@ scheduler.advance(0.21)
 check("finished 6 s after the pointer left (within a poll)", fake.calls == ["finish nil nil"], "\(fake.calls)")
 sessionFinished()
 
+// The pointer arriving between two polls, just before the deadline: the
+// finish looks for itself and holds the card instead.
+fake.calls.removeAll()
+_ = timerRunsOut(55)
+scheduler.advance(5.95)
+pointer = cardCentre()
+scheduler.advance(0.05)
+check("pointer in just before 6 s, no poll yet: no finish, a hover", finishes().isEmpty && sheet.isVisible && ui.endCard?.pointerInside == true && panel.alphaValue == 1, "\(fake.calls)")
+pointer = away
+scheduler.advance(6.2)
+check("and the finish comes 6 s after it leaves", fake.calls == ["finish nil nil"], "\(fake.calls)")
+sessionFinished()
+
+// The glow keeps one image per screen size in use.
+_ = GlowImageView.image(for: NSSize(width: 800, height: 600))
+_ = GlowImageView.image(for: laptop.frame.size)
+check("glow images are cached per size", GlowImageView.cachedSizes.isSuperset(of: [NSSize(width: 800, height: 600), laptop.frame.size]))
+_ = timerRunsOut(56)
+check("a completion drops the sizes of screens that are gone", !GlowImageView.cachedSizes.contains(NSSize(width: 800, height: 600)) && GlowImageView.cachedSizes.contains(laptop.frame.size), "\(GlowImageView.cachedSizes)")
+sheet.finishButton.performClick(nil)
+sessionFinished()
+
 // The tracking area reports crossings too; the poll then keeps it honest.
 fake.calls.removeAll()
 _ = timerRunsOut(44)

@@ -100,6 +100,15 @@ final class GlowView: NSView {
 final class GlowImageView: NSView {
   static let scale: CGFloat = 0.5
   private static var cache: [NSSize: CGImage] = [:]
+  /// The sizes drawn and kept (the tests read it).
+  static var cachedSizes: Set<NSSize> { Set(cache.keys) }
+
+  /// Drops the images of screens that are gone (a display unplugged or its
+  /// resolution changed), so a long-running daemon keeps one per screen.
+  static func keepOnly(_ sizes: [NSSize]) {
+    let keep = Set(sizes)
+    cache = cache.filter { keep.contains($0.key) }
+  }
 
   override var isOpaque: Bool { false }
   override var wantsUpdateLayer: Bool { true }
@@ -206,6 +215,7 @@ final class Completion {
     trace.append("sound")
 
     glowFrames = screens.map(\.frame)
+    GlowImageView.keepOnly(screens.map(\.frame.size))
     while glowWindows.count < screens.count {
       let window = OverlayWindow(contentRect: .zero, level: CompletionStyle.glowLevel)
       window.title = "Focus session completed glow"

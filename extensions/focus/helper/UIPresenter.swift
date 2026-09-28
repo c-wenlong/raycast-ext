@@ -263,6 +263,12 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions {
     guard let card = endCard, !card.engaged, !card.pointerInside, endSheet.isVisible,
       endSheet.session?.id == card.sessionId
     else { return }
+    // The pointer may have come in since the last poll (up to 0.1 s ago):
+    // then it is a hover, not a card left alone.
+    if endSheet.frame.contains(pointerLocation()) {
+      endCardPointerMoved(inside: true)
+      return
+    }
     endSheet.panel.alphaValue = 0
     endSheet.finish()
   }
