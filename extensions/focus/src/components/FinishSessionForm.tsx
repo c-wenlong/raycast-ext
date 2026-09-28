@@ -19,6 +19,7 @@ import { stars } from "../lib/time";
 const RATINGS = [5, 4, 3, 2, 1];
 
 function finishMessage(result: FinishResult, logCalendarName: string | null) {
+  if (result.logSkipped) return "Not logged: the session had no calendar";
   if (!result.logPending) {
     return logCalendarName ? `Logged to ${logCalendarName}` : "Logged";
   }

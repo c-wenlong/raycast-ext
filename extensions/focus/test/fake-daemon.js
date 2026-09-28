@@ -273,7 +273,9 @@ function createFakeDaemon(options) {
         state.session = null;
         state.snoozes = [];
         const config = readConfig(configPath);
-        const logCalendar = CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
+        // A session filed under no calendar ("none") is never written to one.
+        const skipped = session.calendarId === "none";
+        const logCalendar = skipped ? null : CALENDARS.find((c) => c.id === config.logCalendarId && c.writable);
         state.history.push({
           id: session.id,
           goal: session.goal,
@@ -287,8 +289,10 @@ function createFakeDaemon(options) {
           endReason: session.endReason,
           blockedAttempts: snoozed,
           snoozes: snoozed,
-          logPending: !logCalendar,
+          logPending: !logCalendar && !skipped,
+          logSkipped: skipped,
         });
+        if (skipped) return { ok: true, session, logEventId: null, logPending: false, logSkipped: true };
         if (!logCalendar) {
           state.waiting.push({
             sessionId: session.id,
@@ -296,9 +300,9 @@ function createFakeDaemon(options) {
             endedAt: now.toISOString(),
             logCalendarName: config.logCalendarName || null,
           });
-          return { ok: true, session, logEventId: null, logPending: true };
+          return { ok: true, session, logEventId: null, logPending: true, logSkipped: false };
         }
-        return { ok: true, session, logEventId: `log-${session.id}`, logPending: false };
+        return { ok: true, session, logEventId: `log-${session.id}`, logPending: false, logSkipped: false };
       }
       case "blocking":
         return { ok: true, ...blockingStatus(now) };
@@ -423,6 +427,7 @@ function createFakeDaemon(options) {
         blockedAttempts: s.blockedAttempts,
         snoozes: s.snoozes,
         logPending: s.logPending,
+        logSkipped: s.logSkipped === true,
       }));
     return {
       ok: true,

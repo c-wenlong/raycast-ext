@@ -432,7 +432,7 @@ do {
   let path = dir + "/focus.db"
   let db = try! Database(path: path)
   check("database is in WAL mode", db.journalMode == "wal", db.journalMode ?? "nil")
-  check("schema version is 2", db.userVersion == 2, "\(String(describing: db.userVersion))")
+  check("schema version is 3", db.userVersion == 3, "\(String(describing: db.userVersion))")
 
   let new = NewSession(
     sourceEventId: "EV1", calendarId: "work", goal: "Write", profile: "deep", plannedStart: at(14, 0),
@@ -481,7 +481,7 @@ do {
 
   let reopened = try! Database(path: path)
   check("reopening keeps the data", (try! reopened.session(id: id))?.goal == "Write")
-  check("reopening keeps the schema version", reopened.userVersion == 2)
+  check("reopening keeps the schema version", reopened.userVersion == 3)
   check("the database file exists", FileManager.default.fileExists(atPath: path))
 }
 
@@ -683,12 +683,13 @@ do {
   do {
     let db = try! Database(path: path)
     // Back to a step 1 database: no extended_end, version 1.
-    try! db.exec("alter table sessions drop column extended_end; pragma user_version = 1;")
+    try! db.exec("alter table sessions drop column extended_end; alter table sessions drop column log_skipped; pragma user_version = 1;")
     try! db.insertSession(
       NewSession(sourceEventId: nil, calendarId: "work", goal: "Old", profile: "default", plannedStart: at(9, 0), plannedEnd: at(9, 30), startedAt: at(9, 0)))
   }
   let db = try! Database(path: path)
-  check("a version 1 database migrates to 2", db.userVersion == 2)
+  check("a version 1 database migrates to 3", db.userVersion == 3)
+  check("migration adds log_skipped as false", (try! db.session(id: 1))?.logSkipped == false)
   let old = try! db.session(id: 1)
   check("migration keeps the rows", old?.goal == "Old" && old?.extendedEnd == nil && old?.deadline == at(9, 30), "\(String(describing: old))")
 
@@ -871,6 +872,25 @@ do {
   check("status is idle after finish", send(core, "status")["session"] == .null)
   check("finish with nothing running fails", send(core, "finish")["error"] == "no session is running")
   check("nothing is pending", send(core, "pending")["waiting"] == [])
+
+  // A session filed under no calendar ("none") is never written to a calendar.
+  do {
+    let createsBefore = fake.creates
+    clock.now = at(15, 0)
+    let noCal = send(core, "startAdhoc", ["goal": "Scratch", "durationSeconds": 600, "calendarId": .string(Rules.noCalendar)])
+    check("no-calendar ad-hoc session starts", noCal["ok"] == true && noCal["session"]?["calendarId"] == "none", noCal.serialized())
+    let noCalId = Int64(noCal["session"]?["id"]?.intValue ?? 0)
+    check("no-calendar session shows a title for the UI", (core.presenter as? NullPresenter)?.views.last??.calendarTitle == "No calendar")
+    clock.now = at(15, 10)
+    let done = send(core, "finish", ["rating": 3])
+    check("no-calendar finish skips the log event", done["ok"] == true && done["logSkipped"] == true && done["logPending"] == false && done["logEventId"] == .null, done.serialized())
+    check("no-calendar finish created nothing", fake.creates == createsBefore)
+    check("no-calendar session is not waiting", send(core, "pending")["waiting"] == [])
+    let skipped = try! db.session(id: noCalId)
+    check("no-calendar row is marked skipped", skipped?.logSkipped == true && skipped?.logCalendarId == nil, "\(String(describing: skipped))")
+    let recent = send(core, "stats")["recent"]?.arrayValue?.first
+    check("stats report the skip", recent?["logSkipped"] == true && recent?["logPending"] == false, recent?.serialized() ?? "nil")
+  }
 
   // The save succeeded but the id was never stored: recovery adopts it.
   try! db.exec("update sessions set log_event_id = null where id = \(row.id)")
@@ -1658,6 +1678,8 @@ do {
   check("stats: without access another calendar is unknown", blind.bucket(for: r1) == ("work", "Unknown calendar"))
   check("stats: without access an ad hoc id cannot be judged", blind.bucket(for: r3).title == "Unknown calendar")
   check("stats: an ad hoc session with no calendar is ad hoc", blind.bucket(for: statRow(15, at(9, 0), at(9, 1), calendar: "", event: nil)) == ("adhoc", "Ad hoc"))
+  check("stats: the none sentinel is ad hoc without access", blind.bucket(for: statRow(17, at(9, 0), at(9, 1), calendar: Rules.noCalendar, event: nil)) == ("adhoc", "Ad hoc"))
+  check("stats: the none sentinel is ad hoc with access", names.bucket(for: statRow(18, at(9, 0), at(9, 1), calendar: Rules.noCalendar, event: nil)) == ("adhoc", "Ad hoc"))
   check("stats: with access a vanished event calendar is unknown", names.bucket(for: statRow(16, at(9, 0), at(9, 1), calendar: "gone")) == ("gone", "Unknown calendar"))
 
   // DST: 1 November 2026 is 25 hours long in New York.
