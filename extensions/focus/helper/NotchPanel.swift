@@ -20,8 +20,9 @@ import Foundation
 // The window never changes size: it is as large as the card (plus the
 // flares) and pinned to the top centre of the screen with the notch (the
 // main screen's top centre without one); the island is drawn inside it and
-// animated by redrawing. While collapsed the window ignores the mouse, so
-// the clear part of it never takes a click; the pointer is polled instead.
+// animated by redrawing. Until the card is fully open the window ignores
+// the mouse, so its clear part never takes a click (the pointer is polled
+// instead); once open, only the island's outline reacts.
 // Hidden while idle and at the end sheet. Main thread only.
 
 /// The screen the island hangs from.
@@ -214,13 +215,16 @@ enum NotchLayout {
 /// An ad-hoc session's pause stops its clock: the time left holds and the
 /// planned end moves on with the wall clock (see Session.swift), so a
 /// length read as `plannedEnd - startedAt` would grow and drain the fill.
-/// Here a pause freezes the fill where it was. Two paused updates at least
-/// `settle` apart with the same time left mark the session as one whose
-/// pause stops the clock; from then on its length leaves out the time spent
-/// paused (`pausedSeconds`), so the fill resumes from where it froze instead
-/// of jumping ahead. A calendar session's time left keeps falling while
-/// paused (the pause is a break inside the event): its fill keeps moving
-/// with it, over the whole span. Pure.
+/// Here a pause freezes the fill where it was. The same time left `settle`
+/// or more after the pause began (while still paused, or at the resume)
+/// marks the session as one whose pause stops the clock; from then on its
+/// length leaves out the time spent paused (`pausedSeconds`), so the fill
+/// resumes from where it froze instead of jumping ahead. A calendar
+/// session's time left keeps falling while paused (the pause is a break
+/// inside the event): its fill keeps moving with it, over the whole span.
+/// A pause shorter than `settle` stays unclassified and is off by less than
+/// that; a pause the notch never saw (it was on another display then) counts
+/// over the whole span, as the floating panel shows it. Pure.
 struct NotchSweep: Equatable {
   private(set) var sessionId: Int?
   private(set) var clock: SweepClock?
@@ -233,9 +237,11 @@ struct NotchSweep: Equatable {
   /// The first paused update of the current pause: time left and when.
   private var pausedSince: (remaining: Int, at: Date)?
 
-  /// How far apart two paused updates must be to tell the two kinds apart
-  /// (the pause's own update and the next tick can share a second).
-  static let settle: TimeInterval = 1.5
+  /// How long after the pause began the time left tells the two kinds
+  /// apart: whole seconds rounded down, so a clock that runs has dropped at
+  /// least one by then (the pause's own update and the next tick can share
+  /// a second).
+  static let settle: TimeInterval = 1.05
 
   static func == (a: NotchSweep, b: NotchSweep) -> Bool {
     a.sessionId == b.sessionId && a.clock == b.clock && a.frozen == b.frozen && a.pauseStopsClock == b.pauseStopsClock
@@ -256,16 +262,15 @@ struct NotchSweep: Equatable {
     if view.id != sessionId { self = NotchSweep(sessionId: view.id) }
     switch view.state {
     case "running":
+      // A pause just ended: the time left says what kind it was.
+      if let since = pausedSince { classify(view, since: since, at: now) }
       pausedSince = nil
       frozen = nil
       let view = focused(view)
       clock = clock?.updated(with: view, at: now) ?? SweepClock(view, at: now)
     case "paused":
       if let since = pausedSince {
-        if now.timeIntervalSince(since.at) >= Self.settle {
-          if view.remainingSeconds == since.remaining { pauseStopsClock = true }
-          if view.remainingSeconds < since.remaining { pauseKeepsClock = true }
-        }
+        classify(view, since: since, at: now)
       } else {
         pausedSince = (view.remainingSeconds, now)
         frozen = clock?.progress(at: now) ?? PanelContent.progress(focused(view))
@@ -283,6 +288,14 @@ struct NotchSweep: Equatable {
     }
   }
 
+  /// The time left `settle` or more after the pause began: held, the pause
+  /// stops the clock; fallen, it does not.
+  private mutating func classify(_ view: SessionView, since: (remaining: Int, at: Date), at now: Date) {
+    guard now.timeIntervalSince(since.at) >= Self.settle else { return }
+    if view.remainingSeconds == since.remaining { pauseStopsClock = true }
+    if view.remainingSeconds < since.remaining { pauseKeepsClock = true }
+  }
+
   private init(sessionId: Int) { self.sessionId = sessionId }
   init() {}
 
@@ -296,6 +309,19 @@ struct NotchSweep: Equatable {
 }
 
 // MARK: Views
+
+/// The window's content: clicks count only inside the island's outline, so
+/// the clear corners and flares of an open card never react.
+final class NotchRootView: NSView {
+  weak var island: NotchIslandView?
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard let island else { return super.hitTest(point) }
+    let local = island.convert(point, from: superview)
+    guard island.path.contains(local) else { return nil }
+    return super.hitTest(point)
+  }
+}
 
 /// Never key, never main; the frame is never moved to fit the screen.
 final class NotchWindow: NSPanel {
@@ -432,7 +458,7 @@ protocol NotchPanelActions: AnyObject {
 final class NotchPanel: NSObject {
   weak var actions: NotchPanelActions?
   let window: NotchWindow
-  let root = NSView()
+  let root = NotchRootView()
   let island = NotchIslandView()
   let strip = NotchStripView()
   /// Clips the card's content to the island as it grows and shrinks.
@@ -516,6 +542,7 @@ final class NotchPanel: NSObject {
     window.title = "Focus countdown"
 
     root.frame = NSRect(x: 0, y: 0, width: 300, height: 130)
+    root.island = island
     window.contentView = root
     island.autoresizingMask = [.width, .height]
     root.addSubview(island)
@@ -756,8 +783,9 @@ final class NotchPanel: NSObject {
     let target: CGFloat = expanded ? 1 : 0
     guard expanded != isExpanded || expansion != target else { return }
     isExpanded = expanded
-    // Only the open card takes clicks; the clear window never does.
-    window.ignoresMouseEvents = !expanded
+    // Only the card takes clicks, once fully open: until then the clear
+    // part of the window below the growing island would swallow them.
+    window.ignoresMouseEvents = true
     if expanded { card.isHidden = false }
     if !expanded { [pauseButton, completeButton, moreButton].forEach { $0.resetHover() } }
     animationTimer?.invalidate()
@@ -765,6 +793,7 @@ final class NotchPanel: NSObject {
     if !animated || headless || !isVisible {
       expansion = target
       drawExpansion()
+      window.ignoresMouseEvents = !expanded
       updateSweepTimer()
       return
     }
@@ -781,6 +810,7 @@ final class NotchPanel: NSObject {
       if t >= 1 {
         timer.invalidate()
         self.animationTimer = nil
+        self.window.ignoresMouseEvents = !expanded
         self.updateSweepTimer()
       }
     }

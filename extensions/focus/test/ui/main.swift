@@ -1101,6 +1101,20 @@ check("notch sweep: the time left fell while paused: the fill keeps pace", notch
 now = t0.addingTimeInterval(5)
 notchSweep.update(session(id: 62, remaining: 1495, started: -1505, paused: 5), at: now)
 check("notch sweep: resumed, the whole span still counts", abs(notchSweep.progress(at: now) - 1505.0 / 3000) < 1e-9)
+// A pause shorter than two ticks is told apart at the resume.
+now = t0
+notchSweep.update(session(id: 63, remaining: 1500, started: -1500), at: now)
+notchSweep.update(session(id: 63, state: "paused", remaining: 1500, started: -1500), at: now)
+now = t0.addingTimeInterval(1.2)
+notchSweep.update(session(id: 63, remaining: 1500, started: -1501.2, plannedEnd: 1500, paused: 1), at: now)
+check("notch sweep: a 1.2 s ad-hoc pause, seen only at the resume: no jump", notchSweep.pauseStopsClock && abs(notchSweep.progress(at: now) - 0.5) < 1e-3)
+now = t0
+notchSweep.update(session(id: 64, remaining: 1500, started: -1500), at: now)
+notchSweep.update(session(id: 64, state: "paused", remaining: 1500, started: -1500), at: now)
+now = t0.addingTimeInterval(1.2)
+notchSweep.update(session(id: 64, remaining: 1498, started: -1501.2, plannedEnd: 1498.8, paused: 1), at: now)
+check("notch sweep: a 1.2 s calendar pause, seen at the resume: the whole span", notchSweep.pauseKeepsClock && !notchSweep.pauseStopsClock
+  && abs(notchSweep.progress(at: now) - 1501.2 / 3000) < 1e-3)
 now = t0
 notchSweep.update(session(id: 61, state: "paused", remaining: 600, started: -600), at: now)
 check("notch sweep: another session paused from the start: its own fill", notchSweep.progress(at: now) == 0.5)
@@ -1140,6 +1154,14 @@ check("notch: not open before the pointer has rested 0.5 s", !notch.isExpanded)
 scheduler.advance(0.1)
 check("notch: open after 0.5 s", notch.isExpanded && notch.expansion == 1 && notch.islandRect == notch.cardRect)
 check("notch: open, the card takes clicks", !notch.window.ignoresMouseEvents)
+func notchHit(_ point: NSPoint) -> NSView? {
+  notch.root.hitTest(notch.root.convert(point, to: notch.root.superview))
+}
+let openCard = notch.local(notch.cardRect)
+let pauseCentre = notch.pauseButton.convert(NSPoint(x: notch.pauseButton.bounds.midX, y: notch.pauseButton.bounds.midY), to: notch.root)
+check("notch: a click on Pause reaches it", notchHit(pauseCentre) === notch.pauseButton, "\(String(describing: notchHit(pauseCentre)))")
+check("notch: the clear corners and flare tips never react", notchHit(NSPoint(x: openCard.minX + 1, y: openCard.minY + 1)) == nil
+  && notchHit(NSPoint(x: openCard.maxX - 1, y: openCard.minY + 1)) == nil && notchHit(NSPoint(x: 1, y: openCard.maxY - 9)) == nil)
 check("notch: the card's content shows, the strip's is gone", !notch.card.isHidden && notch.card.alphaValue == 1 && notch.strip.isHidden && notch.strip.alphaValue == 0)
 check("notch: the island view is drawn at the card", notch.island.body == notch.local(notch.cardRect) && notch.island.radius == 15)
 check("notch: the pill shows what the panel shows", notch.pill.content.titleText == "25:00 Deep Work" && notch.pill.progress == 0.5
