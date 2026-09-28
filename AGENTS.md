@@ -9,18 +9,20 @@ to this repo.
 
 | Path | What |
 |---|---|
-| `extensions/notes/` | The Notes extension: local markdown notes, tasks and the floating notes window. Almost all work happens here. |
+| `extensions/notes/` | The Notes extension: local markdown notes, tasks and the floating notes window. Its README is [extensions/notes/README.md](extensions/notes/README.md). |
 | `extensions/notes/src/` | The three Raycast commands (Toggle Notes Window, Browse Notes, Tasks; TypeScript, `@raycast/api`), `src/components/` (forms Browse Notes and Tasks open) and `src/lib/` (notes, tasks, pins, panel launcher). Quick Capture, New Note and Open Today's Note were removed as commands on 2026-09-27; the window and Browse Notes cover them. |
 | `extensions/notes/helper/` | The native floating window: a Swift AppKit `NSPanel` compiled into `assets/notes-panel`. |
 | `extensions/notes/test/` | `lib.test.ts` (TS, stubbed `@raycast/api`), `list-editing/` (pure text rules), `text-view/` (headless `NSTextView` harness), `panel-render/` (offscreen render tool, unreliable for chrome on macOS 26). |
-| `extensions/focus/` | Built (all four plan steps merged 2026-09-28): calendar-driven focus sessions with blocking, a menu bar timer, sqlite logging and a log event per session. The spec is [extensions/focus/PLAN.md](extensions/focus/PLAN.md); read it before writing any code there and update it when a decision changes. The helper protocol is in [extensions/focus/HELPER.md](extensions/focus/HELPER.md). Its data folder `focus/` at the repo root is gitignored like `notes/`. |
-| `extensions/color-filter/`, `extensions/lid-control/` | Small script extensions. |
+| `extensions/focus/` | The Focus extension (built 2026-09-28, refined since): calendar-driven and ad-hoc focus sessions with app and site blocking, a countdown as a floating glass panel, a menu bar item or a notch island, an end card with rating and note, sqlite logging, stats, and a log event per session. Four commands: Focus Today, Ad-hoc Session, Focus Stats, Focus Settings. The spec and decisions are [extensions/focus/PLAN.md](extensions/focus/PLAN.md); read it before writing any code there and update it when a decision changes. The helper (`focus-daemon`, Swift, committed to `assets/`) is documented in [extensions/focus/HELPER.md](extensions/focus/HELPER.md): protocol, session rules, displays, blocking, build and tests. Its data folder `focus/` at the repo root is gitignored like `notes/`. |
+| `extensions/color-filter/`, `extensions/lid-control/` | Small no-view system toggles (grayscale filter; lid sleep and caffeinate), each with a README. |
 | `scripts/` | Shell helpers (`toggle-lid-sleep.sh`). |
 | `notes/` | The default notes folder. Gitignored (`/notes/`); never commit it. |
 
 ## Build and test
 
-Run from `extensions/notes`:
+Focus, from `extensions/focus`: `npm run build-helper` (signed `assets/focus-daemon`, committed), `npm test` (the four suites: TS, helper, UI, site; every one must be green before a push), `npm run build` and `npm run lint`. The commands, flags (`FOCUS_DIR`, `FOCUS_DEBUG`, `FOCUS_UI_DEMO`) and what each suite covers are in the "Build and test" and "Tests" sections of [extensions/focus/HELPER.md](extensions/focus/HELPER.md). The two small extensions have only `build` and `lint` (Color Filter also `build-helper`).
+
+Notes, from `extensions/notes`:
 
 - `npm run build-helper`: compiles `helper/*.swift` into `assets/notes-panel`. The binary is committed; rebuild and commit it with every helper change (it conflicts on every rebase, take either side and rebuild).
 - `npm test`: runs `lib.test.ts`, the ListEditing tests and the view harness. All three must be green before a push. Counts grow; the harness prints "all passed".
@@ -38,6 +40,10 @@ Run from `extensions/notes`:
 - Single instance over a unix socket; later launches forward their command. Commands: `toggle`, `show`, `hide`, `new`, `today`, `open <path>`, `format`, `--dir <folder>`.
 
 ## Verifying changes
+
+Focus: tests first, then a live check on an isolated daemon (`FOCUS_DIR=/tmp/<short>`, the socket path has a length limit; `FOCUS_FOREGROUND=1`; `FOCUS_UI_DEMO=1` with its capture flags for the displays), capturing windows with `screencapture -l <windowID>` as below. Kai's own daemon keeps its old binary until `quit`; restart it only when `status` shows no session, never by killing it. Kill only your own daemon, by pid. Google CalDAV forbids creating calendars, so live calendar checks use an existing empty one with "Focus test" events. After a merge, refresh the dev registration (`npx ray develop` for about 20 s, then kill that pid; never `pkill -f`).
+
+Notes:
 
 - Tests first, then the real window. Launch it with `open "raycast://extensions/c-wenlong/notes/toggleNotesWindow"` (Raycast copies the dev build) or run `assets/notes-panel open ~/.raycast/notes/<file>.md --dir ~/.raycast/notes` directly for a specific note (`open` takes a full path; `--dir` only sets the folder the window lists).
 - Capture the live window with `screencapture -l <windowID> -x -o out.png`; get the id from `CGWindowListCopyWindowInfo` filtered on owner `notes-panel`. Measure pixels with Python and Pillow rather than eyeballing. The offscreen `render-panel` tool misrenders the chrome on macOS 26; do not trust it for header, footer or fades.
