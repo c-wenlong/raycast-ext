@@ -335,8 +335,9 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   the session is paused as usual and resumed by the presenter when the time
   is up, unless it was resumed or ended first. A helper restart during a
   timed pause leaves it paused until Resume.
-- When the timer runs out (not on a manual stop or Cancel), a sound plays
-  and the screen edges glow green for 2.5 s.
+- Whenever a session reaches the end card (the timer runs out, or Complete
+  or Stop is pressed; Cancel skips the card), a sound plays and the screen
+  edges glow green for 2.5 s (2026-09-28, Kai: Finish felt silent).
 - Liquid glass (2026-09-28, Kai: "this liquid glass look ... prioritise the
   liquid glass look, then the dynamic background"). The pill is a slab of
   dark green glass: on macOS 26 a clear `NSGlassEffectView` behind it, with
