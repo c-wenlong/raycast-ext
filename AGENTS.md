@@ -46,7 +46,7 @@ Run from `extensions/notes`:
 
 ## Review loop
 
-- Greptile reviews every PR (check name "Greptile Review"); there is no other CI. It usually posts within five minutes of a push and often skips follow-up pushes; after eight quiet minutes with green checks and no open threads, merge.
+- Greptile reviews every PR (check name "Greptile Review"); there is no other CI. Its check takes about 1.5 to 6 minutes and its comments land with it, so poll the head commit's check every minute (`gh pr checks`, plus the thread query) and merge one minute after it passes with no open threads. Never wait a fixed eight minutes. Greptile sometimes skips a follow-up push entirely: if no new check run appears on the head commit within five minutes of a push, treat the previous pass as final and merge.
 - Reply on every thread and resolve it with the thread id from the GraphQL query (never a guessed id). Reply bodies end with `_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_`.
 - Commit trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; PR bodies have What / Why / Checks and end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Squash-merge with `gh pr merge N --squash --delete-branch`, then sync `main` and rebuild the helper in any open branch.
