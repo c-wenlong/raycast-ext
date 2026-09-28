@@ -290,6 +290,29 @@ final class Database {
       """, [.text(calendarId), SQLValue(name)])
   }
 
+  /// Gives a waiting row with no destination its log calendar (recovery
+  /// healing rows finished before 2026-09-28 with no log calendar set). Only
+  /// fills an empty slot, so a destination fixed at Finish or by the move is
+  /// never re-pointed. True when the row changed.
+  @discardableResult
+  func setLogDestination(_ id: Int64, calendarId: String, name: String?) throws -> Bool {
+    try run(
+      """
+      update sessions set log_calendar_id = ?, log_calendar_name = ?
+      where id = ? and log_calendar_id is null and log_event_id is null and log_skipped = 0
+      """, [.text(calendarId), SQLValue(name), .int(id)]) == 1
+  }
+
+  /// Names a destination fixed without its name (Finish without Calendar
+  /// access), once the calendar can be looked up. Only while the id matches
+  /// and no name is stored.
+  @discardableResult
+  func setLogCalendarName(_ id: Int64, calendarId: String, name: String) throws -> Bool {
+    try run(
+      "update sessions set log_calendar_name = ? where id = ? and log_calendar_id = ? and log_calendar_name is null",
+      [.text(name), .int(id), .text(calendarId)]) == 1
+  }
+
   /// Stores the extension total and the end it gives (open rows only).
   func setExtension(_ id: Int64, seconds: Int, end: Date) throws {
     try run(

@@ -173,6 +173,6 @@ export function recentMarkdown(session: RecentSession): string {
 export function waitingMarkdown(logCalendarName: string | null): string {
   const target = logCalendarName
     ? `\`${logCalendarName.replace(/`/g, "'").replace(/\s+/g, " ")}\``
-    : "a log calendar";
-  return `The log event for this session waits for ${target}. Retry once that calendar is back, or move the waiting sessions to the current log calendar.`;
+    : "a calendar";
+  return `The log event for this session waits for ${target}. Retry once that calendar is back, or move the waiting sessions to a calendar that can take them.`;
 }

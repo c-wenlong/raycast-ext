@@ -13,7 +13,7 @@ All in `~/.raycast/focus/` (gitignored as `/focus/`; `FOCUS_DIR` overrides the f
 | File | What |
 |---|---|
 | `focus.sock` | Unix socket, mode 0600. |
-| `config.json` | Settings. Created with defaults if missing; re-read on every request. The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
+| `config.json` | Settings. Created with defaults if missing; re-read on every request. `logCalendarId` (with `logCalendarName`, its "Title (account)") is the optional override: null (the default) sends each session's log event to its own calendar, an id sends every session's event there (see "Log event and recovery"). The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
 | `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`). |
 | `focus.lock` | `flock` held by the running instance (holds its pid). |
 | `daemon.log` | stderr of the daemon; rotated to `daemon.log.1` past 1 MB. |
@@ -47,7 +47,7 @@ sqlite stores UTC.
 | `extend {seconds}` | `session`. `seconds` 60 to 86400, from running, paused or ending; ending returns to running (same session, same row). |
 | `stop` | `session`, now ending (the end sheet shows). Only from running or paused. |
 | `finish {rating?, note?, reason?}` | `session` (finished), `logEventId` (string or null), `logPending` (bool). From running, paused or ending. `rating` 1 to 5; `reason` "timer" or "manual", default: why the session reached the end sheet, or "manual" if it never did. |
-| `pending` | `waiting: [{sessionId, goal, endedAt, logCalendarId, logCalendarName, reason}]` |
+| `pending` | `waiting: [{sessionId, goal, endedAt, logCalendarId, logCalendarName, reason}]`; `reason` is the last try's (null before one): "calendar access is …", "calendar <name> is not in Calendar.app", "calendar <name> is read-only, so it cannot take the log event; move the waiting sessions to a writable calendar", "the session has no calendar to log to; move the waiting sessions to a calendar", or a failed search or save |
 | `retryPending` | `written`, `adopted`, `stillWaiting` |
 | `movePending {calendarId}` | `moved`, `written`, `adopted`, `stillWaiting` |
 | `blocking` | `sessionId` (the open session, or null), `active` (bool: running or at the end sheet), `profile` (name, null when idle), `profileFallbackFrom` (the unknown name asked for, else null), `mode` ("blocklist", "allowlist" or null), `blockedApps`, `blockedHosts` (blocklist mode; sorted), `allowedApps`, `allowedHosts` (allowlist mode), `snoozeSeconds`, `snoozed: [{kind, target, until}]` |
@@ -71,7 +71,7 @@ Details the client should know:
 - Every request first checks the deadline, so a command never acts on a session whose planned end passed between two timer ticks.
 - Calendar commands (`calendars`, `today`, `start`, `movePending`) fail without full access; the reply carries `calendarAccess` ("notDetermined", "denied", "restricted", "writeOnly") and the error says what to do. `startAdhoc`, `finish`, `status` and `pending` work without access; the log event waits.
 - `movePending` refuses a missing or read-only calendar, and stores `"<title> (<account>)"` as the name.
-- `finish` stores `logCalendarId` and `logCalendarName` from config at that moment; when config has an id but no name, the name is looked up in EventKit.
+- `finish` fixes the destination at that moment (`Rules.logCalendar`): the override `logCalendarId` from config when set (with `logCalendarName`, looked up in EventKit when config has none), else the session's own `calendarId` with that calendar's display name; a session filed under `none` gets none and is never written. Without Calendar access the name stays null and recovery fills it in when it writes the event. The finished session in the reply carries `logCalendarId` and `logCalendarName`.
 
 ## Session timer and the UI
 
@@ -328,15 +328,31 @@ focus-session: 12
 focus-started: 2026-09-27T06:10:00Z
 ```
 
+Where it goes (2026-09-28): the override `logCalendarId` when config has one,
+else the calendar the session is filed under (the ad-hoc form's pick, or the
+source event's calendar, so the actual block sits beside the planned one);
+`none` is never written. `Rules.logCalendar(sessionCalendar:override:)` is the
+rule, and Finish stores its answer on the row.
+
 Every field is squashed onto one line, so only the last two lines can be markers.
 At launch, when access is granted, on every request after a grant made in System
 Settings, and every 30 seconds (with the running session's heartbeat), each
-finished, non-abandoned row with no `log_event_id` goes through `Recovery.resolve`:
+finished, non-abandoned row with no `log_event_id` is retried. A row with no
+destination at all (finished before 2026-09-28 with no log calendar set, when
+that meant "wait") is healed first: the rule above picks its calendar, and if
+EventKit has that calendar (`Database.setLogDestination`, which only fills an
+empty slot) the row is bound to it with its display name and written like any
+other; without access, or when the calendar is not in EventKit (an ad-hoc
+session filed under something that is not a calendar), it stays unbound and
+keeps waiting with that reason, and a later pass (or a later override) can
+still heal it. Then the row goes through `Recovery.resolve`:
 a missing calendar keeps waiting; an event in that calendar within a week of the
 session whose notes carry both marker lines (session id and UTC start) is adopted,
 so neither a recreated `focus.db` reusing an id nor an event Kai moved can fool it; a failed search keeps
-waiting; a read-only calendar keeps waiting; otherwise the event is created.
-Rows are never re-pointed except by `movePending`.
+waiting; a read-only calendar keeps waiting (a subscribed calendar never takes
+the event; `movePending` to a writable calendar is the way out, and the reason
+says so); otherwise the event is created. Rows are never re-pointed except by
+`movePending`.
 
 ## Deleting a session
 
@@ -375,7 +391,7 @@ Session and Focus Today's Discard Session, both `⌃X` with no confirmation).
 ## Build and test
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon`, signed with Kai's Apple Development identity when the keychain has it and ad hoc otherwise; `FOCUS_SIGN_IDENTITY` overrides, and an override missing from the keychain fails the build.
-- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery, `deleteSession` (a finished session with its event, pauses and attempts; an event whose markers are gone or name another start; an unavailable calendar, no access and a failed remove; no calendar; waiting; the open session running, paused and at the end sheet; unknown and malformed ids). Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
+- `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery, the log destination (the override, an ad-hoc session's calendar, a calendar session's event calendar, `none` skipped with and without the override, a read-only calendar waiting until moved, an unknown calendar, Finish without access naming the calendar later, and rows with no destination healed on retry and on the tick, or left waiting without access or a real calendar), `deleteSession` (a finished session with its event, pauses and attempts; an event whose markers are gone or name another start; an unavailable calendar, no access and a failed remove; no calendar; waiting; the open session running, paused and at the end sheet; unknown and malformed ids). Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
 - `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, the completion (sound, glow, the card at once, no banner) plus every case that skips it, and the end card: its compact layout (360 wide, stars and note on one row, extend and Finish on the next, labels fitting), top centre of the given screen above the glow, alpha 1 at 0.5 s and 1 s, then falling (about 0.5 at 3.5 s, 0.2 at 5 s) and never raised by `update`, `presenterFinish(nil, nil)` and alpha 0 at 6 s, hover (poll and tracking area) resetting the hold and fade, a click on bare card, a star click, a digit, a typed character, a key in the note, Extend and Finish each cancelling it, keys in the grace period not counting, a refresh keeping the countdown, manual stop, paused past the end, a restart at the sheet, and extended or finished elsewhere. The glass: its setup on this system (glass or HUD blur, radius, clear style, no `tintColor`, the painted tint), the edges' geometry and a pixel sample of what they draw (bright top and left rim, dark bottom, nothing outside the corners), the chip border, the sweep's lit edge, and the pre-macOS 26 backdrop forced on (same fixed size, hover included). The smooth sweep: the truth at an update, moving on at 1 / total (a 10 min session five times as fast as a 50 min one), capped at full, the exact planned end or the whole seconds, the next tick carried on with no step, 0.4 s behind ignored, 0.6 s off snapped, an extension lowering and slowing it, a new session afresh, paused keeping pace, still and full at the end sheet, and in the panel the fill moving about 2.2 pt in half a second of a 60 s session between updates, on device pixels, and stopping when hidden. The default place at top centre, the same rect as the end card. The lava lamp: for 300 seeds, five blobs whose drift stays inside the pill with sizes, alphas, periods and colours in range; a seed repeats its blobs; each disc's x, y and scale loops (eased, autoreversing, infinite, between the blob's points); stop freezes the clock and start carries on from it; dimmed at 45 %; Reduce Motion keeps it still, and switching it applies at once without starting a stopped lamp; in the panel it sits under the pill, runs while a running session shows, and freezes when paused (dimmed) or hidden. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `card-0s.png`, `card-2.5s.png` (alpha 0.7), `card-over-glow.png`, `menubar-*.png`, `panel-*.png` (the chrome without the glass's blur; `panel-fallback.png` is the pre-macOS 26 tint), `glow.png` and `block.png` there.
 - `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion with the card), `FOCUS_UI_DEMO_HOVER=<from>-<to>` (seconds after the card shows: the poll sees the pointer over the card in that window, the real pointer otherwise; tracking-area crossings and uses of the card are logged), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel and glow draw, plus `state.txt`; menus are logged and closed after 2 s; while the card shows, every 0.25 s `card-<ms>.png` at its alpha, `screen-<ms>.png` with the glow and the card where they are, and a line in `card.txt`). For a shell without Screen Recording. `FOCUS_DIR` must be short: the socket path has a length limit.
 

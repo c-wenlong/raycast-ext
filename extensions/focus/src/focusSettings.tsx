@@ -28,16 +28,20 @@ import {
 } from "./lib/profiles";
 import {
   COUNTDOWN_OPTIONS,
-  NO_LOG_CALENDAR,
+  LOG_CALENDAR_INFO,
+  OWN_CALENDAR,
   browserOptions,
   isCountdownDisplay,
+  logCalendarValue,
+  logDestinationText,
   resolveLogCalendar,
   settingsChoices,
   snoozeOptions,
 } from "./lib/settings";
 
 // Focus Settings. Calendar half (PLAN step 1): which calendars Focus Today
-// can start sessions from, and which calendar the log events go to.
+// can start sessions from, and the optional log calendar override (off:
+// each session's log event goes to its own calendar).
 // Blocking half (step 4): each startable calendar's default profile, the
 // snooze length, the watched browsers, the Raycast Focus deeplink, and the
 // profiles themselves (edited in Manage Profiles, which saves on its own).
@@ -59,7 +63,7 @@ export default function FocusSettingsCommand() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [startable, setStartable] = useState<string[]>([]);
-  const [logCalendar, setLogCalendar] = useState<string>(NO_LOG_CALENDAR);
+  const [logCalendar, setLogCalendar] = useState<string>(OWN_CALENDAR);
   const [calendarProfiles, setCalendarProfiles] = useState<
     Record<string, string>
   >({});
@@ -77,7 +81,7 @@ export default function FocusSettingsCommand() {
       ]);
       setLoaded({ config, calendars });
       setStartable(config.startableCalendars);
-      setLogCalendar(config.logCalendarId ?? NO_LOG_CALENDAR);
+      setLogCalendar(logCalendarValue(config));
       setCalendarProfiles(config.calendarProfiles);
       setSnooze(String(config.snoozeSeconds));
       setBrowsers(config.browsers);
@@ -119,7 +123,7 @@ export default function FocusSettingsCommand() {
       await showToast({
         style: Toast.Style.Success,
         title: "Focus settings saved",
-        message: `${startable.length} startable calendar${startable.length === 1 ? "" : "s"}, logging to ${logCalendarName ?? "nothing yet"}. Applies to the next session.`,
+        message: `${startable.length} startable calendar${startable.length === 1 ? "" : "s"}, ${logDestinationText(logCalendarName)}. Applies to the next session.`,
       });
     } catch (saveError) {
       await showToast({
@@ -235,7 +239,7 @@ export default function FocusSettingsCommand() {
     >
       <Form.Description
         title="Calendars"
-        text="Focus Today lists events from the startable calendars. When a session finishes, a log event with the actual time is written to the log calendar."
+        text="Focus Today lists events from the startable calendars. When a session finishes, a log event with the actual time is written to the session's own calendar, beside the planned event, or to the log calendar below when one is set."
       />
       <Form.TagPicker
         id="startableCalendars"
@@ -263,14 +267,14 @@ export default function FocusSettingsCommand() {
       <Form.Dropdown
         id="logCalendarId"
         title="Log Calendar"
-        info="Only calendars you can write to are listed."
+        info={LOG_CALENDAR_INFO}
         value={logCalendar}
         onChange={setLogCalendar}
       >
         <Form.Dropdown.Item
-          value={NO_LOG_CALENDAR}
-          title="None yet"
-          icon={Icon.Minus}
+          value={OWN_CALENDAR}
+          title="Each session's own calendar"
+          icon={Icon.Calendar}
         />
         {writable.map((calendar) => (
           <Form.Dropdown.Item

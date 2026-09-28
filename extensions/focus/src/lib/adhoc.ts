@@ -118,6 +118,18 @@ export function adhocRefusedText(
   return { title: "Could not start the session", message: error };
 }
 
+// The Calendar field's info: the session is filed under the calendar for
+// stats, and its log event goes there too unless Focus Settings logs every
+// session to one calendar (PLAN "Log event", 2026-09-28).
+export function adhocCalendarInfo(
+  config: Pick<FocusConfig, "logCalendarId" | "logCalendarName">,
+): string {
+  const logged = config.logCalendarId
+    ? `Its log event goes to ${config.logCalendarName ?? "the log calendar"}, the log calendar set in Focus Settings.`
+    : "Its log event is written to this calendar too (a read-only calendar cannot take it; the session then waits in Focus Today to be moved).";
+  return `Where the session is filed for stats. ${logged} (No Calendar) keeps it in stats only and writes nothing to any calendar.`;
+}
+
 // Raycast LocalStorage key for the last calendar a session was filed under.
 export const LAST_CALENDAR_KEY = "adhoc.lastCalendarId";
 

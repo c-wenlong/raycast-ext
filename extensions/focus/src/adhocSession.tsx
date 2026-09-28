@@ -16,6 +16,7 @@ import {
   MAX_ADHOC_MINUTES,
   MIN_ADHOC_MINUTES,
   adhocCalendarGone,
+  adhocCalendarInfo,
   adhocProfileFor,
   adhocRefusedText,
   adhocStartedText,
@@ -262,7 +263,7 @@ export default function AdhocSessionCommand() {
       <Form.Dropdown
         id="calendarId"
         title="Calendar"
-        info="Where the session is filed for stats; its log event goes to the log calendar from Focus Settings. (No Calendar) keeps it in stats only and writes nothing to any calendar."
+        info={adhocCalendarInfo(config)}
         value={calendarId}
         error={errors.calendar}
         onChange={(value) => {
