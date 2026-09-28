@@ -2849,6 +2849,17 @@ net.createServer((socket) => {
           false,
         );
 
+        // The id marker with another start (a reused id): not ours, kept.
+        const reused = await finishOne("Reused");
+        const reusedEvent = fake.state.calendarEvents.find(
+          (e: { sessionId: number }) => e.sessionId === reused.id,
+        );
+        reusedEvent.notes = `focus-session: ${reused.id}\nfocus-started: 2026-01-01T00:00:00Z`;
+        const reusedReply = await daemon.deleteSession(reused.id);
+        assert.equal(reusedReply.logEventRemoved, false);
+        assert.match(reusedReply.warning ?? "", /focus-session marker/);
+        assert.ok(fake.state.calendarEvents.includes(reusedEvent));
+
         // No calendar access: the same.
         const blind = await finishOne("Blind");
         fake.state.calendarAccess = "denied";

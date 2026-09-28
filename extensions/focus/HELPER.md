@@ -317,7 +317,10 @@ Session and Focus Today's Discard Session, both `⌃X` with no confirmation).
   `loggedEvent(id:)` shows its notes still carry both marker lines of this
   session (`focus-session: <id>` and `focus-started: <UTC start>`, the test
   recovery adopts by), so an event Kai rewrote, or his own event, is never
-  deleted. The row is deleted first either way. Without full access, with the
+  deleted. The event goes first, then the row, whatever happened to the
+  event: a helper that dies between the two leaves the row in Stats with its
+  event already gone, and deleting it again finishes the job (the event is
+  then not found, which only warns). Without full access, with the
   event not found (deleted by hand, or its calendar unavailable), with the
   markers gone, or when the remove fails, the event stays: `logEventRemoved:
   false` and a `warning` saying which. A waiting, no-calendar or abandoned row

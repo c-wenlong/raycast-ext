@@ -23,10 +23,10 @@
 // stats/week.svg next to the socket.
 // `deleteSession` follows the helper: the open session ends with no log
 // event and goes; a finished or waiting one goes with its log event, which
-// is removed only while its notes carry the "focus-session: <id>" marker and
-// `state.calendarAccess` is "fullAccess" (otherwise the reply warns). Log
-// events are kept in `state.calendarEvents` ({id, calendarId, sessionId,
-// notes}) so tests can rewrite notes or check what was removed.
+// is removed only while its notes carry both marker lines (session id and
+// UTC start) and `state.calendarAccess` is "fullAccess" (otherwise the reply
+// warns). Log events are kept in `state.calendarEvents` ({id, calendarId,
+// sessionId, notes}) so tests can rewrite notes or check what was removed.
 
 const fs = require("node:fs");
 const net = require("node:net");
@@ -164,21 +164,29 @@ function createFakeDaemon(options) {
       id,
       calendarId,
       sessionId: item.id,
-      notes: `Source: fake\n\nfocus-session: ${item.id}\nfocus-started: ${item.startedAt}`,
+      notes: `Source: fake\n\n${markerLines(item.id, item.startedAt).join("\n")}`,
     });
     item.logEventId = id;
     return id;
   }
 
+  // The helper's two marker lines (LogText.marker, LogText.startedLine):
+  // the session id and the UTC start in whole seconds.
+  function markerLines(sessionId, startedAt) {
+    const utc = new Date(startedAt).toISOString().replace(/\.\d{3}Z$/, "Z");
+    return [`focus-session: ${sessionId}`, `focus-started: ${utc}`];
+  }
+
   // Returns null when removed, else why the event was kept.
-  function removeLogEvent(eventId, sessionId) {
+  function removeLogEvent(eventId, sessionId, startedAt) {
     if (state.calendarAccess !== "fullAccess") {
       return `calendar access is ${state.calendarAccess}, so the log event was left in Calendar`;
     }
     const index = state.calendarEvents.findIndex((e) => e.id === eventId);
     if (index < 0) return "the log event was not found in Calendar (deleted already, or its calendar is unavailable)";
-    const marker = `focus-session: ${sessionId}`;
-    if (!state.calendarEvents[index].notes.split(/\r?\n/).some((line) => line.trim() === marker)) {
+    // Both lines, as the helper checks: a reused id with another start is not ours.
+    const lines = state.calendarEvents[index].notes.split(/\r?\n/).map((line) => line.trim());
+    if (!markerLines(sessionId, startedAt).every((marker) => lines.includes(marker))) {
       return "the log event's notes no longer carry this session's focus-session marker, so it was left in Calendar";
     }
     state.calendarEvents.splice(index, 1);
@@ -202,7 +210,7 @@ function createFakeDaemon(options) {
     if (waitingIndex >= 0) state.waiting.splice(waitingIndex, 1);
     const reply = { ok: true, deleted: true, logEventRemoved: false };
     if (item && item.logEventId) {
-      const warning = removeLogEvent(item.logEventId, id);
+      const warning = removeLogEvent(item.logEventId, id, item.startedAt);
       if (warning) reply.warning = warning;
       else reply.logEventRemoved = true;
     }
