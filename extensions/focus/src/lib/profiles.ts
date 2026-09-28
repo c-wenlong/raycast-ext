@@ -320,6 +320,8 @@ export function validateProfile(
     originalName === DEFAULT_PROFILE ? DEFAULT_PROFILE : draft.name.trim();
   if (!name) {
     errors.name = "Give the profile a name";
+  } else if (name === "__proto__") {
+    errors.name = "Pick another name";
   } else if (
     existingNames.some(
       (other) =>
@@ -377,6 +379,24 @@ export function draftFor(entry: ProfileEntry | null): ProfileDraft {
 
 // ---- writing ----
 
+// Reads an own property only, so "__proto__" or "toString" never reads
+// something inherited.
+function ownValue<T>(source: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(source, key) ? source[key] : undefined;
+}
+
+// Sets `key` as an own property even when it is "__proto__", which plain
+// assignment would treat as the object's prototype (config.json keys come
+// from JSON.parse, where "__proto__" is an ordinary key).
+function setOwn<T>(target: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 type ProfileKeys = Pick<FocusConfig, "profiles" | "calendarProfiles">;
 
 // Points every calendar that used `from` at `to`, or back to the default
@@ -388,8 +408,8 @@ export function remapCalendarProfiles(
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [calendarId, name] of Object.entries(calendarProfiles)) {
-    if (name !== from) out[calendarId] = name;
-    else if (to !== null && to !== DEFAULT_PROFILE) out[calendarId] = to;
+    if (name !== from) setOwn(out, calendarId, name);
+    else if (to !== null && to !== DEFAULT_PROFILE) setOwn(out, calendarId, to);
   }
   return out;
 }
@@ -403,10 +423,12 @@ export function applyProfileSave(
   spec: ProfileSpec,
 ): ProfileKeys {
   const previous =
-    originalName !== null ? current.profiles[originalName] : undefined;
+    originalName !== null
+      ? ownValue(current.profiles, originalName)
+      : undefined;
   const extra = isPlainObject(previous) ? previous : {};
   const profiles: Record<string, unknown> = {};
-  const entry = {
+  const entry: Record<string, unknown> = {
     ...extra,
     mode: spec.mode,
     categories: spec.categories,
@@ -416,13 +438,13 @@ export function applyProfileSave(
   let placed = false;
   for (const [key, value] of Object.entries(current.profiles)) {
     if (key === originalName || key === name) {
-      if (!placed) profiles[name] = entry;
+      if (!placed) setOwn(profiles, name, entry);
       placed = true;
     } else {
-      profiles[key] = value;
+      setOwn(profiles, key, value);
     }
   }
-  if (!placed) profiles[name] = entry;
+  if (!placed) setOwn(profiles, name, entry);
   const renamed = originalName !== null && originalName !== name;
   return {
     profiles,
@@ -463,8 +485,8 @@ export function pruneCalendarProfiles(
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const id of startable) {
-    const name = calendarProfiles[id];
-    if (name && name !== DEFAULT_PROFILE) out[id] = name;
+    const name = ownValue(calendarProfiles, id);
+    if (name && name !== DEFAULT_PROFILE) setOwn(out, id, name);
   }
   return out;
 }
@@ -474,5 +496,5 @@ export function calendarProfileValue(
   calendarProfiles: Record<string, string>,
   calendarId: string,
 ): string {
-  return calendarProfiles[calendarId] || DEFAULT_PROFILE;
+  return ownValue(calendarProfiles, calendarId) || DEFAULT_PROFILE;
 }

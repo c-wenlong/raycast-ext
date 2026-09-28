@@ -15,6 +15,7 @@ import {
   ADHOC_PRESET_MINUTES,
   DEFAULT_ADHOC_MINUTES,
   LAST_CALENDAR_KEY,
+  adhocCalendarGone,
   adhocProfileFor,
   adhocRefusedText,
   adhocStartedText,
@@ -1183,6 +1184,26 @@ net.createServer((socket) => {
       assert.deepEqual(Object.keys(deleted.profiles), ["default", "study"]);
       assert.deepEqual(deleted.calendarProfiles, { school: "study" });
       assert.throws(() => applyProfileDelete(current, "default"), RangeError);
+
+      // "__proto__" is an ordinary key in config.json (JSON.parse makes it
+      // one); it must stay an own property through a save, never become the
+      // object's prototype, and cannot be picked as a new name.
+      const withProto = JSON.parse('{"profiles": {"__proto__": {"mode": "allowlist"}, "deep": {}}, "calendarProfiles": {"work": "__proto__"}}');
+      const kept = applyProfileSave(withProto, "deep", "deep", spec);
+      assert.deepEqual(Object.keys(kept.profiles), ["__proto__", "deep"]);
+      assert.equal(Object.getPrototypeOf(kept.profiles), Object.prototype);
+      assert.deepEqual(JSON.parse(JSON.stringify(kept.profiles)).__proto__, { mode: "allowlist" });
+      const protoRenamed = applyProfileSave(withProto, "__proto__", "legacy", spec);
+      assert.deepEqual(Object.keys(protoRenamed.profiles), ["legacy", "deep"]);
+      assert.deepEqual(protoRenamed.calendarProfiles, { work: "legacy" });
+      const intoProto = applyProfileSave({ profiles: {}, calendarProfiles: {} }, null, "__proto__", spec);
+      assert.deepEqual(Object.keys(intoProto.profiles), ["__proto__"]);
+      assert.deepEqual(
+        validateProfile({ name: "__proto__", mode: "blocklist", categories: [], apps: "", hosts: "" }, null, ["default"]),
+        { ok: false, errors: { name: "Pick another name" } },
+      );
+      assert.deepEqual(pruneCalendarProfiles({}, ["__proto__", "toString"]), {});
+      assert.equal(calendarProfileValue({}, "toString"), "default");
       assert.deepEqual(remapCalendarProfiles({ a: "x", b: "y" }, "x", "default"), { b: "y" });
     },
   ],
@@ -1314,6 +1335,13 @@ net.createServer((socket) => {
       assert.equal(adhocProfileFor("b", config, ["default", "deep"]), "default");
       assert.equal(adhocProfileFor("c", config, ["default", "deep"]), "default");
       assert.equal(adhocProfileFor(null, config, ["default", "deep"]), "default");
+      // Inherited names are never read as a calendar's profile.
+      assert.equal(adhocProfileFor("toString", config, ["default", "deep"]), "default");
+
+      // The calendar is checked again right before a start.
+      assert.equal(adhocCalendarGone(calendars, "b"), false);
+      assert.equal(adhocCalendarGone(calendars, "removed"), true);
+      assert.equal(adhocCalendarGone(null, "removed"), false);
     },
   ],
   [

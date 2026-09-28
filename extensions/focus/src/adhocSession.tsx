@@ -13,6 +13,7 @@ import {
   DEFAULT_ADHOC_MINUTES,
   MAX_ADHOC_MINUTES,
   MIN_ADHOC_MINUTES,
+  adhocCalendarGone,
   adhocProfileFor,
   adhocRefusedText,
   adhocStartedText,
@@ -103,6 +104,8 @@ export default function AdhocSessionCommand() {
 
   async function handleSubmit() {
     if (!loaded) return;
+    const { config } = loaded;
+    const names = profileNames(config.profiles);
     const next: Errors = {};
     const trimmedGoal = goal.trim();
     if (!trimmedGoal) next.goal = "Say what the session is for";
@@ -119,6 +122,19 @@ export default function AdhocSessionCommand() {
       title: "Starting session",
     });
     const daemon = getDaemon();
+    const fresh = await daemon.calendars().catch((): Calendar[] | null => null);
+    if (adhocCalendarGone(fresh, calendarId) && fresh) {
+      const replacement = initialAdhocCalendar(fresh, undefined, config);
+      setLoaded({ ...loaded, calendars: fresh });
+      setCalendarId(replacement ?? "");
+      setProfile(adhocProfileFor(replacement, config, names));
+      setErrors({ calendar: "That calendar is gone; pick another" });
+      toast.style = Toast.Style.Failure;
+      toast.title = "That calendar is no longer in Calendar.app";
+      toast.message = "Pick another calendar and start again";
+      setIsLoading(false);
+      return;
+    }
     try {
       const session = await daemon.startAdhoc({
         goal: trimmedGoal,

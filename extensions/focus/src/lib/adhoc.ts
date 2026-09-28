@@ -1,7 +1,7 @@
 import { LocalStorage } from "@raycast/api";
 import type { FocusConfig } from "./config";
 import type { Calendar, Session } from "./daemon";
-import { DEFAULT_PROFILE } from "./profiles";
+import { DEFAULT_PROFILE, calendarProfileValue } from "./profiles";
 import { durationText, formatClockIso } from "./time";
 
 // The decisions behind the Ad-hoc Session form, kept out of the view.
@@ -63,8 +63,22 @@ export function adhocProfileFor(
   config: Pick<FocusConfig, "calendarProfiles">,
   names: string[],
 ): string {
-  const saved = calendarId ? config.calendarProfiles[calendarId] : undefined;
-  return saved && names.includes(saved) ? saved : DEFAULT_PROFILE;
+  if (!calendarId) return DEFAULT_PROFILE;
+  const saved = calendarProfileValue(config.calendarProfiles, calendarId);
+  return names.includes(saved) ? saved : DEFAULT_PROFILE;
+}
+
+// Checked right before a start with a fresh calendar list: the helper
+// accepts any calendar id, so one removed from Calendar.app while the form
+// was open would file the session under a calendar that is gone. When the
+// list cannot be read (no access) the start goes ahead.
+export function adhocCalendarGone(
+  fresh: Pick<Calendar, "id">[] | null,
+  calendarId: string,
+): boolean {
+  return (
+    fresh !== null && !fresh.some((calendar) => calendar.id === calendarId)
+  );
 }
 
 // The toast after a start: "Focusing: Write the report", "Until 15:40 (25 min), deep profile".
