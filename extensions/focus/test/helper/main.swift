@@ -1605,6 +1605,42 @@ do {
 }
 
 do {
+  // Ad hoc: finishing or abandoning while paused stores the moved end.
+  let clock = Clock(at(12, 0))
+  let h = Harness(config: #"{"logCalendarId": "log"}"#, clock: clock)
+  let id = h.send("startAdhoc", ["goal": "Finish paused", "durationSeconds": 600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(12, 2)
+  _ = h.send("pause")
+  clock.now = at(12, 5)
+  let finished = h.send("finish")
+  check("ad hoc finish from paused: the reply has the moved end", finished["session"]?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(12, 13) && finished["session"]?["pausedSeconds"] == 180, finished.serialized())
+  check("ad hoc finish from paused: the row stores it", (try! h.db.session(id: Int64(id)))?.extendedEnd == at(12, 13) && (try! h.db.session(id: Int64(id)))?.extendedSeconds == 0)
+
+  // A calendar session's finish leaves extended_end alone.
+  let calendarClock = Clock(at(12, 0))
+  let calendar = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log"}"#, clock: calendarClock)
+  calendar.fake.eventList = [event("F1", "Finish paused", at(12, 0), at(12, 10))]
+  let calendarId = calendar.send("start", ["eventId": "F1"])["session"]?["id"]?.intValue ?? 0
+  calendarClock.now = at(12, 2)
+  _ = calendar.send("pause")
+  calendarClock.now = at(12, 5)
+  _ = calendar.send("finish")
+  check("calendar finish from paused: no extended end", (try! calendar.db.session(id: Int64(calendarId)))?.extendedEnd == nil)
+
+  // Abandoned at launch while paused: the pause closes at the last heartbeat.
+  let abandonClock = Clock(at(13, 0))
+  let first = Harness(clock: abandonClock)
+  let abandonId = first.send("startAdhoc", ["goal": "Crashed paused", "durationSeconds": 600, "calendarId": "work"])["session"]?["id"]?.intValue ?? 0
+  abandonClock.now = at(13, 1)
+  _ = first.send("pause")
+  abandonClock.now = at(13, 2)
+  first.core.tick()
+  let second = first.relaunch(at: at(13, 10))
+  let row = try! second.db.session(id: Int64(abandonId))!
+  check("ad hoc abandoned while paused: the end moved by the pause up to the heartbeat", row.endReason == "abandoned" && row.endedAt == at(13, 2) && row.extendedEnd == at(13, 11), "\(row)")
+}
+
+do {
   // Ad hoc: restarted during a pause that ran past the original end.
   let clock = Clock(at(9, 0))
   let first = Harness(clock: clock)

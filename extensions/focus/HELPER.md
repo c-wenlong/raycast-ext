@@ -112,7 +112,8 @@ a paused ad-hoc session's extension adds to its `plannedEnd` as it stands;
 a `pauses` row on pause, `resumed_at` on resume, `extended_seconds` and
 `extended_end` on extend, `extended_end` again when an ad-hoc pause closes
 (so a restart after a resume keeps the moved end, and one mid-pause restores
-the frozen time left from the open pause row), and `end_reason` on the still-open row while it is at
+the frozen time left from the open pause row; finishing or abandoning a paused
+ad-hoc session stores its moved end with the close), and `end_reason` on the still-open row while it is at
 the end sheet ("timer" or "manual"; cleared by an extension, overwritten by
 Finish). Everything runs on one serial queue (`FocusCore.queue`: pass the
 daemon's work queue in `init(queue:)`, or the core makes its own and every entry

@@ -294,7 +294,9 @@ final class FocusCore: SessionPresenterDelegate {
     let now = self.now
     if now.timeIntervalSince(row.lastHeartbeat) > FocusCore.abandonAfter {
       _ = try machine.apply(.abandon(at: row.lastHeartbeat)).get()
-      let close = SessionClose(endedAt: machine.endedAt ?? row.lastHeartbeat, endReason: EndReason.abandoned.rawValue)
+      let close = SessionClose(
+        endedAt: machine.endedAt ?? row.lastHeartbeat, endReason: EndReason.abandoned.rawValue,
+        extendedEnd: FocusCore.movedEnd(machine, from: row))
       if try db.finish(row.id, close) {
         log("session \(row.id): abandoned; last heartbeat \(ISO.local(row.lastHeartbeat))")
       }
@@ -305,6 +307,13 @@ final class FocusCore: SessionPresenterDelegate {
     log("session \(row.id): resumed as \(machine.state.rawValue)")
     startTicking()
     publish(machine.state == .ending ? .show : .keep)
+  }
+
+  /// The planned end to store when a session closes, if closing moved it
+  /// (an ad-hoc session finished or abandoned while paused); nil otherwise.
+  private static func movedEnd(_ machine: SessionMachine, from row: SessionRow) -> Date? {
+    guard let end = machine.plannedEnd, end != row.deadline else { return nil }
+    return end
   }
 
   /// Checks the deadline. Returns true when the session just reached it (and
@@ -648,7 +657,8 @@ final class FocusCore: SessionPresenterDelegate {
     let destination = skipsLog ? nil : logDestination(for: open.row, settings: settings)
     let close = SessionClose(
       endedAt: machine.endedAt ?? now, endReason: (machine.endReason ?? .manual).rawValue, rating: machine.rating,
-      note: machine.note, logCalendarId: destination?.id, logCalendarName: destination?.name, logSkipped: skipsLog)
+      note: machine.note, logCalendarId: destination?.id, logCalendarName: destination?.name, logSkipped: skipsLog,
+      extendedEnd: FocusCore.movedEnd(machine, from: open.row))
     let id = open.row.id
     guard try db.finish(id, close) else {
       endActive()
