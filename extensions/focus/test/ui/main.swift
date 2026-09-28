@@ -627,6 +627,18 @@ stillLamp.setRunning(false)
 stillLamp.frame = NSRect(origin: .zero, size: pillSize)
 stillLamp.setRunning(true)
 check("lamp: Reduce Motion keeps it still", !stillLamp.isRunning && stillLamp.layer?.speed == 0 && stillLamp.blobLayers.count == LavaStyle.count)
+// Switched while it shows: the system's notification applies it at once.
+var motionReduced = false
+stillLamp.reduceMotion = { motionReduced }
+NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+check("lamp: Reduce Motion switched off: it drifts at once", stillLamp.isRunning && stillLamp.layer?.speed == 1)
+motionReduced = true
+NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+check("lamp: switched on: it stops at once", !stillLamp.isRunning && stillLamp.layer?.speed == 0)
+motionReduced = false
+stillLamp.setRunning(false)
+NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+check("lamp: the setting never starts a lamp the panel stopped", !stillLamp.isRunning)
 
 // In the panel: under everything else, drifting only while it shows a
 // running session.

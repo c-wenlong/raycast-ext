@@ -119,6 +119,9 @@ final class LiveBackgroundView: NSView {
   private(set) var blobLayers: [CAGradientLayer] = []
   /// True while the blobs drift.
   private(set) var isRunning = true
+  /// What the panel last asked for; Reduce Motion can still hold it still.
+  private(set) var wantsToRun = true
+  private var motionObserver: NSObjectProtocol?
   /// Dimmed for a paused session.
   var dimmed = false {
     didSet {
@@ -136,9 +139,21 @@ final class LiveBackgroundView: NSView {
     wantsLayer = true
     layer?.masksToBounds = true
     layer?.cornerRadius = radius
+    // Reduce Motion switched in System Settings: stop or start at once
+    // rather than at the next countdown refresh.
+    motionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.motionSettingChanged() }
+  }
+
+  deinit {
+    if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  /// Re-reads Reduce Motion against what the panel last asked for.
+  func motionSettingChanged() { setRunning(wantsToRun) }
 
   override var isFlipped: Bool { false }
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -212,6 +227,7 @@ final class LiveBackgroundView: NSView {
 
   /// Drift or hold still where the blobs are now. Reduce Motion keeps it still.
   func setRunning(_ running: Bool) {
+    wantsToRun = running
     let run = running && !reduceMotion()
     guard run != isRunning else { return }
     isRunning = run
