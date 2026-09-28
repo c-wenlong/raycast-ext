@@ -312,28 +312,23 @@ final class PanelButton: NSButton {
     NSAttributedString(string: title, attributes: [.font: PanelStyle.buttonFont, .foregroundColor: PanelStyle.ink])
   }
 
+  /// The glyph in a 16 pt circle outline, in the secondary grey (Raycast's
+  /// hover row): pause.circle, play.circle, checkmark.circle, ellipsis.circle.
   private func symbolImage() -> NSImage? {
-    let iconOnly = title.isEmpty
-    return NSImage(systemSymbolName: currentSymbol, accessibilityDescription: nil)?
+    NSImage(systemSymbolName: currentSymbol + ".circle", accessibilityDescription: nil)?
       .withSymbolConfiguration(
-        NSImage.SymbolConfiguration(pointSize: iconOnly ? 13 : 10, weight: iconOnly ? .semibold : .bold)
-          .applying(NSImage.SymbolConfiguration(paletteColors: [iconOnly ? PanelStyle.ink : PanelStyle.icon])))
+        NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+          .applying(NSImage.SymbolConfiguration(paletteColors: [PanelStyle.icon])))
   }
 
   static let iconGap: CGFloat = 6
   static let padding: CGFloat = 10
+  static let iconSide: CGFloat = 16
 
   /// Fixed per title: the width does not change between Pause and Resume's symbols.
   var preferredWidth: CGFloat {
     if title.isEmpty { return PanelStyle.buttonHeight }
-    return ceil(titleText.size().width) + Self.iconGap + 11 + Self.padding * 2
-  }
-
-  /// AppKit only calls updateTrackingAreas on a geometry change, so the
-  /// area goes in as soon as the view is in its window too.
-  override func viewDidMoveToWindow() {
-    super.viewDidMoveToWindow()
-    updateTrackingAreas()
+    return ceil(titleText.size().width) + Self.iconGap + Self.iconSide + Self.padding * 2
   }
 
   override func updateTrackingAreas() {
@@ -363,7 +358,10 @@ final class PanelButton: NSButton {
     path.stroke()
 
     let image = symbolImage()
-    let imageSize = image?.size ?? .zero
+    let imageSize = image.map { size in
+      let scale = Self.iconSide / max(size.size.width, size.size.height)
+      return NSSize(width: size.size.width * scale, height: size.size.height * scale)
+    } ?? .zero
     if title.isEmpty {
       image?.draw(in: NSRect(
         x: (bounds.midX - imageSize.width / 2).rounded(), y: (bounds.midY - imageSize.height / 2).rounded(),
@@ -492,7 +490,7 @@ final class FloatingPanel: NSObject {
   let chrome = PanelChromeView()
   let pill = CountdownPillView()
   let controls = NSView()
-  let pauseButton = PanelButton(title: "Pause", symbol: "pause.fill")
+  let pauseButton = PanelButton(title: "Pause", symbol: "pause")
   let completeButton = PanelButton(title: "Complete", symbol: "checkmark")
   let moreButton = PanelButton(title: "", symbol: "ellipsis", label: "More")
   let handle = DragHandleView()
@@ -830,15 +828,15 @@ final class FloatingPanel: NSObject {
   private func updateControls(_ view: SessionView) {
     let paused = view.state == "paused"
     pauseButton.set(
-      title: paused ? "Resume" : "Pause", symbol: paused ? "play.fill" : "pause.fill",
+      title: paused ? "Resume" : "Pause", symbol: paused ? "play" : "pause",
       label: paused ? "Resume" : "Pause")
     completeButton.setAccessibilityLabel("Complete")
   }
 
   /// Pause and Resume share one width so the row does not jump.
   static let pauseSlot: CGFloat = max(
-    PanelButton(title: "Pause", symbol: "pause.fill").preferredWidth,
-    PanelButton(title: "Resume", symbol: "play.fill").preferredWidth)
+    PanelButton(title: "Pause", symbol: "pause").preferredWidth,
+    PanelButton(title: "Resume", symbol: "play").preferredWidth)
 
   // MARK: Hover
 

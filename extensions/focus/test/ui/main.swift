@@ -489,12 +489,17 @@ floating.pauseButton.performClick(nil)
 check("Pause opens the pause menu", popped.last == "Pause", "\(popped)")
 check("still hovering after the menu", floating.isHovering)
 let pauseTitles = floating.pauseMenu.items.map { $0.isSeparatorItem ? "---" : $0.title }
+check(
+  "hover glyphs are circled symbols that exist",
+  ["pause", "play", "checkmark", "ellipsis"].allSatisfy { NSImage(systemSymbolName: $0 + ".circle", accessibilityDescription: nil) != nil })
+check("glow: 85 % at the edge, nothing past 170 pt", abs(GlowView.intensity(at: 0) - 0.85) < 0.001 && GlowView.intensity(at: 170) == 0 && GlowView.intensity(at: 85) < GlowView.intensity(at: 40))
+check("glow: inner corners round to about 120 pt", abs(GlowView.band(NSRect(x: 0, y: 0, width: 1512, height: 982), depth: 170).bounds.width - (1512 - 340)) < 0.5 && abs(GlowView.cornerRadius(at: 170) - 120) < 0.01 && GlowView.cornerRadius(at: 10) > 10)
 check("pause menu items", pauseTitles == ["1 minute", "2 minutes", "5 minutes", "10 minutes", "---", "Indefinitely"], "\(pauseTitles)")
 perform(floating.pauseMenu.items[2])
 check("5 minutes pauses", fake.calls == ["pause"], "\(fake.calls)")
 check("and arms a 5 minute timer", ui.timedPause?.sessionId == 7, "\(String(describing: ui.timedPause))")
 ui.update(session(state: "paused", remaining: 1500, started: -1500))
-check("paused: the button reads Resume", floating.pauseButton.title == "Resume" && floating.pauseButton.currentSymbol == "play.fill")
+check("paused: the button reads Resume", floating.pauseButton.title == "Resume" && floating.pauseButton.currentSymbol == "play")
 check("Pause and Resume share a width", floating.pauseButton.frame.width == FloatingPanel.pauseSlot)
 scheduler.advance(299)
 check("nothing before 5 minutes", fake.calls == ["pause"], "\(fake.calls)")

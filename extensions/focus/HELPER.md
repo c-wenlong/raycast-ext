@@ -129,7 +129,9 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   (entered and exited events are not guaranteed for a background app's
   non-activating panel; each crossing counts once). Entering swaps the pill
   for the 40 pt controls row: Pause (Resume while paused; one width for
-  both), Complete, "…" and a six-dot drag handle. Leaving waits 150 ms. The
+  both), Complete, "…" and a six-dot drag handle. Their glyphs are circled
+  SF Symbols in 16 pt (`pause.circle`, `play.circle`, `checkmark.circle`,
+  `ellipsis.circle`) in the secondary grey, as Raycast draws them. Leaving waits 150 ms. The
   window resizes over 0.15 s (`setFrame(_:display:animate:)`) while the two
   rows cross-fade. It keeps its top edge, and its right edge when its middle
   is on the right half of its screen (left edge otherwise).
@@ -163,8 +165,9 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   whose timer ran out (`EndSheet.headline` reads "Time's up") and this UI saw
   that session running or paused, it plays `NSSound(named: "Glass")`, orders
   a click-through `.screenSaver` window over every screen with a soft green
-  inner glow (`#33C759`-ish, brightest at the edge, gone 90 pt in, rounded
-  corners), and a banner top centre of the main screen ("Focus session
+  vignette (`#2ECC71` at 85 % right at the edge, easing to nothing 170 pt in,
+  its inner boundary rounded to about 120 pt at the corners; nested fills so
+  the corners have no seams), and a banner top centre of the main screen ("Focus session
   completed" 14 pt semibold, "You stayed focused." 13 pt grey, a green check;
   the panel's canvas, radius 16) one level above. Both fade in over 0.3 s,
   fade out from 1.8 s, and are ordered out at 2.5 s, when the end sheet

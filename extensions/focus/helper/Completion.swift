@@ -30,9 +30,14 @@ final class SystemCompletionSound: CompletionSound {
 }
 
 enum CompletionStyle {
+  /// The check in the banner.
   static let green = NSColor(srgbRed: 0.20, green: 0.78, blue: 0.35, alpha: 1)
+  /// The edge glow: Raycast's saturated green, #2ECC71.
+  static let glow = NSColor(srgbRed: 0x2E / 255, green: 0xCC / 255, blue: 0x71 / 255, alpha: 1)
   /// How far the glow reaches in from each edge.
-  static let glowWidth: CGFloat = 90
+  static let glowWidth: CGFloat = 170
+  /// Its opacity right at the edge.
+  static let glowAlpha: CGFloat = 0.85
   static let title = NSColor(white: 1, alpha: 0.95)
   static let subtitle = NSColor(white: 1, alpha: 0.55)
   static let titleFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
@@ -41,40 +46,54 @@ enum CompletionStyle {
   static let bannerRadius: CGFloat = 16
 }
 
-/// The soft green inner glow for one screen, drawn as thin bands from the
-/// edge inwards, each a rounded rectangle whose corner radius grows with its
-/// depth, so the corners round off smoothly with no seams (a blurred edge
-/// looks the same; CoreGraphics' own shadow blur comes out far thinner than
-/// asked at this size). `intensity(at:)` is the falloff: a bright rim over
-/// the first ~12 points and a wide soft fade to nothing at `glowWidth`.
+/// The soft green vignette for one screen, drawn as nested rings from the
+/// edge inwards. Each ring is a rounded rectangle whose corner radius grows
+/// with its depth (`cornerRadius(at:)`, 120 pt at the inner boundary), so
+/// the corners fall off smoothly with no seams. `intensity(at:)` is the
+/// falloff: `glowAlpha` at the edge easing to nothing at `glowWidth`.
 final class GlowView: NSView {
   override var isOpaque: Bool { false }
 
-  static let step: CGFloat = 1.5
+  static let step: CGFloat = 2
 
   /// Opacity of the glow `depth` points in from the edge.
   static func intensity(at depth: CGFloat) -> CGFloat {
-    let t = min(1, depth / CompletionStyle.glowWidth)
-    return 0.45 * exp(-depth / 14) + 0.55 * pow(1 - t, 1.8)
+    let t = min(1, max(0, depth / CompletionStyle.glowWidth))
+    return CompletionStyle.glowAlpha * pow(1 - t, 1.8)
+  }
+
+  /// The inner boundary's corner radius: 120 pt at `glowWidth`, and larger
+  /// than the depth near the edge so the corners stay creaseless.
+  static func cornerRadius(at depth: CGFloat) -> CGFloat {
+    120 * pow(max(0, depth) / CompletionStyle.glowWidth, 0.6)
   }
 
   static func band(_ rect: NSRect, depth: CGFloat) -> NSBezierPath {
     let inner = rect.insetBy(dx: depth, dy: depth)
-    let radius = min(depth * 1.2, inner.width / 2, inner.height / 2)
+    let radius = min(cornerRadius(at: depth), inner.width / 2, inner.height / 2)
     return NSBezierPath(roundedRect: inner, xRadius: radius, yRadius: radius)
   }
 
+  /// Nested fills rather than disjoint bands, so no two anti-aliased edges
+  /// meet (disjoint bands leave hairlines along the curved corners). Each
+  /// fill covers the edge up to depth d and adds just enough opacity that
+  /// the stack composites to `intensity(at:)` at every depth.
   override func draw(_ dirtyRect: NSRect) {
     let rect = bounds
     let depthLimit = min(CompletionStyle.glowWidth, rect.width / 2, rect.height / 2)
-    var depth: CGFloat = 0
-    while depth < depthLimit {
-      let path = depth == 0 ? NSBezierPath(rect: rect) : Self.band(rect, depth: depth)
-      path.append(Self.band(rect, depth: depth + Self.step).reversed)
-      path.windingRule = .evenOdd
-      CompletionStyle.green.withAlphaComponent(Self.intensity(at: depth + Self.step / 2)).setFill()
-      path.fill()
-      depth += Self.step
+    var depth = (depthLimit / Self.step).rounded(.up) * Self.step
+    while depth > 0 {
+      let outside = Self.intensity(at: depth - Self.step / 2)
+      let inside = Self.intensity(at: depth + Self.step / 2)
+      let alpha = 1 - (1 - outside) / max(0.0001, 1 - inside)
+      if alpha > 0.0005 {
+        let path = NSBezierPath(rect: rect)
+        path.append(Self.band(rect, depth: min(depth, depthLimit)).reversed)
+        path.windingRule = .evenOdd
+        CompletionStyle.glow.withAlphaComponent(alpha).setFill()
+        path.fill()
+      }
+      depth -= Self.step
     }
   }
 }
