@@ -1678,6 +1678,8 @@ do {
   check("stats: without access another calendar is unknown", blind.bucket(for: r1) == ("work", "Unknown calendar"))
   check("stats: without access an ad hoc id cannot be judged", blind.bucket(for: r3).title == "Unknown calendar")
   check("stats: an ad hoc session with no calendar is ad hoc", blind.bucket(for: statRow(15, at(9, 0), at(9, 1), calendar: "", event: nil)) == ("adhoc", "Ad hoc"))
+  check("stats: the none sentinel is ad hoc without access", blind.bucket(for: statRow(17, at(9, 0), at(9, 1), calendar: Rules.noCalendar, event: nil)) == ("adhoc", "Ad hoc"))
+  check("stats: the none sentinel is ad hoc with access", names.bucket(for: statRow(18, at(9, 0), at(9, 1), calendar: Rules.noCalendar, event: nil)) == ("adhoc", "Ad hoc"))
   check("stats: with access a vanished event calendar is unknown", names.bucket(for: statRow(16, at(9, 0), at(9, 1), calendar: "gone")) == ("gone", "Unknown calendar"))
 
   // DST: 1 November 2026 is 25 hours long in New York.

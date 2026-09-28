@@ -1684,6 +1684,34 @@ net.createServer((socket) => {
     },
   ],
   [
+    "daemon: a no-calendar session finishes skipped and shows as Ad hoc in stats",
+    async () => {
+      const dir = freshDir();
+      const socketPath = path.join(dir, "s.sock");
+      const configPath = path.join(dir, "config.json");
+      let clock = new Date(2026, 8, 28, 9, 0, 0);
+      const fake = createFakeDaemon({ socketPath, configPath, now: () => clock });
+      await fake.listen();
+      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      try {
+        writeFileSync(configPath, JSON.stringify({ logCalendarId: "cal-log" }));
+        await daemon.startAdhoc({ goal: "Scratch", durationSeconds: 1500, calendarId: NO_CALENDAR });
+        clock = new Date(2026, 8, 28, 9, 25, 0);
+        const finished = await daemon.finish({ rating: 3 });
+        assert.equal(finished.logSkipped, true);
+        assert.equal(finished.logPending, false);
+        assert.equal(finished.logEventId, null);
+        assert.deepEqual(await daemon.pending(), []);
+        const stats = await daemon.stats();
+        assert.equal(stats.recent[0].logSkipped, true);
+        assert.equal(stats.recent[0].logPending, false);
+        assert.equal(stats.recent[0].calendarTitle, "Ad hoc");
+      } finally {
+        await fake.close();
+      }
+    },
+  ],
+  [
     "daemon: stats rejects a malformed reply and tolerates a missing chart",
     async () => {
       const dir = freshDir();

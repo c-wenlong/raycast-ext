@@ -95,7 +95,8 @@ struct CalendarNames: Equatable {
   /// "Unknown calendar".
   func bucket(for row: StatsRow) -> (id: String, title: String) {
     if let title = titles[row.calendarId] { return (row.calendarId, title) }
-    if row.sourceEventId == nil && (row.calendarId.isEmpty || access) {
+    // "none" is the no-calendar sentinel: always ad hoc, with or without access.
+    if row.calendarId == Rules.noCalendar || (row.sourceEventId == nil && (row.calendarId.isEmpty || access)) {
       return (CalendarNames.adHocId, CalendarNames.adHocTitle)
     }
     if row.calendarId == row.logCalendarId, let name = row.logCalendarName, !name.isEmpty {

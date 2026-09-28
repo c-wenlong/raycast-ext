@@ -150,6 +150,8 @@ export interface RecentSession {
   snoozes: number;
   // Finished but its log event is not written yet.
   logPending: boolean;
+  // Filed under no calendar: nothing was or will be written to one.
+  logSkipped: boolean;
 }
 
 export interface StatsWaiting {

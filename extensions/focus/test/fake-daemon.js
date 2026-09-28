@@ -427,6 +427,7 @@ function createFakeDaemon(options) {
         blockedAttempts: s.blockedAttempts,
         snoozes: s.snoozes,
         logPending: s.logPending,
+        logSkipped: s.logSkipped === true,
       }));
     return {
       ok: true,
