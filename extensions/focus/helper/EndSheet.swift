@@ -1,19 +1,26 @@
 import AppKit
 import Foundation
 
-// MARK: - End-of-session sheet
+// MARK: - End-of-session card
 //
-// A floating panel that appears when a session reaches its end: the goal,
-// "Time's up" or "Stopped" with the focused time, five stars, a one-line note,
-// then Extend +5 / +10 / +15 / +25 min and a primary Finish (Return). Escape
-// does nothing: the sheet stays until it is answered (PLAN.md: blocking stays
-// on meanwhile).
+// A compact card, like a notification, that appears when a session reaches
+// its end: the goal over "Time's up" or "Stopped" with the focused time;
+// five stars and a one-line note on one row; Extend +5 / +10 / +15 / +25 min
+// and a primary Finish (Return) on the next. Escape does nothing (PLAN.md:
+// blocking stays on until the card is answered).
 //
-// The look follows Raycast's own forms (Raycast Focus's start form, measured
-// from a screenshot on 2026-09-27) and the notes window's colours: canvas
-// #1A1A1A, one type size (15 pt regular) for everything but the goal, fields
-// and buttons as flat rounded boxes with a white 5 % fill and a hairline
-// border, 24 pt between rows, the primary action as a light pill.
+// It shows at once, top centre of the main screen, one level above the
+// completion glow, and UIPresenter finishes the session by itself (as Finish
+// with nothing filled in) when it is left alone for `autoFinishAfter`: it
+// holds opaque for `holdBeforeFade`, then fades to clear over
+// `fadeDuration`. Hovering holds it opaque and starts that again on
+// leaving; using it (`onEngage`: a click anywhere on it, a key, the note)
+// cancels it, and the card then waits for Finish or Extend.
+//
+// The type follows the completion banner it replaced (14 pt semibold over
+// 13 pt grey), the canvas and blur the floating panel's, and the controls
+// Raycast's forms: flat rounded boxes with a white 5 % fill and a hairline
+// border, the primary action as a light pill.
 
 /// Fixed colours: the sheet is always dark, like Raycast Focus.
 enum SheetStyle {
@@ -32,30 +39,80 @@ enum SheetStyle {
   static let accent = NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 1)
   static let starEmpty = NSColor(white: 0.5, alpha: 1)
 
+  /// The block window's type and button height (BlockWindow.swift).
   static let bodySize: CGFloat = 15
   static var body: NSFont { NSFont.systemFont(ofSize: bodySize) }
   static let rowHeight: CGFloat = 40
-  static let radius: CGFloat = 12
-  static let rowGap: CGFloat = 24
+
+  // The end card: the completion banner's type, compact controls.
+  static let titleFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
+  static let statusFont = NSFont.systemFont(ofSize: 13)
+  static let noteFont = NSFont.systemFont(ofSize: 13)
+  static let buttonFont = NSFont.systemFont(ofSize: 12)
+  static let title = NSColor(white: 1, alpha: 0.95)
+  static let status = NSColor(white: 1, alpha: 0.55)
+  static let controlHeight: CGFloat = 26
+  /// Fields and extend buttons.
+  static let radius: CGFloat = 8
+  /// The card's corners, as the banner's.
+  static let cardRadius: CGFloat = 16
+  static let padding: CGFloat = 12
+  static let rowGap: CGFloat = 8
 }
 
-/// Becomes key without activating the app, and ignores Escape.
+/// Borderless; becomes key without activating the app, and ignores Escape.
 final class EndSheetPanel: NSPanel {
+  /// Any mouse button pressed anywhere on the card, before the view under
+  /// it (a star, a button, the note, or bare canvas) sees it.
+  var onMouseDown: (() -> Void)?
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
   /// Escape never dismisses: the sheet waits for Extend or Finish.
   override func cancelOperation(_ sender: Any?) {}
+  override func sendEvent(_ event: NSEvent) {
+    if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) { onMouseDown?() }
+    super.sendEvent(event)
+  }
 }
 
 /// The sheet's background view; first responder while the note is not being
-/// edited, so 1 to 5, Return and typing reach the sheet.
+/// edited, so 1 to 5, Return and typing reach the sheet. Its tracking area
+/// reports the pointer entering and leaving the card (`onPointer`).
 final class SheetContentView: NSView {
   var onKey: ((NSEvent) -> Bool)?
+  var onPointer: ((Bool) -> Void)?
+  private var trackingArea: NSTrackingArea?
   override var acceptsFirstResponder: Bool { true }
-  // Paints the canvas itself too, so an offscreen render (test/ui) matches.
+
+  /// AppKit only calls updateTrackingAreas on a geometry change, so the
+  /// area goes in as soon as the view is in its window too.
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    updateTrackingAreas()
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let trackingArea { removeTrackingArea(trackingArea) }
+    let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+    addTrackingArea(area)
+    trackingArea = area
+  }
+
+  override func mouseEntered(with event: NSEvent) { onPointer?(true) }
+  override func mouseExited(with event: NSEvent) { onPointer?(false) }
+
+  /// The rounded canvas and its hairline, over the blur (as the floating
+  /// panel); an offscreen render (test/ui) shows the canvas alone.
   override func draw(_ dirtyRect: NSRect) {
-    SheetStyle.canvas.setFill()
-    dirtyRect.fill()
+    let box = bounds.insetBy(dx: 0.5, dy: 0.5)
+    let path = NSBezierPath(
+      roundedRect: box, xRadius: SheetStyle.cardRadius - 0.5, yRadius: SheetStyle.cardRadius - 0.5)
+    PanelStyle.canvas.setFill()
+    path.fill()
+    PanelStyle.border.setStroke()
+    path.lineWidth = 1
+    path.stroke()
   }
   override func keyDown(with event: NSEvent) {
     if onKey?(event) != true { super.keyDown(with: event) }
@@ -67,8 +124,8 @@ final class SheetContentView: NSView {
 /// Five stars that fill from the left. Hover previews, a click sets.
 final class StarRating: NSView {
   static let count = 5
-  static let side: CGFloat = 28
-  static let gap: CGFloat = 12
+  static let side: CGFloat = 18
+  static let gap: CGFloat = 6
 
   var rating: Int? {
     didSet {
@@ -83,6 +140,8 @@ final class StarRating: NSView {
   }
   private var pressed: Int?
   private var trackingArea: NSTrackingArea?
+  /// A star was clicked (not set from code).
+  var onPick: ((Int) -> Void)?
 
   /// How many stars are drawn filled right now.
   var shown: Int { hovered ?? rating ?? 0 }
@@ -126,6 +185,7 @@ final class StarRating: NSView {
     defer { pressed = nil }
     guard let index = star(for: event), index == pressed else { return }
     rating = index
+    onPick?(index)
   }
 
   override func mouseEntered(with event: NSEvent) { hovered = star(for: event) }
@@ -146,7 +206,7 @@ final class StarRating: NSView {
   private static func image(filled: Bool) -> NSImage? {
     NSImage(systemSymbolName: filled ? "star.fill" : "star", accessibilityDescription: nil)?
       .withSymbolConfiguration(
-        NSImage.SymbolConfiguration(pointSize: side - 4, weight: .regular)
+        NSImage.SymbolConfiguration(pointSize: side - 3, weight: .regular)
           .applying(NSImage.SymbolConfiguration(paletteColors: [filled ? SheetStyle.accent : SheetStyle.starEmpty])))
   }
 
@@ -188,7 +248,7 @@ final class SheetButton: NSButton {
     self.title = title
     setAccessibilityLabel(title)
     translatesAutoresizingMaskIntoConstraints = false
-    heightAnchor.constraint(equalToConstant: SheetStyle.rowHeight).isActive = true
+    heightAnchor.constraint(equalToConstant: SheetStyle.controlHeight).isActive = true
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -196,8 +256,14 @@ final class SheetButton: NSButton {
   override var acceptsFirstResponder: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override var mouseDownCanMoveWindow: Bool { false }
+  static let cap: CGFloat = 16
+  static let capGap: CGFloat = 5
+  static let padding: CGFloat = 10
+
   override var intrinsicContentSize: NSSize {
-    NSSize(width: titleText.size().width + 28, height: SheetStyle.rowHeight)
+    let hintWidth = hint == nil ? 0 : Self.capGap + Self.cap
+    return NSSize(
+      width: ceil(titleText.size().width + hintWidth + Self.padding * 2), height: SheetStyle.controlHeight)
   }
 
   override func updateTrackingAreas() {
@@ -212,8 +278,10 @@ final class SheetButton: NSButton {
   override func mouseExited(with event: NSEvent) { hovering = false }
 
   private var ink: NSColor { primary ? SheetStyle.primaryInk : SheetStyle.ink }
+  /// The title's drawn width (the tests check it fits the button).
+  var titleWidth: CGFloat { ceil(titleText.size().width) }
   private var titleText: NSAttributedString {
-    NSAttributedString(string: title, attributes: [.font: SheetStyle.body, .foregroundColor: ink])
+    NSAttributedString(string: title, attributes: [.font: SheetStyle.buttonFont, .foregroundColor: ink])
   }
 
   override func draw(_ dirtyRect: NSRect) {
@@ -239,10 +307,10 @@ final class SheetButton: NSButton {
     // Title, plus the keycap, centred as one line on the capitals' middle.
     let text = titleText
     let textSize = text.size()
-    let cap: CGFloat = 20
-    let capGap: CGFloat = 8
+    let cap = Self.cap
+    let capGap = Self.capGap
     let total = textSize.width + (hint == nil ? 0 : capGap + cap)
-    let font = SheetStyle.body
+    let font = SheetStyle.buttonFont
     // draw(at:) takes the line's top left in a flipped view (NSButton is),
     // its bottom left otherwise; either way the capitals end up centred.
     let y = isFlipped
@@ -253,14 +321,14 @@ final class SheetButton: NSButton {
     x += textSize.width + capGap
     if let hint {
       let capRect = NSRect(x: x, y: (bounds.midY - cap / 2).rounded(), width: cap, height: cap).insetBy(dx: 0.5, dy: 0.5)
-      let capPath = NSBezierPath(roundedRect: capRect, xRadius: 5, yRadius: 5)
+      let capPath = NSBezierPath(roundedRect: capRect, xRadius: 4, yRadius: 4)
       ink.withAlphaComponent(0.08).setFill()
       capPath.fill()
       ink.withAlphaComponent(0.25).setStroke()
       capPath.lineWidth = 1
       capPath.stroke()
       let glyph = NSAttributedString(
-        string: hint, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: ink.withAlphaComponent(0.7)])
+        string: hint, attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: ink.withAlphaComponent(0.7)])
       let glyphSize = glyph.size()
       glyph.draw(at: NSPoint(x: capRect.midX - glyphSize.width / 2, y: capRect.midY - glyphSize.height / 2))
     }
@@ -284,8 +352,9 @@ final class NoteWell: NSView {
 final class EndSheet: NSObject, NSTextFieldDelegate {
   weak var delegate: SessionPresenterDelegate?
   let panel: EndSheetPanel
+  let effect = NSVisualEffectView()
   let content = SheetContentView()
-  let titleLabel = NSTextField(wrappingLabelWithString: "")
+  let titleLabel = NSTextField(labelWithString: "")
   let statusLabel = NSTextField(labelWithString: "")
   let stars = StarRating(frame: .zero)
   let noteField = NSTextField(string: "")
@@ -295,6 +364,16 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
   /// The session the sheet is (or was last) asking about.
   private(set) var session: SessionView?
+  /// Something on the card was used: a click anywhere on it, a key, the
+  /// note. UIPresenter stops the auto-finish for good.
+  var onEngage: (() -> Void)?
+  /// The card went away (answered, hidden or dismissed).
+  var onHide: (() -> Void)?
+  /// The pointer entered (true) or left the card, from its tracking area.
+  var onPointer: ((Bool) -> Void)? {
+    get { content.onPointer }
+    set { content.onPointer = newValue }
+  }
   /// Set once Extend or Finish went out, so a double press sends one answer.
   private var answered = false
   private var shownAt = Date.distantPast
@@ -307,20 +386,33 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   /// Tests: order the panel in far off screen and never make it key.
   var headless = false
 
-  static let width: CGFloat = 420
-  static let sidePadding: CGFloat = 20
+  static let width: CGFloat = 360
+  /// Left alone, the card stays opaque this long (so it does not start
+  /// fading the moment it appears),
+  static let holdBeforeFade: TimeInterval = 1
+  /// then fades linearly to clear over this long,
+  static let fadeDuration: TimeInterval = 5
+  /// and then finishes the session by itself.
+  static let autoFinishAfter: TimeInterval = holdBeforeFade + fadeDuration
+  /// One above the completion glow (and so above the floating panel and
+  /// the block window).
+  static let level = NSWindow.Level(rawValue: CompletionStyle.glowLevel.rawValue + 1)
 
   init(clock: @escaping () -> Date = Date.init) {
     self.clock = clock
     panel = EndSheetPanel(
-      contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 300),
-      styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
-      backing: .buffered, defer: true)
+      contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 130),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     super.init()
     buildPanel()
   }
 
   var isVisible: Bool { panel.isVisible }
+  /// Where the card is on screen (headless: where it would be).
+  var frame: NSRect { headless ? headlessFrame : panel.frame }
+  /// Headless, the panel is parked off screen (and AppKit may constrain a
+  /// titled window anyway), so the card's place is kept here.
+  private var headlessFrame = NSRect.zero
   var rating: Int? { stars.rating }
   var note: String? { Self.cleanNote(noteField.stringValue) }
 
@@ -364,56 +456,63 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   // MARK: Building
 
   private func buildPanel() {
-    panel.titleVisibility = .hidden
-    panel.titlebarAppearsTransparent = true
     panel.title = "Focus"
-    for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-      panel.standardWindowButton(kind)?.isHidden = true
-    }
+    panel.onMouseDown = { [weak self] in self?.onEngage?() }
     panel.appearance = NSAppearance(named: .darkAqua)
-    panel.backgroundColor = SheetStyle.canvas
+    panel.backgroundColor = .clear
+    panel.isOpaque = false
+    panel.hasShadow = true
     panel.isMovableByWindowBackground = true
-    panel.level = .modalPanel
+    panel.level = Self.level
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     panel.hidesOnDeactivate = false
     panel.isReleasedWhenClosed = false
     panel.becomesKeyOnlyIfNeeded = false
-    panel.animationBehavior = .alertPanel
+    panel.animationBehavior = .none
 
+    // The blur behind the canvas, cut to the card's shape (as the panel).
+    effect.material = .hudWindow
+    effect.blendingMode = .behindWindow
+    effect.state = .active
+    effect.maskImage = Self.maskImage(radius: SheetStyle.cardRadius)
+    panel.contentView = effect
+    content.translatesAutoresizingMaskIntoConstraints = false
+    effect.addSubview(content)
+    NSLayoutConstraint.activate([
+      content.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+      content.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+      content.topAnchor.constraint(equalTo: effect.topAnchor),
+      content.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+    ])
     content.onKey = { [weak self] event in self?.handleKey(event) ?? false }
-    panel.contentView = content
     panel.initialFirstResponder = content
 
-    // In the title bar strip, like the notes window's centred title.
-    let header = NSTextField(labelWithString: "Focus session")
-    header.font = NSFont.systemFont(ofSize: 12)
-    header.textColor = .tertiaryLabelColor
-    header.translatesAutoresizingMaskIntoConstraints = false
-
-    titleLabel.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
-    titleLabel.textColor = .labelColor
-    titleLabel.alignment = .center
-    titleLabel.maximumNumberOfLines = 2
-    titleLabel.lineBreakMode = .byTruncatingTail
-    titleLabel.cell?.truncatesLastVisibleLine = true
-    titleLabel.preferredMaxLayoutWidth = Self.width - Self.sidePadding * 2
-    titleLabel.isSelectable = false
-
-    statusLabel.font = SheetStyle.body
-    statusLabel.textColor = .secondaryLabelColor
-    statusLabel.alignment = .center
+    for label in [titleLabel, statusLabel] {
+      label.lineBreakMode = .byTruncatingTail
+      label.maximumNumberOfLines = 1
+      label.cell?.truncatesLastVisibleLine = true
+      label.isSelectable = false
+      label.translatesAutoresizingMaskIntoConstraints = false
+      label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+    titleLabel.font = SheetStyle.titleFont
+    titleLabel.textColor = SheetStyle.title
+    statusLabel.font = SheetStyle.statusFont
+    statusLabel.textColor = SheetStyle.status
 
     stars.translatesAutoresizingMaskIntoConstraints = false
+    stars.setContentHuggingPriority(.required, for: .horizontal)
+    stars.onPick = { [weak self] _ in self?.onEngage?() }
 
     let well = NoteWell()
     well.translatesAutoresizingMaskIntoConstraints = false
     noteField.isBordered = false
     noteField.drawsBackground = false
     noteField.focusRingType = .none
-    noteField.font = SheetStyle.body
+    noteField.font = SheetStyle.noteFont
     noteField.textColor = SheetStyle.ink
     noteField.placeholderAttributedString = NSAttributedString(
-      string: "Add a note", attributes: [.font: SheetStyle.body, .foregroundColor: NSColor.tertiaryLabelColor])
+      string: "Add a note", attributes: [.font: SheetStyle.noteFont, .foregroundColor: NSColor.tertiaryLabelColor])
     noteField.cell?.usesSingleLineMode = true
     noteField.cell?.isScrollable = true
     noteField.cell?.wraps = false
@@ -425,41 +524,60 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
     extendRow.orientation = .horizontal
     extendRow.distribution = .fillEqually
-    extendRow.spacing = 10
+    extendRow.spacing = 6
     extendRow.translatesAutoresizingMaskIntoConstraints = false
     finishButton.target = self
     finishButton.action = #selector(finishClicked)
+    finishButton.setContentHuggingPriority(.required, for: .horizontal)
+    finishButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-    let column = NSStackView(views: [titleLabel, statusLabel, stars, well, extendRow, finishButton])
-    column.orientation = .vertical
-    column.alignment = .centerX
-    column.spacing = SheetStyle.rowGap
-    column.setCustomSpacing(6, after: titleLabel)
-    column.setCustomSpacing(12, after: extendRow)
-    column.translatesAutoresizingMaskIntoConstraints = false
-
-    for view in [header, column] as [NSView] { content.addSubview(view) }
-    let side = Self.sidePadding
+    for view in [titleLabel, statusLabel, stars, well, extendRow, finishButton] as [NSView] { content.addSubview(view) }
+    let pad = SheetStyle.padding
+    let side = pad + 2
     NSLayoutConstraint.activate([
       content.widthAnchor.constraint(equalToConstant: Self.width),
-      header.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-      header.topAnchor.constraint(equalTo: content.topAnchor, constant: 7),
 
-      column.topAnchor.constraint(equalTo: content.topAnchor, constant: 48),
-      column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: side),
-      column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -side),
-      column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -side),
-      titleLabel.widthAnchor.constraint(lessThanOrEqualTo: column.widthAnchor),
-      well.widthAnchor.constraint(equalTo: column.widthAnchor),
-      well.heightAnchor.constraint(equalToConstant: SheetStyle.rowHeight),
-      noteField.leadingAnchor.constraint(equalTo: well.leadingAnchor, constant: 14),
-      noteField.trailingAnchor.constraint(equalTo: well.trailingAnchor, constant: -14),
+      titleLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: pad),
+      titleLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: side),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -side),
+      statusLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+      statusLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+      statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -side),
+
+      stars.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: SheetStyle.rowGap + 2),
+      stars.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+      stars.heightAnchor.constraint(equalToConstant: SheetStyle.controlHeight),
+      well.leadingAnchor.constraint(equalTo: stars.trailingAnchor, constant: 12),
+      well.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
+      well.centerYAnchor.constraint(equalTo: stars.centerYAnchor),
+      well.heightAnchor.constraint(equalToConstant: SheetStyle.controlHeight),
+      noteField.leadingAnchor.constraint(equalTo: well.leadingAnchor, constant: 8),
+      noteField.trailingAnchor.constraint(equalTo: well.trailingAnchor, constant: -8),
       noteField.centerYAnchor.constraint(equalTo: well.centerYAnchor),
-      extendRow.widthAnchor.constraint(equalTo: column.widthAnchor),
-      finishButton.widthAnchor.constraint(equalTo: column.widthAnchor),
+
+      extendRow.topAnchor.constraint(equalTo: stars.bottomAnchor, constant: SheetStyle.rowGap),
+      extendRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
+      extendRow.heightAnchor.constraint(equalToConstant: SheetStyle.controlHeight),
+      finishButton.leadingAnchor.constraint(equalTo: extendRow.trailingAnchor, constant: 8),
+      finishButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
+      finishButton.centerYAnchor.constraint(equalTo: extendRow.centerYAnchor),
+      extendRow.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -pad),
     ])
     content.nextKeyView = noteField
     noteField.nextKeyView = content
+  }
+
+  /// A stretchable rounded mask for the blur.
+  private static func maskImage(radius: CGFloat) -> NSImage {
+    let side = radius * 2 + 1
+    let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+      NSColor.black.setFill()
+      NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+      return true
+    }
+    image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+    image.resizingMode = .stretch
+    return image
   }
 
   private func setExtendOptions(_ options: [Int]) {
@@ -483,10 +601,10 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
   // MARK: Showing
 
-  /// Shows the sheet for `view`, or refreshes it when it is already up. A
-  /// different session starts with no stars and no note; the same session
-  /// (back after an extend) keeps what was entered.
-  func show(_ view: SessionView) {
+  /// Shows the sheet for `view` top centre of `screen`, or refreshes it when
+  /// it is already up. A different session starts with no stars and no note;
+  /// the same session (back after an extend) keeps what was entered.
+  func show(_ view: SessionView, on screen: ScreenGeometry?) {
     if session?.id != view.id {
       stars.rating = nil
       noteField.stringValue = ""
@@ -500,33 +618,42 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
     content.layoutSubtreeIfNeeded()
     let height = ceil(content.fittingSize.height)
+    content.setAccessibilityLabel("\(titleLabel.stringValue), \(statusLabel.stringValue)")
     let wasVisible = panel.isVisible
     if panel.frame.size != NSSize(width: Self.width, height: height) {
       let top = panel.frame.maxY
       panel.setContentSize(NSSize(width: Self.width, height: height))
       if wasVisible { panel.setFrameTopLeftPoint(NSPoint(x: panel.frame.minX, y: top)) }
+      if wasVisible && headless {
+        headlessFrame = NSRect(
+          x: headlessFrame.minX, y: headlessFrame.maxY - height, width: Self.width, height: height)
+      }
     }
     guard !wasVisible else { return }
 
     shownAt = clock()
+    panel.alphaValue = 1
+    let screen = screen ?? ScreenGeometry.current().first
+    let target = screen.map { Self.cardFrame(size: panel.frame.size, on: $0) } ?? panel.frame
     if headless {
-      panel.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+      headlessFrame = target
+      panel.setFrameOrigin(NSPoint(x: -40000, y: -40000))
       panel.orderFrontRegardless()
     } else {
-      place()
+      panel.setFrameOrigin(target.origin)
       panel.makeKeyAndOrderFront(nil)
       panel.orderFrontRegardless()
+      panel.invalidateShadow()
     }
     panel.makeFirstResponder(content)
   }
 
-  /// Centred on the main screen, a little above the middle like an alert.
-  private func place() {
-    guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-    let area = screen.visibleFrame
-    let size = panel.frame.size
-    panel.setFrameOrigin(NSPoint(
-      x: (area.midX - size.width / 2).rounded(), y: (area.minY + (area.height - size.height) * 0.6).rounded()))
+  /// Top centre of `screen`, `PanelStyle.margin` below the menu bar: where
+  /// the completion banner used to be.
+  static func cardFrame(size: NSSize, on screen: ScreenGeometry) -> NSRect {
+    NSRect(
+      x: (screen.frame.midX - size.width / 2).rounded(),
+      y: (screen.visibleFrame.maxY - PanelStyle.margin - size.height).rounded(), width: size.width, height: size.height)
   }
 
   /// Hides the sheet after an answer; the entered stars and note stay in
@@ -534,6 +661,7 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   func hide() {
     panel.makeFirstResponder(content)
     panel.orderOut(nil)
+    onHide?()
   }
 
   /// The session is over: hide and forget it.
@@ -570,7 +698,9 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
 
   private var keysArmed: Bool { clock().timeIntervalSince(shownAt) >= keyboardGrace }
 
-  /// Keys that reach the sheet while the note is not being edited.
+  /// Keys that reach the sheet while the note is not being edited. Inside
+  /// the grace period every key but Escape is swallowed, so typing meant
+  /// for another app neither answers the card nor counts as using it.
   func handleKey(_ event: NSEvent) -> Bool {
     if event.keyCode == 53 { return true }  // Escape: waits for an answer
     guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
@@ -579,14 +709,20 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
       if keysArmed { finish() }
       return true
     case 48:  // Tab
-      panel.makeFirstResponder(noteField)
+      if keysArmed {
+        onEngage?()
+        panel.makeFirstResponder(noteField)
+      }
       return true
     default:
       break
     }
     guard let characters = event.characters, !characters.isEmpty else { return false }
     if let digit = Int(characters), (1...StarRating.count).contains(digit) {
-      if keysArmed { stars.rating = digit }
+      if keysArmed {
+        stars.rating = digit
+        onEngage?()
+      }
       return true
     }
     // Anything else printable starts the note.
@@ -594,12 +730,18 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
       !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value)
     }
     guard printable else { return false }
+    guard keysArmed else { return true }
+    onEngage?()
     panel.makeFirstResponder(noteField)
     noteField.currentEditor()?.insertText(characters)
     return true
   }
 
-  // NSTextFieldDelegate: Return in the note finishes, Escape leaves the note.
+  // NSTextFieldDelegate: typing in the note uses the card.
+  func controlTextDidChange(_ notification: Notification) { onEngage?() }
+
+  // NSTextFieldDelegate: Return in the note finishes, Escape leaves the note,
+  // any other key there (arrows, Delete) uses the card.
   func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
     switch selector {
     case #selector(NSResponder.insertNewline(_:)):
@@ -609,6 +751,7 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
       panel.makeFirstResponder(content)
       return true
     default:
+      onEngage?()
       return false
     }
   }

@@ -117,7 +117,7 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   `NSPanel` that never becomes key, on every space and over full-screen apps,
   one level above `.floating` (so the block window, which is `.floating`,
   never covers it; the end sheet is above both). Shown while a session is
-  running or paused; hidden at the end sheet and while the completion plays.
+  running or paused; hidden at the end sheet.
   The pill has one size in both states, the controls row's (40 pt tall and
   as wide as Pause, Complete, "…" and the handle), so hovering never resizes
   it: a 28 pt chip (radius 8) with the time in 13 pt monospaced digits, then
@@ -166,18 +166,53 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   menu bar, clear of the Dock) of the screen it overlaps most.
 - **Completion** (`Completion.swift`): when `showEndSheet` gets a session
   whose timer ran out (`EndSheet.headline` reads "Time's up") and this UI saw
-  that session running or paused, it plays `NSSound(named: "Glass")`, orders
-  a click-through `.screenSaver` window over every screen with a soft green
-  vignette (`#2ECC71` at 85 % right at the edge, easing to nothing 170 pt in,
-  its inner boundary rounded to about 120 pt at the corners; nested fills so
-  the corners have no seams), and a banner top centre of the main screen ("Focus session
-  completed" 14 pt semibold, "You stayed focused." 13 pt grey, a green check;
-  the panel's canvas, radius 16) one level above. Both fade in over 0.3 s,
-  fade out from 1.8 s, and are ordered out at 2.5 s, when the end sheet
-  appears. A manual stop, Cancel, and a daemon restarted at the end sheet
-  skip it and show the sheet at once. Extending or finishing (from Raycast or
-  the menu bar) during those 2.5 s drops the waiting sheet. The completion
+  that session running or paused, it plays `NSSound(named: "Glass")` and
+  orders a click-through `.screenSaver` window over every screen with a soft
+  green vignette (`#2ECC71` at 85 % right at the edge, easing to nothing
+  170 pt in, its inner boundary rounded to about 120 pt at the corners; nested
+  fills so the corners have no seams). The glow fades in over 0.3 s, fades
+  out from 1.8 s and is ordered out at 2.5 s. It is drawn once per screen
+  size at half resolution and shown as layer contents (`GlowImageView`):
+  drawn at full resolution it held the main thread about 1.5 s on a
+  2560 × 1440 screen plus the laptop, which ate the fade-in. The end card
+  shows at the same moment (no banner, no delay). A manual stop, Cancel, and
+  a daemon restarted at the end sheet skip the sound and glow. The completion
   also plays on the menu bar display.
+- **End card** (`EndSheet.swift`, timer and hover in `UIPresenter`): every
+  `showEndSheet` (timer ran out, planned end passed while paused, Complete,
+  Stop, a restart at the sheet) shows the card at once, top centre of the
+  main screen (the first of `screens()`, the glow's rule), 12 pt below the
+  visible frame's top, one level above the glow (`.screenSaver + 1`). It is
+  a compact borderless panel, 360 pt wide and about 128 tall, radius 16,
+  the floating panel's canvas and HUD blur and a window shadow: the goal
+  (14 pt semibold) over "Time's up" or "Stopped · N min focused" (13 pt
+  grey), the completion banner's type; five 18 pt stars with the note field
+  (13 pt, "Add a note") beside them; +5/+10/+15/+25 min as 26 pt bordered
+  boxes (12 pt) and Finish as a light pill with a ↩ keycap on the row
+  below; 12 pt padding. It is non-activating but becomes key so 1 to 5,
+  Return and typing reach it. There is no saved sheet position, so every
+  case uses top centre. Left alone it stays opaque for 1 s
+  (`EndSheet.holdBeforeFade`), then fades from alpha 1 to 0 over 5 s
+  (`fadeDuration`) in one linear animation (`NSAnimationContext` live, 60
+  steps a second on the scheduler headless); `update` never touches it. At
+  6 s (`autoFinishAfter`) it calls `EndSheet.finish()`, the same as pressing Finish with nothing
+  filled in: `presenterFinish(rating: nil, note: nil)`, reason from the
+  session. The one case with something filled in is the same session's
+  card back after an extend, which keeps its stars and note; its
+  auto-finish sends them, as Finish would. **Hover** (a tracking area on the
+  content view plus a 10 Hz poll of the pointer on the scheduler, like the
+  panel; each crossing counts once) stops the countdown and snaps the card
+  back to alpha 1; leaving starts the 1 s hold and 5 s fade again.
+  **Using it** (any mouse button pressed anywhere on the card, caught in
+  `EndSheetPanel.sendEvent` so bare canvas counts as much as a star or a
+  button; 1 to 5, Tab or any printable key on the card; any key or text
+  change in the note field) cancels the auto-finish for good; the card then waits
+  for Finish or Extend, as before. Keys in the first 0.8 s
+  (`keyboardGrace`) are swallowed and do not count, so typing meant for
+  another app neither answers nor keeps the card. Escape does nothing. A
+  refresh of the card already up keeps its countdown; hiding it (answered,
+  extended or finished elsewhere, dismissed) drops the countdown and the
+  poll. `NullPresenter` is unchanged.
 
 Launch recovery (in `FocusCore.init`): an open row whose `last_heartbeat` is
 more than 90 s old is closed with `end_reason = abandoned`, `ended_at =
@@ -263,8 +298,8 @@ Rows are never re-pointed except by `movePending`.
 
 - `scripts/build-helper.sh` (`npm run build-helper`): `swiftc -O` with `-framework EventKit`, `helper/Info.plist` embedded as `__TEXT,__info_plist`, then `codesign` with identifier `com.c-wenlong.focus-daemon`, signed with Kai's Apple Development identity when the keychain has it and ad hoc otherwise; `FOCUS_SIGN_IDENTITY` overrides, and an override missing from the keychain fails the build.
 - `scripts/test-helper.sh` (`npm run test-helper`): typechecks the whole helper, then compiles the logic files (no `main.swift`, `EventKitBackend.swift` or UI files) with `test/helper/main.swift` and runs it. Rules, log text, recovery, config, protocol, sqlite and its migration, the session state machine (every transition and refusal), the deeplink URL, stats aggregation over fixture rows (midnight and DST days, pauses, clamps, abandoned and running sessions, calendar buckets, averages) and the chart markup, and all commands over a fake calendar and a recording presenter, `stats` end to end included: pause, resume, extend, stop, finish, the timer reaching the deadline, UI delegate calls, and abandoned versus resumed launch recovery. Blocking: host and app matching, allowlist inversion, the always-allowed set, loopback, categories and their union, profile parsing (malformed, unknown names), and the engine over a fake workspace and a fake site blocker (on and off per state, tokens, snooze expiry, wrong tokens, attempts in sqlite, `blocking` and `snooze`). Prints "all passed".
-- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, and the completion's order (sound, glow, banner, sheet at 2.5 s) plus every case that skips it. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `menubar-*.png`, `panel-*.png`, `banner.png`, `glow.png` and `block.png` there.
-- `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion first), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel, banner and glow draw, plus `state.txt`; menus are logged and closed after 2 s). For a shell without Screen Recording.
+- `scripts/test-ui.sh` (`npm run test-ui`): the menu bar, the floating panel, the end sheet, the completion and the block window, headless (title, snooze labels, Snooze, Escape and a click), plus the app blocker wired to a real engine. The panel and completion run on a fake scheduler, a fake sound, fixed screens and a `config.json` in a temp folder: chip fill for running, paused and extended sessions, hover in and out with the 150 ms delay, the Pause menu and timed pauses (fired, cancelled by Resume anywhere, refused, other session), Complete, Cancel, Edit, Move to Menu Bar and back (config written, other keys kept), dragging, the saved position and its fallbacks, Reset, the completion (sound, glow, the card at once, no banner) plus every case that skips it, and the end card: its compact layout (360 wide, stars and note on one row, extend and Finish on the next, labels fitting), top centre of the given screen above the glow, alpha 1 at 0.5 s and 1 s, then falling (about 0.5 at 3.5 s, 0.2 at 5 s) and never raised by `update`, `presenterFinish(nil, nil)` and alpha 0 at 6 s, hover (poll and tracking area) resetting the hold and fade, a click on bare card, a star click, a digit, a typed character, a key in the note, Extend and Finish each cancelling it, keys in the grace period not counting, a refresh keeping the countdown, manual stop, paused past the end, a restart at the sheet, and extended or finished elsewhere. `scripts/test-ui.sh <folder>` also writes `sheet.png`, `card-0s.png`, `card-2.5s.png` (alpha 0.7), `card-over-glow.png`, `menubar-*.png`, `panel-*.png`, `glow.png` and `block.png` there.
+- `FOCUS_UI_DEMO=1 FOCUS_FOREGROUND=1 FOCUS_DIR=<folder> focus-daemon serve` runs the UI on a fake session (no Calendar access is asked for): `FOCUS_UI_DEMO_SECONDS` (length), `FOCUS_UI_DEMO_SHEET_AFTER` (when it ends as if the timer ran out, default 20), `FOCUS_UI_DEMO_COMPLETE=1` (play the completion with the card), `FOCUS_UI_DEMO_HOVER=<from>-<to>` (seconds after the card shows: the poll sees the pointer over the card in that window, the real pointer otherwise; tracking-area crossings and uses of the card are logged), `FOCUS_UI_DEMO_CAPTURE=<folder>` (every 0.5 s, write what the live panel and glow draw, plus `state.txt`; menus are logged and closed after 2 s; while the card shows, every 0.25 s `card-<ms>.png` at its alpha, `screen-<ms>.png` with the glow and the card where they are, and a line in `card.txt`). For a shell without Screen Recording. `FOCUS_DIR` must be short: the socket path has a length limit.
 
 ## Site blocking (block page and tab watcher)
 For HELPER.md (step 3, site half): `BlockPage.swift` (HTML, pure), `BlockServer.swift` (loopback

@@ -1,15 +1,14 @@
 import AppKit
 import Foundation
 
-// MARK: - Session completed: sound, edge glow and banner
+// MARK: - Session completed: sound and edge glow
 //
 // When the timer runs out (not on a manual stop or Cancel), like Raycast
-// Focus: a short system sound, a soft green glow along every edge of every
-// screen, and a dark rounded banner top centre of the main screen, "Focus
-// session completed" over "You stayed focused." with a green check. Both
-// fade in over 0.3 s, hold, and are gone by 2.5 s (`duration`), when
-// UIPresenter shows the end sheet. The windows ignore the mouse, so nothing
-// under them is blocked meanwhile.
+// Focus: a short system sound and a soft green glow along every edge of
+// every screen. The glow fades in over 0.3 s, holds, and is gone by 2.5 s
+// (`duration`). The end card (EndSheet.swift) shows at once, top centre of
+// the main screen, one level above the glow. The glow windows ignore the
+// mouse, so nothing under them is blocked meanwhile.
 //
 // Main thread only; the tests pass a fake scheduler and sound and run it
 // headless (windows ordered in far off screen, no animation).
@@ -30,20 +29,14 @@ final class SystemCompletionSound: CompletionSound {
 }
 
 enum CompletionStyle {
-  /// The check in the banner.
-  static let green = NSColor(srgbRed: 0.20, green: 0.78, blue: 0.35, alpha: 1)
   /// The edge glow: Raycast's saturated green, #2ECC71.
   static let glow = NSColor(srgbRed: 0x2E / 255, green: 0xCC / 255, blue: 0x71 / 255, alpha: 1)
   /// How far the glow reaches in from each edge.
   static let glowWidth: CGFloat = 170
   /// Its opacity right at the edge.
   static let glowAlpha: CGFloat = 0.85
-  static let title = NSColor(white: 1, alpha: 0.95)
-  static let subtitle = NSColor(white: 1, alpha: 0.55)
-  static let titleFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
-  static let subtitleFont = NSFont.systemFont(ofSize: 13)
-  static let bannerHeight: CGFloat = 56
-  static let bannerRadius: CGFloat = 16
+  /// The glow's level; the end card is one above it.
+  static let glowLevel = NSWindow.Level.screenSaver
 }
 
 /// The soft green vignette for one screen, drawn as nested rings from the
@@ -98,60 +91,58 @@ final class GlowView: NSView {
   }
 }
 
-/// The banner's content: the dark rounded canvas (as the floating panel),
-/// a green check, the title and the line under it.
-final class BannerView: NSView {
-  static let title = "Focus session completed"
-  static let subtitle = "You stayed focused."
-  private static let check = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
-    .withSymbolConfiguration(
-      NSImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        .applying(NSImage.SymbolConfiguration(paletteColors: [.white, CompletionStyle.green])))
+/// A glow window's content: GlowView drawn once per screen size at half a
+/// pixel per point and shown as the layer's contents, stretched. The
+/// vignette is a smooth gradient, so it looks the same; drawn at full
+/// resolution each time, it held the main thread for about 1.5 s on a
+/// 2560 × 1440 screen plus a laptop's, which froze the end card showing with
+/// it and swallowed the glow's fade-in.
+final class GlowImageView: NSView {
+  static let scale: CGFloat = 0.5
+  private static var cache: [NSSize: CGImage] = [:]
+  /// The sizes drawn and kept (the tests read it).
+  static var cachedSizes: Set<NSSize> { Set(cache.keys) }
 
-  static var titleText: NSAttributedString {
-    NSAttributedString(string: title, attributes: [.font: CompletionStyle.titleFont, .foregroundColor: CompletionStyle.title])
-  }
-  static var subtitleText: NSAttributedString {
-    NSAttributedString(
-      string: subtitle, attributes: [.font: CompletionStyle.subtitleFont, .foregroundColor: CompletionStyle.subtitle])
-  }
-
-  static let leading: CGFloat = 16
-  static let iconGap: CGFloat = 12
-  static let trailing: CGFloat = 22
-
-  static var width: CGFloat {
-    let text = max(titleText.size().width, subtitleText.size().width)
-    return ceil(leading + (check?.size.width ?? 20) + iconGap + text + trailing)
+  /// Drops the images of screens that are gone (a display unplugged or its
+  /// resolution changed), so a long-running daemon keeps one per screen.
+  static func keepOnly(_ sizes: [NSSize]) {
+    let keep = Set(sizes)
+    cache = cache.filter { keep.contains($0.key) }
   }
 
-  override func draw(_ dirtyRect: NSRect) {
-    let box = bounds.insetBy(dx: 0.5, dy: 0.5)
-    let path = NSBezierPath(
-      roundedRect: box, xRadius: CompletionStyle.bannerRadius - 0.5, yRadius: CompletionStyle.bannerRadius - 0.5)
-    PanelStyle.canvas.setFill()
-    path.fill()
-    PanelStyle.border.setStroke()
-    path.lineWidth = 1
-    path.stroke()
+  override var isOpaque: Bool { false }
+  override var wantsUpdateLayer: Bool { true }
 
-    var x = Self.leading
-    if let check = Self.check {
-      let size = check.size
-      check.draw(in: NSRect(x: x, y: (bounds.midY - size.height / 2).rounded(), width: size.width, height: size.height))
-      x += size.width + Self.iconGap
-    }
-    // Two lines centred as a block on the banner's middle.
-    let title = Self.titleText
-    let subtitle = Self.subtitleText
-    let titleFont = CompletionStyle.titleFont
-    let subtitleFont = CompletionStyle.subtitleFont
-    let gap: CGFloat = 3
-    let titleLine = ceil(titleFont.ascender - titleFont.descender)
-    let subtitleLine = ceil(subtitleFont.ascender - subtitleFont.descender)
-    let top = (bounds.midY + (titleLine + gap + subtitleLine) / 2).rounded()
-    title.draw(at: NSPoint(x: x, y: top - titleLine))
-    subtitle.draw(at: NSPoint(x: x, y: top - titleLine - gap - subtitleLine))
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+    layerContentsRedrawPolicy = .onSetNeedsDisplay
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  override func updateLayer() {
+    guard let layer else { return }
+    layer.contentsGravity = .resize
+    layer.magnificationFilter = .linear
+    layer.contents = Self.image(for: bounds.size)
+  }
+
+  /// The glow for a screen of `size` points, drawn at `scale`.
+  static func image(for size: NSSize) -> CGImage? {
+    guard size.width >= 1, size.height >= 1 else { return nil }
+    if let cached = cache[size] { return cached }
+    let view = GlowView(frame: NSRect(origin: .zero, size: size))
+    guard let rep = NSBitmapImageRep(
+      bitmapDataPlanes: nil, pixelsWide: Int((size.width * scale).rounded(.up)),
+      pixelsHigh: Int((size.height * scale).rounded(.up)), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+      isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    else { return nil }
+    rep.size = size
+    view.cacheDisplay(in: view.bounds, to: rep)
+    let image = rep.cgImage
+    cache[size] = image
+    return image
   }
 }
 
@@ -189,35 +180,14 @@ final class Completion {
   private(set) var glowWindows: [OverlayWindow] = []
   /// Where each glow window is (the screen's frame), headless included.
   private(set) var glowFrames: [NSRect] = []
-  let banner: OverlayWindow
-  let bannerView = BannerView()
-  private(set) var bannerFrame = NSRect.zero
   private(set) var isPlaying = false
-  /// What happened, in order: "sound", "glow", "banner", "fadeOut", "done".
+  /// What happened, in order: "sound", "glow", "fadeOut", "done".
   private(set) var trace: [String] = []
   private var tasks: [ScheduledTask] = []
 
   init(scheduler: UIScheduler, sound: CompletionSound = SystemCompletionSound()) {
     self.scheduler = scheduler
     self.sound = sound
-    banner = OverlayWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 300, height: CompletionStyle.bannerHeight),
-      level: NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1))
-    banner.hasShadow = true
-    banner.title = "Focus session completed"
-    bannerView.setAccessibilityElement(true)
-    bannerView.setAccessibilityRole(.staticText)
-    bannerView.setAccessibilityLabel("\(BannerView.title). \(BannerView.subtitle)")
-    banner.contentView = bannerView
-  }
-
-  /// Top centre of `screen`, `margin` below the menu bar.
-  static func bannerFrame(on screen: ScreenGeometry) -> NSRect {
-    let width = BannerView.width
-    return NSRect(
-      x: (screen.frame.midX - width / 2).rounded(),
-      y: (screen.visibleFrame.maxY - PanelStyle.margin - CompletionStyle.bannerHeight).rounded(),
-      width: width, height: CompletionStyle.bannerHeight)
   }
 
   private func place(_ window: NSWindow, _ rect: NSRect) {
@@ -236,7 +206,7 @@ final class Completion {
     }
   }
 
-  /// Sound, glow on every screen, banner on the first (main) one. Ends by itself after `duration`.
+  /// Sound, then the glow on every screen. Ends by itself after `duration`.
   func play(screens: [ScreenGeometry]) {
     stop()
     isPlaying = true
@@ -245,10 +215,11 @@ final class Completion {
     trace.append("sound")
 
     glowFrames = screens.map(\.frame)
+    GlowImageView.keepOnly(screens.map(\.frame.size))
     while glowWindows.count < screens.count {
-      let window = OverlayWindow(contentRect: .zero, level: .screenSaver)
+      let window = OverlayWindow(contentRect: .zero, level: CompletionStyle.glowLevel)
       window.title = "Focus session completed glow"
-      window.contentView = GlowView()
+      window.contentView = GlowImageView()
       glowWindows.append(window)
     }
     for (window, frame) in zip(glowWindows, glowFrames) {
@@ -257,15 +228,7 @@ final class Completion {
       window.orderFrontRegardless()
     }
     trace.append("glow")
-
-    if let main = screens.first {
-      bannerFrame = Self.bannerFrame(on: main)
-      banner.alphaValue = 0
-      place(banner, bannerFrame)
-      banner.orderFrontRegardless()
-      trace.append("banner")
-    }
-    let shown = Array(glowWindows.prefix(screens.count)) + (screens.isEmpty ? [] : [banner])
+    let shown = Array(glowWindows.prefix(screens.count))
     fade(shown, to: 1, over: Self.fadeIn)
 
     tasks.append(scheduler.after(Self.fadeOutAt) { [weak self] in
@@ -283,7 +246,6 @@ final class Completion {
     tasks = []
     isPlaying = false
     glowWindows.forEach { $0.orderOut(nil) }
-    banner.orderOut(nil)
     trace.append("done")
   }
 
@@ -294,9 +256,7 @@ final class Completion {
     guard isPlaying else { return }
     isPlaying = false
     glowWindows.forEach { $0.orderOut(nil) }
-    banner.orderOut(nil)
   }
 
   var isGlowVisible: Bool { glowWindows.contains { $0.isVisible } }
-  var isBannerVisible: Bool { banner.isVisible }
 }
