@@ -8,7 +8,7 @@ import {
   showToast,
   useNavigation,
 } from "@raycast/api";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../lib/daemon";
 import {
   CATEGORIES,
@@ -51,31 +51,47 @@ export function ProfileForm(props: {
   const [draft, setDraft] = useState<ProfileDraft>(() => draftFor(props.entry));
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [isSaving, setIsSaving] = useState(false);
-  // Installed apps for the Extra Apps picker; null until loaded.
+  // Installed apps for the Extra Apps picker; null until loaded. `appsLoad`
+  // counts loads so "Reload Installed Apps" can run the lookup again after a
+  // failure (or after installing an app) without closing the form.
   const [installed, setInstalled] = useState<InstalledApp[] | null>(null);
+  const [appsLoad, setAppsLoad] = useState(0);
+  const [appsFailed, setAppsFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setInstalled(null);
     getApplications()
       .then((apps) => {
-        if (!cancelled) setInstalled(apps);
+        if (cancelled) return;
+        setInstalled(apps);
+        setAppsFailed(false);
       })
       .catch(async (error) => {
         if (cancelled) return;
         setInstalled([]);
+        setAppsFailed(true);
         await showToast({
           style: Toast.Style.Failure,
           title: "Could not list installed apps",
-          message: errorMessage(error),
+          message: `${errorMessage(error)}. Use Reload Installed Apps (⌘R) to try again.`,
         });
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [appsLoad]);
 
-  const appItems = appPickerItems(installed ?? [], draft.apps);
-  const appValue = alignSelection(draft.apps, appItems);
+  // Rebuilt only when the installed list or the chosen apps change, not on
+  // every keystroke in another field.
+  const appItems = useMemo(
+    () => appPickerItems(installed ?? [], draft.apps),
+    [installed, draft.apps],
+  );
+  const appValue = useMemo(
+    () => alignSelection(draft.apps, appItems),
+    [draft.apps, appItems],
+  );
 
   function update<K extends keyof ProfileDraft>(
     key: K,
@@ -131,6 +147,12 @@ export function ProfileForm(props: {
             title="Save Profile"
             icon={Icon.CheckCircle}
             onSubmit={handleSubmit}
+          />
+          <Action
+            title="Reload Installed Apps"
+            icon={Icon.ArrowClockwise}
+            shortcut={{ modifiers: ["cmd"], key: "r" }}
+            onAction={() => setAppsLoad((n) => n + 1)}
           />
         </ActionPanel>
       }
@@ -202,7 +224,11 @@ export function ProfileForm(props: {
         id="apps"
         title="Extra Apps"
         placeholder={
-          installed === null ? "Loading installed apps…" : "Pick apps"
+          installed === null
+            ? "Loading installed apps…"
+            : appsFailed
+              ? "Installed apps did not load: press ⌘R to try again"
+              : "Pick apps"
         }
         info="Installed apps, on top of the categories. An app saved by hand that is not installed shows as Not installed so it can be removed."
         value={appValue}
