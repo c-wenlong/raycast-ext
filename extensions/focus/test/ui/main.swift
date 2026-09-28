@@ -408,18 +408,19 @@ check("panel display: status item hidden", !bar.statusItem.isVisible)
 check("panel title", floating.content?.titleText == "25:00 Deep Work", floating.content?.titleText ?? "nil")
 check("half way: chip half green", abs((floating.content?.progress ?? 0) - 0.5) < 0.001, "\(floating.content?.progress ?? -1)")
 let chip = floating.pill.chipRect
-check("the green part is half the chip", abs(floating.pill.progressRect.width - chip.width / 2) <= 1, "\(floating.pill.progressRect) \(chip)")
-check("the chip is 22 tall, rounded 8", chip.height == 22 && PanelStyle.chipRadius == 8)
-check("the panel is 34 tall", floating.frame.height == 34, "\(floating.frame)")
+check("the green part is half the pill, full height", abs(floating.pill.progressRect.width - floating.pill.bounds.width / 2) <= 1 && floating.pill.progressRect.height == floating.pill.bounds.height, "\(floating.pill.progressRect) \(floating.pill.bounds)")
+check("the chip is 28 tall (the button height), rounded 8", chip.height == 28 && PanelStyle.chipRadius == 8)
+check("the panel is 40 tall, like the controls row", floating.frame.height == 40, "\(floating.frame)")
+check("the pill is as wide as the controls row", floating.frame.width == floating.controlsWidth, "\(floating.frame)")
 check("panel floats on every space, above the block page", floating.panel.collectionBehavior.contains(.canJoinAllSpaces)
   && floating.panel.collectionBehavior.contains(.fullScreenAuxiliary) && floating.panel.level.rawValue > NSWindow.Level.floating.rawValue
   && floating.panel.level.rawValue < sheet.panel.level.rawValue)
 check("panel never activates or takes focus", floating.panel.styleMask.contains(.nonactivatingPanel) && !floating.panel.canBecomeKey
   && !floating.panel.hidesOnDeactivate && !floating.panel.isMovableByWindowBackground)
 let defaultFrame = FloatingPanel.defaultFrame(width: floating.frame.width, on: laptop)
-check("default place: top right of the main screen, 12 in", defaultFrame == NSRect(x: 1512 - 12 - floating.frame.width, y: 944 - 12 - 34, width: floating.frame.width, height: 34), "\(defaultFrame)")
+check("default place: top right of the main screen, 12 in", defaultFrame == NSRect(x: 1512 - 12 - floating.frame.width, y: 944 - 12 - 40, width: floating.frame.width, height: 40), "\(defaultFrame)")
 check("first show uses the default place", floating.frame == defaultFrame, "\(floating.frame)")
-check("default place maths", FloatingPanel.defaultFrame(width: 160, on: laptop) == NSRect(x: 1340, y: 898, width: 160, height: 34))
+check("default place maths", FloatingPanel.defaultFrame(width: 160, on: laptop) == NSRect(x: 1340, y: 892, width: 160, height: 40))
 check("anchored to the right edge there", floating.anchoredRight)
 
 ui.update(session(remaining: 3000, started: 0))
@@ -433,7 +434,7 @@ check("paused title", floating.content?.titleText == "⏸ 25:00 Deep Work", floa
 check("paused keeps the fill", abs((floating.content?.progress ?? 0) - 0.5) < 0.001)
 let pausedPanelWidth = floating.frame.width
 ui.update(session(remaining: 1500, started: -1500))
-check("paused pill is wider (the glyph) and keeps its right edge", pausedPanelWidth > floating.frame.width && floating.frame.maxX == defaultFrame.maxX, "\(floating.frame)")
+check("paused pill keeps the same size and its right edge", pausedPanelWidth == floating.frame.width && floating.frame.maxX == defaultFrame.maxX, "\(floating.frame)")
 ui.update(session(goal: "Write the quarterly planning document for the whole team", remaining: 1500, started: -1500))
 check("a long goal is cut at the pill's limit", floating.frame.width <= CountdownPillView.width(PanelContent(clock: "25:00", paused: false, progress: 0, goal: "")) + PanelStyle.goalGap + PanelStyle.goalMaxWidth + PanelStyle.goalTrailing, "\(floating.frame)")
 ui.update(session(remaining: 1500, started: -1500))
@@ -601,7 +602,7 @@ check("the idle pill's top-left is saved", fileFields()["panelPosition"] == ["x"
 scheduler.advance(0.2)
 floating.mouseExited()
 scheduler.advance(0.2)
-check("idle again at the new place", floating.frame == NSRect(x: moved.x, y: moved.y - 34, width: idle.width, height: 34), "\(floating.frame)")
+check("idle again at the new place", floating.frame == NSRect(x: moved.x, y: moved.y - 40, width: idle.width, height: 40), "\(floating.frame)")
 
 // Hidden and shown again (a new session): same place.
 ui.update(nil)
@@ -649,8 +650,8 @@ scheduler.advance(1)
 // A fresh daemon reads the saved position; off-screen falls back.
 let saved = ConfigFile(path: configPath).load().panelPosition
 check("the saved position reads back", saved == PanelPosition(x: Double(moved.x), y: Double(moved.y)), "\(String(describing: saved))")
-check("a saved position on screen is used", FloatingPanel.idleFrame(width: 150, saved: saved, screens: [laptop, external]).origin == NSPoint(x: moved.x, y: moved.y - 34))
-check("on the second screen too", FloatingPanel.idleFrame(width: 150, saved: PanelPosition(x: 2000, y: 700), screens: [laptop, external]).origin == NSPoint(x: 2000, y: 666))
+check("a saved position on screen is used", FloatingPanel.idleFrame(width: 150, saved: saved, screens: [laptop, external]).origin == NSPoint(x: moved.x, y: moved.y - 40))
+check("on the second screen too", FloatingPanel.idleFrame(width: 150, saved: PanelPosition(x: 2000, y: 700), screens: [laptop, external]).origin == NSPoint(x: 2000, y: 660))
 check("off every screen: the default", FloatingPanel.idleFrame(width: 150, saved: PanelPosition(x: 5000, y: 700), screens: [laptop, external]) == FloatingPanel.defaultFrame(width: 150, on: laptop))
 check("screen unplugged: the default", FloatingPanel.idleFrame(width: 150, saved: PanelPosition(x: 2000, y: 700), screens: [laptop]) == FloatingPanel.defaultFrame(width: 150, on: laptop))
 check("half above the top: the default", FloatingPanel.idleFrame(width: 150, saved: PanelPosition(x: 100, y: 1000), screens: [laptop]) == FloatingPanel.defaultFrame(width: 150, on: laptop))

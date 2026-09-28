@@ -98,7 +98,9 @@ enum PanelStyle {
   static let handle = NSColor(white: 1, alpha: 0.38)
   static let handleHover = NSColor(white: 1, alpha: 0.7)
 
-  static let idleHeight: CGFloat = 34
+  /// One size for both states: the pill is as tall and as wide as the
+  /// controls row, so hovering swaps the content without resizing.
+  static let idleHeight: CGFloat = 40
   static let hoverHeight: CGFloat = 40
   static let inset: CGFloat = 6
   static let chipRadius: CGFloat = 8
@@ -210,26 +212,29 @@ final class CountdownPillView: NSView {
       x: PanelStyle.inset, y: ((bounds.height - height) / 2).rounded(), width: Self.chipWidth(content), height: height)
   }
 
-  /// The green part of the chip.
+  /// The green part: it sweeps the whole pill from the left as time passes,
+  /// chip and goal included, clipped to the pill's rounded shape.
   var progressRect: NSRect {
-    var rect = chipRect
+    var rect = bounds
     rect.size.width = (rect.width * CGFloat(content.progress)).rounded()
     return rect
   }
 
   override func draw(_ dirtyRect: NSRect) {
     let chip = chipRect
-    let chipPath = NSBezierPath(roundedRect: chip, xRadius: PanelStyle.chipRadius, yRadius: PanelStyle.chipRadius)
-    (content.paused ? PanelStyle.chipPaused : PanelStyle.chip).setFill()
-    chipPath.fill()
+    let pillPath = NSBezierPath(roundedRect: bounds, xRadius: PanelStyle.radius, yRadius: PanelStyle.radius)
     let fill = progressRect
     if fill.width > 0 {
       NSGraphicsContext.saveGraphicsState()
-      chipPath.addClip()
+      pillPath.addClip()
       (content.paused ? PanelStyle.progressPaused : PanelStyle.progress).setFill()
       fill.fill()
       NSGraphicsContext.restoreGraphicsState()
     }
+    // The chip sits on top, translucent, so the green reads through it.
+    let chipPath = NSBezierPath(roundedRect: chip, xRadius: PanelStyle.chipRadius, yRadius: PanelStyle.chipRadius)
+    (content.paused ? PanelStyle.chipPaused : PanelStyle.chip).withAlphaComponent(0.45).setFill()
+    chipPath.fill()
 
     // Digits (and the pause glyph) centred in the chip; drawn once in grey,
     // then again in white over the green part so they stay readable.
@@ -757,7 +762,9 @@ final class FloatingPanel: NSObject {
     panel.setAccessibilityTitle("Focus countdown")
     updateControls(view)
 
-    let width = CountdownPillView.width(content)
+    // The pill takes the controls row's width whatever the goal says, so the
+    // panel never changes size on hover; a long goal is truncated inside it.
+    let width = controlsWidth
     // A display unplugged under the panel: back to the default place.
     if placed, dragStart == nil, !Self.isOnScreen(idleFrame, screens: screens()) { placed = false }
     if !placed {
@@ -802,7 +809,7 @@ final class FloatingPanel: NSObject {
 
   /// Back to the default place (Reset Panel Position).
   func resetPosition() {
-    let width = content.map(CountdownPillView.width) ?? idleFrame.width
+    let width = controlsWidth
     idleFrame = Self.idleFrame(width: width, saved: nil, screens: screens())
     anchoredRight = Self.anchorsRight(idleFrame, screens: screens())
     placed = true
