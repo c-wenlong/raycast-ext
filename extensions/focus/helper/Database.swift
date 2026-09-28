@@ -344,6 +344,15 @@ final class Database {
     }
   }
 
+  /// Sets a closed session's rating and note (Focus Stats' Edit Session).
+  /// Open rows are left alone; false when no closed row has this id.
+  @discardableResult
+  func updateReview(_ id: Int64, rating: Int?, note: String?) throws -> Bool {
+    try run(
+      "update sessions set rating = ?, note = ? where id = ? and ended_at is not null",
+      [SQLValue(rating), SQLValue(note), .int(id)]) == 1
+  }
+
   func heartbeat(_ id: Int64, at date: Date) throws {
     try run("update sessions set last_heartbeat = ? where id = ? and ended_at is null", [SQLValue(date), .int(id)])
   }

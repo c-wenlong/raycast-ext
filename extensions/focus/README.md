@@ -72,7 +72,11 @@ end-of-session sheet, app and site blocking, stats), is
   and waiting session has Delete Session (`⌃X`, no confirmation, as in
   Notes): the session and its pauses and blocked attempts are deleted, and
   so is its calendar event while that still carries the session's marker;
-  the toast says whether the event went. `⌘R` refreshes.
+  the toast says whether the event went. Every recent session also has Edit
+  Session (`⌘E`): the finish form's rating (plus "No rating") and note,
+  prefilled; saving updates the session and rewrites its calendar event's
+  notes to match while they still carry the session's marker, and the toast
+  says whether the event changed. `⌘R` refreshes.
 
 ## Where data lives
 

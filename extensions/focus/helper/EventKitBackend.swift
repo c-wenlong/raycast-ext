@@ -145,6 +145,12 @@ final class EventKitBackend: CalendarBackend {
     try store.remove(event, span: .thisEvent, commit: true)
   }
 
+  func updateEventNotes(id: String, notes: String) throws {
+    guard let event = store.event(withIdentifier: id) else { throw FocusError("event \(id) disappeared") }
+    event.notes = notes
+    try store.save(event, span: .thisEvent, commit: true)
+  }
+
   // MARK: Debug commands (FOCUS_DEBUG=1 only)
 
   /// Test fixtures for the live integration check. Anything destructive is
