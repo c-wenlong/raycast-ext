@@ -198,7 +198,8 @@ export default function FocusTodayCommand() {
         ? `Until ${formatClockIso(session.plannedEnd)}`
         : undefined;
       // Like Raycast Focus: the window goes away and the countdown takes over.
-      await closeMainWindow({ clearRootSearch: true });
+      // A failure to close is not a failed start: the session is running.
+      await closeMainWindow({ clearRootSearch: true }).catch(() => undefined);
     } catch (startError) {
       toast.style = Toast.Style.Failure;
       toast.title = "Could not start the session";
