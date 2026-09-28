@@ -546,6 +546,8 @@ final class FloatingPanel: NSObject {
   let pill = CountdownPillView()
   /// The glass's rim, highlight and sheen, over the pill and the controls.
   let edges = GlassEdgesView()
+  /// The lava lamp: soft green blobs drifting over the tint, under the rest.
+  let lava = LiveBackgroundView()
   let controls = NSView()
   let pauseButton = PanelButton(title: "Pause", symbol: "pause")
   let completeButton = PanelButton(title: "Complete", symbol: "checkmark")
@@ -618,7 +620,8 @@ final class FloatingPanel: NSObject {
     panel.title = "Focus countdown"
 
     // Glass (or the HUD blur with the tint painted on) behind everything;
-    // the chrome holds the pill, the controls and the edges on top.
+    // the chrome holds the lava lamp, then the pill, the controls and the
+    // edges on top.
     chrome.owner = self
     chrome.frame = NSRect(x: 0, y: 0, width: 160, height: PanelStyle.idleHeight)
     chrome.autoresizingMask = [.width, .height]
@@ -626,6 +629,13 @@ final class FloatingPanel: NSObject {
     backdrop = GlassBackdrop.make(radius: PanelStyle.radius, content: chrome, glass: usesGlass)
     backdrop.autoresizingMask = [.width, .height]
     panel.contentView = backdrop
+
+    // Still until the panel shows.
+    lava.setRunning(false)
+    lava.frame = chrome.bounds
+    lava.autoresizingMask = [.width, .height]
+    lava.radius = PanelStyle.radius
+    chrome.addSubview(lava)
 
     pill.frame = chrome.bounds
     pill.autoresizingMask = [.width, .height]
@@ -829,6 +839,9 @@ final class FloatingPanel: NSObject {
       panel.orderFrontRegardless()
       startPointerPolling()
     }
+    // The lamp drifts while the session runs; paused dims and freezes it.
+    lava.dimmed = content.paused
+    lava.setRunning(!content.paused)
   }
 
   private func startPointerPolling() {
@@ -849,6 +862,7 @@ final class FloatingPanel: NSObject {
     pointerTimer = nil
     pointerInside = false
     if isHovering { setHovering(false, animated: false) }
+    lava.setRunning(false)
     guard isVisible else { return }
     isVisible = false
     panel.orderOut(nil)

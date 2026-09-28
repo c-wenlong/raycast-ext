@@ -346,8 +346,14 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   regular one is a nearly opaque dark frost in dark mode, so the desktop
   does not show through. The rim, top highlight, sheen and bottom shade are
   drawn by the panel, over the pill and the hover row. Before macOS 26 the
-  HUD blur stays, with a denser tint. A lava lamp background behind the
-  glass comes next, as its own change.
+  HUD blur stays, with a denser tint.
+- Lava lamp (2026-09-28, the second half of that ask): soft pale-green
+  blobs drift slowly inside the pill so it looks alive. They are drawn in
+  the glass's content, over the tint and under the sweep, text and edges,
+  not behind the glass: macOS 26's glass paints over sibling views behind
+  it (checked on screen), so "under glass" comes from the edges drawn on
+  top. CoreAnimation only; the lamp freezes while the panel is hidden,
+  while the session is paused (and dims), and under Reduce Motion.
 
 ## End card (2026-09-28)
 

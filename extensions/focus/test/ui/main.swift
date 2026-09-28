@@ -529,6 +529,128 @@ check("fallback: hovering keeps the size", fallback.frame.size == NSSize(width: 
 fallback.setHovering(false, animated: false)
 fallback.hide()
 
+// The lava lamp. The layout is pure and seeded: every seed's blobs keep
+// their centres inside the pill for the whole drift.
+let pillSize = CGSize(width: floating.frame.width, height: 40)
+let lavaBounds = CGRect(origin: .zero, size: pillSize).insetBy(dx: LavaStyle.inset, dy: LavaStyle.inset)
+var lavaProblems: [String] = []
+var paleSeen = false
+var deepSeen = false
+for seed in UInt64(0)..<300 {
+  var rng = SeededGenerator(seed: seed)
+  let blobs = LavaLayout.blobs(in: pillSize, using: &rng)
+  if blobs.count != LavaStyle.count { lavaProblems.append("seed \(seed): \(blobs.count) blobs") }
+  for blob in blobs {
+    let color = blob.color.usingColorSpace(.sRGB)!
+    if !lavaBounds.contains(blob.from) || !lavaBounds.contains(blob.to) {
+      lavaProblems.append("seed \(seed): drift \(blob.from) to \(blob.to) leaves \(lavaBounds)")
+    }
+    if !LavaStyle.diameter.contains(blob.diameter) { lavaProblems.append("seed \(seed): diameter \(blob.diameter)") }
+    if !LavaStyle.alpha.contains(color.alphaComponent) { lavaProblems.append("seed \(seed): alpha \(color.alphaComponent)") }
+    if ![blob.periodX, blob.periodY, blob.periodScale].allSatisfy({ LavaStyle.period.contains($0) }) {
+      lavaProblems.append("seed \(seed): periods \(blob.periodX) \(blob.periodY) \(blob.periodScale)")
+    }
+    if !(0..<1).contains(blob.phase) { lavaProblems.append("seed \(seed): phase \(blob.phase)") }
+    // Between #3FA36A and #9BE7B0 on every channel.
+    let inRange = { (value: CGFloat, low: CGFloat, high: CGFloat) in value >= low / 255 - 0.002 && value <= high / 255 + 0.002 }
+    if !(inRange(color.redComponent, 0x3F, 0x9B) && inRange(color.greenComponent, 0xA3, 0xE7) && inRange(color.blueComponent, 0x6A, 0xB0)) {
+      lavaProblems.append("seed \(seed): colour \(color)")
+    }
+    if color.greenComponent > 0.85 { paleSeen = true }
+    if color.greenComponent < 0.7 { deepSeen = true }
+  }
+}
+check("lava: 5 blobs, 60 to 120 pt, alpha 25 to 45 %, 12 to 25 s, pale to deep green, centres inside the pill (300 seeds)",
+  lavaProblems.isEmpty, lavaProblems.prefix(3).joined(separator: "; "))
+check("lava: the colours span pale to deep", paleSeen && deepSeen)
+var seedA = SeededGenerator(seed: 42)
+var seedB = SeededGenerator(seed: 42)
+var seedC = SeededGenerator(seed: 43)
+let blobsA = LavaLayout.blobs(in: pillSize, using: &seedA)
+check("lava: a seed gives the same blobs", blobsA == LavaLayout.blobs(in: pillSize, using: &seedB))
+check("lava: another seed, other blobs", blobsA != LavaLayout.blobs(in: pillSize, using: &seedC))
+check("lava: the blobs spread across the pill", (blobsA.map(\.from.x).min() ?? 0) < pillSize.width / 3 && (blobsA.map(\.from.x).max() ?? 0) > pillSize.width * 2 / 3, "\(blobsA.map(\.from))")
+var tinyRng = SeededGenerator(seed: 1)
+check("lava: no blobs in a pill too small to hold one", LavaLayout.blobs(in: CGSize(width: 6, height: 40), using: &tinyRng).isEmpty)
+
+let lamp = LiveBackgroundView(seed: 7)
+lamp.frame = NSRect(origin: .zero, size: pillSize)
+check("lamp: one disc per blob, clipped to the pill's rounded shape", lamp.blobLayers.count == LavaStyle.count
+  && lamp.layer?.masksToBounds == true && lamp.layer?.cornerRadius == PanelStyle.radius)
+check("lamp: never takes the mouse", lamp.hitTest(NSPoint(x: 20, y: 20)) == nil)
+var driftProblems: [String] = []
+for (disc, blob) in zip(lamp.blobLayers, lamp.blobs) {
+  if disc.type != .radial || disc.bounds.width != blob.diameter || disc.bounds.height != blob.diameter {
+    driftProblems.append("disc \(disc.bounds) \(disc.type.rawValue)")
+  }
+  // Soft all the way out: clear at the rim.
+  if let last = (disc.colors as? [CGColor])?.last, last.alpha != 0 { driftProblems.append("rim alpha \(last.alpha)") }
+  for (key, keyPath, from, to, period) in [
+    ("lava.x", "position.x", blob.from.x, blob.to.x, blob.periodX), ("lava.y", "position.y", blob.from.y, blob.to.y, blob.periodY),
+  ] {
+    guard let animation = disc.animation(forKey: key) as? CABasicAnimation else {
+      driftProblems.append("no \(key)")
+      continue
+    }
+    if animation.keyPath != keyPath || animation.fromValue as? CGFloat != from || animation.toValue as? CGFloat != to
+      || animation.duration != period || !animation.autoreverses || animation.repeatCount != .infinity
+      || animation.timingFunction != CAMediaTimingFunction(name: .easeInEaseOut)
+    {
+      driftProblems.append("\(key): \(String(describing: animation.fromValue)) to \(String(describing: animation.toValue)) over \(animation.duration)")
+    }
+  }
+  if let scale = disc.animation(forKey: "lava.scale") as? CABasicAnimation {
+    if scale.fromValue as? CGFloat != 1 - LavaStyle.breathe || scale.toValue as? CGFloat != 1 + LavaStyle.breathe {
+      driftProblems.append("scale \(String(describing: scale.fromValue))")
+    }
+  } else {
+    driftProblems.append("no lava.scale")
+  }
+}
+check("lamp: each disc drifts between its blob's points, eased, looping, and breathes", driftProblems.isEmpty, driftProblems.prefix(3).joined(separator: "; "))
+check("lamp: runs until told otherwise", lamp.isRunning && lamp.layer?.speed == 1)
+lamp.setRunning(false)
+let frozenAt = lamp.layer?.timeOffset ?? -1
+check("lamp: stopping freezes the clock", !lamp.isRunning && lamp.layer?.speed == 0 && frozenAt > 0)
+lamp.setRunning(false)
+check("lamp: stopping twice keeps the frozen time", lamp.layer?.speed == 0 && lamp.layer?.timeOffset == frozenAt)
+lamp.setRunning(true)
+check("lamp: starting again runs the clock on from there", lamp.isRunning && lamp.layer?.speed == 1 && lamp.layer?.timeOffset == 0
+  && abs((lamp.layer?.convertTime(CACurrentMediaTime(), from: nil) ?? 0) - frozenAt) < 1)
+lamp.dimmed = true
+check("lamp: dimmed for a paused session", lamp.layer?.opacity == LavaStyle.pausedOpacity)
+lamp.dimmed = false
+check("lamp: full again after", lamp.layer?.opacity == 1)
+let stillLamp = LiveBackgroundView(seed: 7)
+stillLamp.reduceMotion = { true }
+stillLamp.setRunning(false)
+stillLamp.frame = NSRect(origin: .zero, size: pillSize)
+stillLamp.setRunning(true)
+check("lamp: Reduce Motion keeps it still", !stillLamp.isRunning && stillLamp.layer?.speed == 0 && stillLamp.blobLayers.count == LavaStyle.count)
+
+// In the panel: under everything else, drifting only while it shows a
+// running session.
+check("panel lamp: over the tint, under the pill, the controls and the edges", floating.chrome.subviews.first === floating.lava
+  && floating.lava.frame == floating.chrome.bounds && floating.lava.blobLayers.count == LavaStyle.count)
+check("panel lamp: blobs inside the pill", floating.lava.blobs.allSatisfy {
+  CGRect(origin: .zero, size: floating.lava.bounds.size).insetBy(dx: LavaStyle.inset, dy: LavaStyle.inset).contains($0.from)
+    && CGRect(origin: .zero, size: floating.lava.bounds.size).insetBy(dx: LavaStyle.inset, dy: LavaStyle.inset).contains($0.to)
+})
+floating.lava.reduceMotion = { false }
+ui.update(session(remaining: 1500, started: -1500))
+check("panel lamp: drifts while running", floating.lava.isRunning && !floating.lava.dimmed && floating.lava.layer?.speed == 1)
+ui.update(session(state: "paused", remaining: 1500, started: -1500))
+check("panel lamp: a paused session freezes and dims it", !floating.lava.isRunning && floating.lava.dimmed
+  && floating.lava.layer?.speed == 0 && floating.lava.layer?.opacity == LavaStyle.pausedOpacity)
+ui.update(session(remaining: 1500, started: -1500))
+check("panel lamp: resuming starts it again, full strength", floating.lava.isRunning && !floating.lava.dimmed && floating.lava.layer?.opacity == 1)
+floating.hide()
+check("panel lamp: hidden, it stops", !floating.isVisible && !floating.lava.isRunning && floating.lava.layer?.speed == 0)
+ui.update(session(remaining: 1500, started: -1500))
+check("panel lamp: shown again, it runs", floating.isVisible && floating.lava.isRunning)
+let fallbackLamp = FloatingPanel(scheduler: scheduler, screens: { screenList }, glass: false)
+check("panel lamp: still until the panel first shows", !fallbackLamp.lava.isRunning)
+
 ui.update(session(remaining: 3000, started: 0))
 check("at the start: no green", floating.content?.progress == 0 && floating.pill.progressRect.width == 0)
 ui.update(session(remaining: 0, started: -3000))
