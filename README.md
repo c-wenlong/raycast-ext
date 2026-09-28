@@ -22,8 +22,10 @@ home-manager config) and the `lid-sleep` sudoers rule.
 
 ## Data
 
-The notes live in `notes/` and Focus's sqlite database, config and socket in
-`focus/`, both at the repo root and gitignored.
+By default the notes live in `notes/` and Focus's sqlite database, config
+and socket in `focus/`, both at the repo root and gitignored. Notes' folder
+setting and Focus's `FOCUS_DIR` can point elsewhere; another folder inside
+the checkout would need its own ignore rule.
 
 ## Working on it
 
