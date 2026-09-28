@@ -312,16 +312,20 @@ Session and Focus Today's Discard Session, both `⌃X` with no confirmation).
   the same step instead of first being closed as finished, so there is never
   a finished row for the 30-second tick to log. `status` is null and
   `pending` has nothing for it afterwards.
-- A finished row with a `log_event_id` then has its log event removed through
+- A finished row with a `log_event_id` has its log event removed through
   `CalendarBackend.removeEvent(id:)` (`EKEventStore.remove`), but only after
   `loggedEvent(id:)` shows its notes still carry both marker lines of this
   session (`focus-session: <id>` and `focus-started: <UTC start>`, the test
   recovery adopts by), so an event Kai rewrote, or his own event, is never
-  deleted. The event goes first, then the row, whatever happened to the
-  event: a helper that dies between the two leaves the row in Stats with its
-  event already gone, and deleting it again finishes the job (the event is
-  then not found, which only warns). Without full access, with the
-  event not found (deleted by hand, or its calendar unavailable), with the
+  deleted. The row goes whatever happens to the event. Order: the row
+  deletes run, then the event is removed, then the transaction commits
+  (`Database.deleteSession(_:beforeCommit:)`). A delete that fails never
+  touches Calendar; a helper that dies after the event went rolls the deletes
+  back, leaving the row in Stats for a second delete to finish (the event is
+  then not found, which only warns); only a failed commit after a removal is
+  left, and its error says the event went and to delete again. Without full
+  access, with the event not found (deleted by hand, or its calendar
+  unavailable), with the
   markers gone, or when the remove fails, the event stays: `logEventRemoved:
   false` and a `warning` saying which. A waiting, no-calendar or abandoned row
   has no event: `logEventRemoved: false` and no warning.

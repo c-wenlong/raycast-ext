@@ -305,14 +305,18 @@ final class Database {
 
   /// Removes a session with its pauses and blocked attempts in one
   /// transaction (the children first: foreign keys are on and do not
-  /// cascade). False when there was no such session; nothing changes then.
+  /// cascade). `beforeCommit` runs once the deletes are done and before they
+  /// are committed, so a delete that fails never reaches it, and an error it
+  /// throws rolls everything back. False when there was no such session;
+  /// nothing changes then and `beforeCommit` is not called.
   @discardableResult
-  func deleteSession(_ id: Int64) throws -> Bool {
+  func deleteSession(_ id: Int64, beforeCommit: () throws -> Void = {}) throws -> Bool {
     try transaction {
       guard try session(id: id) != nil else { return false }
       try run("delete from pauses where session_id = ?", [.int(id)])
       try run("delete from blocked_attempts where session_id = ?", [.int(id)])
       try run("delete from sessions where id = ?", [.int(id)])
+      try beforeCommit()
       return true
     }
   }

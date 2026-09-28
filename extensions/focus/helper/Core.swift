@@ -680,29 +680,39 @@ final class FocusCore: SessionPresenterDelegate {
   /// it (no rating, panel and end sheet dismissed, blocking off, the Raycast
   /// complete deeplink) but nothing is written for it: its row is deleted in
   /// the same step, so no finished row is left for the 30-second tick to log.
-  /// A finished row's log event goes first, only when its notes still carry
-  /// this session's markers; otherwise, or without calendar access, the event
-  /// stays and the reply carries a warning. Event before row: a helper that
-  /// dies between the two leaves the row in Stats with its event already
-  /// gone, and deleting it again finishes the job; the other order would
-  /// leave an event nothing points at any more.
+  /// A finished row's log event is removed only when its notes still carry
+  /// this session's markers; otherwise, or without calendar access, the
+  /// event stays and the reply carries a warning. The event is removed after
+  /// the row deletes have run and before they commit: a delete that fails
+  /// never touches Calendar, and a helper that dies after the event went
+  /// rolls the deletes back, leaving the row in Stats for a second delete to
+  /// finish (the event is then not found, which only warns).
   private func deleteSession(_ request: Request) throws -> Reply {
     guard let number = try request.int("sessionId") else { throw FocusError("sessionId is required") }
     let id = Int64(number)
     guard let row = try db.session(id: id) else { throw FocusError("no session with id \(id)") }
     let wasOpen = try current()?.row.id == id
     var fields: [String: JSONValue] = ["deleted": true, "logEventRemoved": false]
-    // Only finished rows have a log event; the open one never does.
-    if let eventId = row.logEventId {
-      if let warning = removeLogEvent(eventId, of: row) {
-        log("session \(id): log event \(eventId) kept: \(warning)")
-        fields["warning"] = .string(warning)
-      } else {
-        log("session \(id): log event \(eventId) removed")
-        fields["logEventRemoved"] = true
+    let found: Bool
+    do {
+      found = try db.deleteSession(id) {
+        // Only finished rows have a log event; the open one never does.
+        guard let eventId = row.logEventId else { return }
+        if let warning = removeLogEvent(eventId, of: row) {
+          log("session \(id): log event \(eventId) kept: \(warning)")
+          fields["warning"] = .string(warning)
+        } else {
+          log("session \(id): log event \(eventId) removed")
+          fields["logEventRemoved"] = true
+        }
       }
+    } catch {
+      // Only the commit can fail after the event went.
+      guard fields["logEventRemoved"] == true else { throw error }
+      throw FocusError(
+        "the log event was removed but the session could not be deleted (\(error.localizedDescription)); delete it again")
     }
-    guard try db.deleteSession(id) else { throw FocusError("no session with id \(id)") }
+    guard found else { throw FocusError("no session with id \(id)") }
     waitingReasons[id] = nil
     if wasOpen {
       log("session \(id): discarded")
@@ -714,7 +724,7 @@ final class FocusCore: SessionPresenterDelegate {
     return .ok(fields)
   }
 
-  /// Removes a session's log event, before its row goes, if it is still the one this
+  /// Removes a session's log event, before its row deletes commit, if it is still the one this
   /// session wrote: its notes carry both marker lines (the session id and
   /// the UTC start), the same test recovery adopts by, so an event Kai
   /// rewrote or one a reused id points at is never touched. Returns nil when

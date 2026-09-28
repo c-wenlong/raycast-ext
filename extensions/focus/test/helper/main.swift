@@ -102,7 +102,11 @@ final class FakeCalendar: CalendarBackend {
     return LoggedEvent(id: event.id, start: event.draft.start, end: event.draft.end, notes: event.draft.notes)
   }
 
+  /// Runs inside removeEvent, before anything is removed (order checks).
+  var onRemove: (() -> Void)?
+
   func removeEvent(id: String) throws {
+    onRemove?()
     if failRemove { throw Boom() }
     guard let index = saved.firstIndex(where: { $0.id == id }) else { throw Boom() }
     saved.remove(at: index)
@@ -1876,7 +1880,12 @@ do {
   check("delete setup: two log events", !firstEvent.isEmpty && keptEvent != nil && h.fake.saved.count == 2)
   check("delete setup: children exist", !(try! h.db.pauses(firstId)).isEmpty && (try! h.db.attempts(firstId)).count == 2)
 
+  // The event goes after the row deletes ran and before they commit.
+  var rowAtRemove: SessionRow?? = .none
+  h.fake.onRemove = { rowAtRemove = .some(try! h.db.session(id: firstId)) }
   let reply = h.send("deleteSession", ["sessionId": .int(Int(firstId))])
+  h.fake.onRemove = nil
+  check("deleteSession: the event is removed inside the delete transaction", rowAtRemove == .some(nil), "\(String(describing: rowAtRemove))")
   check("deleteSession: a finished session with a log event", reply == ["ok": true, "deleted": true, "logEventRemoved": true], reply.serialized())
   check("deleteSession: its log event is removed", h.fake.removed == [firstEvent] && !h.fake.saved.contains { $0.id == firstEvent })
   check("deleteSession: the row is gone", (try! h.db.session(id: firstId)) == nil)
@@ -1948,6 +1957,18 @@ do {
   check("deleteSession: pending is clean after deleting a waiting session", h.send("pending")["waiting"] == [] && h.send("stats")["waiting"] == [])
   check("deleteSession: retry has nothing left to write", h.send("retryPending") == ["ok": true, "written": 0, "adopted": 0, "stillWaiting": 0])
   try! #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+
+  // The database step alone: a failure before the commit rolls every delete back.
+  let (rollbackId, _) = finished("Rollback", from: at(18, 0), to: at(18, 10))
+  try! h.db.addAttempt(rollbackId, BlockedAttempt(at: at(18, 5), kind: "site", target: "x.com", outcome: "blocked"))
+  try! h.db.addPause(rollbackId, start: at(18, 1), end: at(18, 2))
+  let threw = (try? h.db.deleteSession(rollbackId) { throw Boom() }) == nil
+  check(
+    "Database.deleteSession: an error before the commit keeps the row, pauses and attempts",
+    threw && (try! h.db.session(id: rollbackId)) != nil && (try! h.db.pauses(rollbackId)).count == 1 && (try! h.db.attempts(rollbackId)).count == 1)
+  var called = false
+  check("Database.deleteSession: an unknown id is false and never reaches beforeCommit", (try! h.db.deleteSession(9999) { called = true }) == false && !called)
+  check("Database.deleteSession: the rolled-back row still deletes", (try! h.db.deleteSession(rollbackId)) && (try! h.db.session(id: rollbackId)) == nil)
 
   // Refusals.
   check("deleteSession: an unknown id is refused", h.send("deleteSession", ["sessionId": 4242]) == ["ok": false, "error": "no session with id 4242"])
