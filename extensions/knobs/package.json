@@ -3,7 +3,7 @@
   "name": "knobs",
   "title": "Knobs",
   "description": "macOS system switches from Raycast: the grayscale colour filter, lid sleep and caffeinate.",
-  "icon": "extension-icon.png",
+  "icon": "knob-icon.png",
   "author": "c-wenlong",
   "platforms": [
     "macOS"
