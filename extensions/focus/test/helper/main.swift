@@ -1698,7 +1698,10 @@ do {
   let week = Chart.svg(days([2400, 0, 0, 0, 1800, 1800, 5400]))
   check("chart: one rect per day", rects(week) == 7)
   check("chart: no script, no external reference", !week.lowercased().contains("<script") && !week.contains("href") && !week.contains("@import"))
-  check("chart: size and canvas", week.hasPrefix("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"640\" height=\"240\"") && week.contains("fill=\"#1A1A1A\""))
+  check("chart: size and canvas", week.hasPrefix("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"640\" height=\"264\"") && week.contains("fill=\"#1A1A1A\""))
+  // 24 px of canvas above the heading (y 50, was 26) and the plot shifted with it: the baseline sits at top 78 + plot 150.
+  check("chart: heading clears the top edge", week.contains("y=\"50\" text-anchor=\"start\" font-size=\"17\"") && !week.contains("y=\"26\""))
+  check("chart: plot moved down with the heading", week.contains("d=\"M62 228.5H624\"") && !week.contains("d=\"M62 204.5H624\""))
   check("chart: bars in the accent colour, empty days as stubs", week.components(separatedBy: "fill=\"#E85C54\"").count - 1 == 4 && week.components(separatedBy: "fill=\"#3A3A3A\"").count - 1 == 3)
   check("chart: system fonts only", week.contains("font-family=\"-apple-system, Helvetica, sans-serif\""))
   check("chart: weekday labels and today", week.contains(">Today</text>") && week.contains(">\(local.shortWeekdaySymbols[local.component(.weekday, from: at(0, 0, day: 22)) - 1])</text>"))

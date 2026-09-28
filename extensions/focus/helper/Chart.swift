@@ -14,7 +14,7 @@ import Foundation
 
 enum Chart {
   static let width = 640.0
-  static let height = 240.0
+  static let height = 264.0
   static let canvas = "#1A1A1A"
   static let accent = "#E85C54"
   static let ink = "#EDEDED"
@@ -30,7 +30,9 @@ enum Chart {
   /// Where the heading starts: the page margin, left of the tick labels.
   private static let margin = 16.0
   private static let right = 16.0
-  private static let top = 54.0
+  /// 24 px of canvas above the heading, so the image does not sit hard
+  /// against the line above it in Raycast's Detail.
+  private static let top = 78.0
   private static let bottom = 36.0
   private static let maxBar = 24.0
   private static let corner = 4.0
@@ -106,8 +108,8 @@ enum Chart {
     parts.append("<path d=\"M0 0H\(Int(width))V\(Int(height))H0Z\" fill=\"\(canvas)\"/>")
     parts.append("<clipPath id=\"plot\"><path d=\"M0 0H\(Int(width))V\(number(baseline))H0Z\"/></clipPath>")
     let heading = days.count == 1 ? "Focused time today" : "Focused time, last \(days.count) days"
-    parts.append(text(heading, x: margin, y: 26, size: 17, color: ink, weight: "600"))
-    parts.append(text(LogText.minutes(total) + " in total", x: width - right, y: 26, anchor: "end", size: 15))
+    parts.append(text(heading, x: margin, y: 50, size: 17, color: ink, weight: "600"))
+    parts.append(text(LogText.minutes(total) + " in total", x: width - right, y: 50, anchor: "end", size: 15))
 
     // Grid and ticks: a hairline per step, labelled on the left.
     var tick = 0.0
