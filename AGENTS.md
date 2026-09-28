@@ -14,13 +14,12 @@ to this repo.
 | `extensions/notes/helper/` | The native floating window: a Swift AppKit `NSPanel` compiled into `assets/notes-panel`. |
 | `extensions/notes/test/` | `lib.test.ts` (TS, stubbed `@raycast/api`), `list-editing/` (pure text rules), `text-view/` (headless `NSTextView` harness), `panel-render/` (offscreen render tool, unreliable for chrome on macOS 26). |
 | `extensions/focus/` | The Focus extension (built 2026-09-28, refined since): calendar-driven and ad-hoc focus sessions with app and site blocking, a countdown as a floating glass panel, a menu bar item or a notch island, an end card with rating and note, sqlite logging, stats, and a log event per session. Four commands: Focus Today, Ad-hoc Session, Focus Stats, Focus Settings. The spec and decisions are [extensions/focus/PLAN.md](extensions/focus/PLAN.md); read it before writing any code there and update it when a decision changes. The helper (`focus-daemon`, Swift, committed to `assets/`) is documented in [extensions/focus/HELPER.md](extensions/focus/HELPER.md): protocol, session rules, displays, blocking, build and tests. Its data folder `focus/` at the repo root is gitignored like `notes/`. |
-| `extensions/color-filter/`, `extensions/lid-control/` | Small no-view system toggles (grayscale filter; lid sleep and caffeinate), each with a README. |
-| `scripts/` | Shell helpers (`toggle-lid-sleep.sh`). |
+| `extensions/knobs/` | Knobs: five no-view macOS system switches (Set Grayscale via a C helper in `assets/colorfilter`; Toggle Lid Sleep, Lid Sleep Status, Toggle Caffeinate, Caffeinate Status via the `lid` and `caff` scripts in `~/.local/bin`). Merged from the old color-filter and lid-control extensions on 2026-09-29; README in [extensions/knobs/README.md](extensions/knobs/README.md). |
 | `notes/` | The default notes folder. Gitignored (`/notes/`); never commit it. |
 
 ## Build and test
 
-Focus, from `extensions/focus`: `npm run build-helper` (signed `assets/focus-daemon`, committed), `npm test` (the four suites: TS, helper, UI, site; every one must be green before a push), `npm run build` and `npm run lint`. The commands, flags (`FOCUS_DIR`, `FOCUS_DEBUG`, `FOCUS_UI_DEMO`) and what each suite covers are in the "Build and test" and "Tests" sections of [extensions/focus/HELPER.md](extensions/focus/HELPER.md). The two small extensions have only `build` and `lint` (Color Filter also `build-helper`).
+Focus, from `extensions/focus`: `npm run build-helper` (signed `assets/focus-daemon`, committed), `npm test` (the four suites: TS, helper, UI, site; every one must be green before a push), `npm run build` and `npm run lint`. The commands, flags (`FOCUS_DIR`, `FOCUS_DEBUG`, `FOCUS_UI_DEMO`) and what each suite covers are in the "Build and test" and "Tests" sections of [extensions/focus/HELPER.md](extensions/focus/HELPER.md). Knobs has only `build`, `lint` and `build-helper` (`clang`, for `assets/colorfilter`, committed).
 
 Notes, from `extensions/notes`:
 
