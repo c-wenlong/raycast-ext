@@ -708,6 +708,27 @@ final class FloatingPanel: NSObject {
     return defaultFrame(width: width, on: main)
   }
 
+  /// `idle` moved just enough that both the pill and the wider, taller
+  /// controls row laid out from it lie on the screen it overlaps most, so a
+  /// panel parked half off an edge still shows every control on hover.
+  static func fitted(_ idle: NSRect, controlsWidth: CGFloat, anchoredRight: Bool, screens: [ScreenGeometry]) -> NSRect {
+    let hover = resized(idle, to: NSSize(width: controlsWidth, height: PanelStyle.hoverHeight), anchoredRight: anchoredRight)
+    let envelope = idle.union(hover)
+    let area = { (screen: ScreenGeometry) -> CGFloat in
+      let overlap = screen.frame.intersection(envelope)
+      return overlap.isNull ? 0 : overlap.width * overlap.height
+    }
+    guard let screen = screens.max(by: { area($0) < area($1) }), area(screen) > 0 else { return idle }
+    let bounds = screen.frame
+    var dx: CGFloat = 0
+    var dy: CGFloat = 0
+    if envelope.minX < bounds.minX { dx = bounds.minX - envelope.minX }
+    if envelope.maxX > bounds.maxX { dx = bounds.maxX - envelope.maxX }
+    if envelope.minY < bounds.minY { dy = bounds.minY - envelope.minY }
+    if envelope.maxY > bounds.maxY { dy = bounds.maxY - envelope.maxY }
+    return idle.offsetBy(dx: dx, dy: dy)
+  }
+
   /// Right half of its screen (or of the main one) keeps the right edge.
   static func anchorsRight(_ rect: NSRect, screens: [ScreenGeometry]) -> Bool {
     let screen = screens.first { $0.frame.contains(NSPoint(x: rect.midX, y: rect.midY)) } ?? screens.first
@@ -741,6 +762,7 @@ final class FloatingPanel: NSObject {
     if !placed {
       idleFrame = Self.idleFrame(width: width, saved: saved, screens: screens())
       anchoredRight = Self.anchorsRight(idleFrame, screens: screens())
+      idleFrame = Self.fitted(idleFrame, controlsWidth: controlsWidth, anchoredRight: anchoredRight, screens: screens())
       placed = true
       apply(isHovering ? hoverFrame() : idleFrame, animated: false)
     } else if idleFrame.width != width {
@@ -904,6 +926,12 @@ final class FloatingPanel: NSObject {
     if frame == start.frame { return }
     anchoredRight = Self.anchorsRight(frame, screens: screens())
     idleFrame = idle(from: frame)
+    // Dropped partly off the screen: slide back so every control shows.
+    let fitted = Self.fitted(idleFrame, controlsWidth: controlsWidth, anchoredRight: anchoredRight, screens: screens())
+    if fitted != idleFrame {
+      idleFrame = fitted
+      apply(isHovering ? hoverFrame() : idleFrame, animated: true)
+    }
     actions?.panelMoved(topLeft: NSPoint(x: idleFrame.minX, y: idleFrame.maxY))
     recheckHover()
   }

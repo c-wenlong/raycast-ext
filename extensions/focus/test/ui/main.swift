@@ -438,6 +438,16 @@ ui.update(session(goal: "Write the quarterly planning document for the whole tea
 check("a long goal is cut at the pill's limit", floating.frame.width <= CountdownPillView.width(PanelContent(clock: "25:00", paused: false, progress: 0, goal: "")) + PanelStyle.goalGap + PanelStyle.goalMaxWidth + PanelStyle.goalTrailing, "\(floating.frame)")
 ui.update(session(remaining: 1500, started: -1500))
 
+// The pill changes width while the controls show (paused adds a glyph):
+// the row is laid out from the anchored edge, so it does not move.
+floating.mouseEntered()
+let rowBefore = floating.frame
+ui.update(session(state: "paused", remaining: 1500, started: -1500))
+check("a width change under the controls leaves them in place", floating.frame == rowBefore, "\(floating.frame) \(rowBefore)")
+floating.setHovering(false, animated: false)
+check("the pill comes back on the same right edge", floating.frame.maxX == rowBefore.maxX && floating.frame.width == pausedPanelWidth)
+ui.update(session(remaining: 1500, started: -1500))
+
 // Hover: controls, then back after a short delay.
 let idle = floating.frame
 floating.mouseEntered()
@@ -607,6 +617,25 @@ screenList = [laptop]
 ui.update(session(id: 30, remaining: 590, started: 10))
 check("screen unplugged: back on the main screen", FloatingPanel.isOnScreen(floating.frame, screens: [laptop]) && floating.frame.maxX == 1500, "\(floating.frame)")
 screenList = [laptop, external]
+ui.panelMoved(topLeft: NSPoint(x: moved.x, y: moved.y))
+scheduler.advance(1)
+
+// Parked half off the left edge: moved in so the controls row fits.
+let edge = FloatingPanel.fitted(NSRect(x: -100, y: 500, width: 150, height: 34), controlsWidth: 254, anchoredRight: false, screens: [laptop])
+check("half off the left edge: slid in", edge == NSRect(x: 0, y: 500, width: 150, height: 34), "\(edge)")
+let rightEdge = FloatingPanel.fitted(NSRect(x: 1400, y: 960, width: 150, height: 34), controlsWidth: 254, anchoredRight: true, screens: [laptop])
+check("past the right and top edges: slid in", rightEdge == NSRect(x: 1362, y: 948, width: 150, height: 34), "\(rightEdge)")
+let lowLeft = FloatingPanel.fitted(NSRect(x: 10, y: 2, width: 150, height: 34), controlsWidth: 254, anchoredRight: false, screens: [laptop])
+check("the taller row fits at the bottom", lowLeft == NSRect(x: 10, y: 6, width: 150, height: 34), "\(lowLeft)")
+let inside = NSRect(x: 600, y: 600, width: 150, height: 34)
+check("a panel well inside stays put", FloatingPanel.fitted(inside, controlsWidth: 254, anchoredRight: true, screens: [laptop, external]) == inside)
+floating.mouseEntered()
+floating.beginDrag(at: NSPoint(x: 0, y: 0))
+floating.drag(to: NSPoint(x: -floating.frame.minX - 120, y: 0))
+floating.endDrag()
+check("dropped half off the left edge: the row slides back on", floating.frame.minX == 0 && floating.idleFrame.minX == 0, "\(floating.frame)")
+floating.mouseExited()
+scheduler.advance(1)
 ui.panelMoved(topLeft: NSPoint(x: moved.x, y: moved.y))
 scheduler.advance(1)
 
