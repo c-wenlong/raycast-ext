@@ -6,7 +6,7 @@
 # screen, and the app blocker hides nothing, so nothing appears. The block
 # window is wired to a real BlockEngine (pure files only). Prints "all passed".
 # `scripts/test-ui.sh <folder>` also writes sheet.png, menubar-*.png and
-# block.png there.
+# block.png (block-card.png too) there.
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p dist

@@ -5,8 +5,11 @@ import Foundation
 //
 // What a blocked app gets instead of its windows (PLAN.md "What a block looks
 // like"): the same page as the site block page, drawn natively. A borderless
-// panel covers the screen the mouse is on, under the menu bar and the Dock
-// (so the Focus countdown and its Stop stay reachable): a black canvas with a
+// panel covers the spot the blocked app's front window had (a rounded card,
+// at least `minCard` big, kept inside the screen's visible frame), or the
+// whole screen the mouse is on when that window is unknown, always under the
+// menu bar and the Dock (so the Focus countdown and its Stop stay reachable),
+// so the rest of the desktop stays usable: a black canvas with a
 // soft radial glow, the app's icon, "<App> has been blocked", one bordered
 // flat button "Snooze for N minutes" and the footer "End your focus session
 // to access this page". Snooze hands back to the engine (which unhides the
@@ -32,6 +35,8 @@ enum BlockStyle {
   static let titleSize: CGFloat = 28
   static let iconSide: CGFloat = 72
   static let textWidth: CGFloat = 640
+  /// The card's corner radius; the full-screen page has none.
+  static let cardRadius: CGFloat = 12
 }
 
 /// Borderless, becomes key without activating the daemon, Escape closes.
@@ -163,6 +168,7 @@ final class BlockWindow: NSObject {
   let titleLabel = NSTextField(wrappingLabelWithString: "")
   let snoozeButton = BlockButton(title: "")
   let footerLabel = NSTextField(labelWithString: BlockWindow.footer)
+  private var footerBottom: NSLayoutConstraint?
 
   /// Called when Snooze is pressed (the page closes first).
   var onSnooze: (() -> Void)?
@@ -174,6 +180,11 @@ final class BlockWindow: NSObject {
   private(set) var bundleId: String?
   private(set) var appName: String?
   private(set) var shownAt = Date.distantPast
+  /// Whether the page is a card over the app's window rather than the whole screen.
+  private(set) var isCard = false
+
+  /// The smallest card: room for the icon, a two-line title, the button and the footer.
+  static let minCard = NSSize(width: 480, height: 400)
 
   static let footer = "End your focus session to access this page"
 
@@ -195,8 +206,9 @@ final class BlockWindow: NSObject {
 
   private func build() {
     panel.appearance = NSAppearance(named: .darkAqua)
-    panel.backgroundColor = BlockStyle.edge
-    panel.isOpaque = true
+    // Clear, so the card's corners show what is behind; the backdrop paints the page.
+    panel.backgroundColor = .clear
+    panel.isOpaque = false
     panel.hasShadow = false
     // Above ordinary windows, below the menu bar and the Dock.
     panel.level = .floating
@@ -212,6 +224,8 @@ final class BlockWindow: NSObject {
     backdrop.onClick = { [weak self] in self?.close(reason: "click") }
     panel.contentView = backdrop
     panel.initialFirstResponder = backdrop
+    backdrop.wantsLayer = true
+    backdrop.layer?.masksToBounds = true
 
     iconView.imageScaling = .scaleProportionallyUpOrDown
     iconView.translatesAutoresizingMaskIntoConstraints = false
@@ -253,15 +267,81 @@ final class BlockWindow: NSObject {
       column.leadingAnchor.constraint(greaterThanOrEqualTo: backdrop.leadingAnchor, constant: 32),
       column.trailingAnchor.constraint(lessThanOrEqualTo: backdrop.trailingAnchor, constant: -32),
       footerLabel.centerXAnchor.constraint(equalTo: backdrop.centerXAnchor),
-      footerLabel.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor, constant: -56),
     ])
+    let bottom = footerLabel.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor, constant: -56)
+    bottom.isActive = true
+    footerBottom = bottom
+  }
+
+  // MARK: Placing
+
+  /// Where the page goes, in screen coordinates: over `window` (the blocked
+  /// app's front window) as a card, grown to `minCard` around its centre and
+  /// kept inside the visible frame of the screen it mostly sits on; nil when
+  /// there is no window or it is on no screen (then the page covers a whole
+  /// screen). Pure, so the tests can pass any screens.
+  static func cardFrame(over window: NSRect?, visibleFrames: [NSRect]) -> NSRect? {
+    guard let window, window.width > 0, window.height > 0 else { return nil }
+    let overlap = { (frame: NSRect) -> CGFloat in
+      let part = frame.intersection(window)
+      return part.isNull ? 0 : part.width * part.height
+    }
+    guard let visible = visibleFrames.max(by: { overlap($0) < overlap($1) }), overlap(visible) > 0 else { return nil }
+    var card = window.intersection(visible)
+    let width = min(max(card.width, minCard.width), visible.width)
+    let height = min(max(card.height, minCard.height), visible.height)
+    card = NSRect(x: card.midX - width / 2, y: card.midY - height / 2, width: width, height: height)
+    card.origin.x = min(max(card.minX, visible.minX), visible.maxX - width)
+    card.origin.y = min(max(card.minY, visible.minY), visible.maxY - height)
+    return card.integral
+  }
+
+  /// A Core Graphics window rect (top-left origin, y down, from the primary
+  /// screen's top) in AppKit screen coordinates (bottom-left origin, y up).
+  static func appKitRect(fromCG rect: CGRect, primaryHeight: CGFloat) -> NSRect {
+    NSRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
+  }
+
+  private func place(_ frame: NSRect, card: Bool) {
+    isCard = card
+    backdrop.layer?.cornerRadius = card ? BlockStyle.cardRadius : 0
+    footerBottom?.constant = card ? -32 : -56
+    // Two lines in a card, so a long name never reaches the footer at minCard.
+    titleLabel.maximumNumberOfLines = card ? 2 : 3
+    titleLabel.preferredMaxLayoutWidth = min(BlockStyle.textWidth, frame.width - 64)
+    panel.setFrame(frame, display: true)
+  }
+
+  /// Moves a showing full-screen page over `window` as a card (the app's window turned up after the page appeared).
+  func refit(over window: NSRect) {
+    guard panel.isVisible, !isCard,
+      let card = Self.cardFrame(over: window, visibleFrames: NSScreen.screens.map(\.visibleFrame))
+    else { return }
+    // Tests keep it off screen at the card's size.
+    place(headless ? NSRect(origin: NSPoint(x: -20000, y: -20000), size: card.size) : card, card: true)
+  }
+
+  /// Turns a showing card into the whole screen (the app ignored the hide, so any of its windows may show).
+  func cover() {
+    guard panel.isVisible, isCard else { return }
+    if headless {
+      place(NSRect(x: -20000, y: -20000, width: 1280, height: 800), card: false)
+    } else if let target = Self.screen(under: panel.frame) {
+      place(target.frame, card: false)
+    }
   }
 
   // MARK: Showing
 
-  /// Shows (or retargets) the page for one app on `screen` (the one with the
-  /// mouse by default). The label is plain text, so a name is never markup.
-  func show(appName: String, bundleId: String?, icon: NSImage?, snoozeSeconds: Int, screen: NSScreen? = nil) {
+  /// Shows (or retargets) the page for one app: a card over `window` (the
+  /// app's front window, in screen coordinates) when known, else the whole of
+  /// `screen` (the one with the mouse by default). The label is plain text,
+  /// so a name is never markup. `visibleFrames` stands in for the screens' in
+  /// the tests.
+  func show(
+    appName: String, bundleId: String?, icon: NSImage?, snoozeSeconds: Int, over window: NSRect? = nil,
+    screen: NSScreen? = nil, visibleFrames: [NSRect]? = nil
+  ) {
     self.bundleId = bundleId
     self.appName = appName
     titleLabel.stringValue = Self.title(appName: appName)
@@ -273,16 +353,32 @@ final class BlockWindow: NSObject {
     panel.setAccessibilityTitle(titleLabel.stringValue)
     shownAt = Date()
 
+    let card = Self.cardFrame(over: window, visibleFrames: visibleFrames ?? NSScreen.screens.map(\.visibleFrame))
     if headless {
-      panel.setFrame(NSRect(x: -20000, y: -20000, width: 1280, height: 800), display: true)
+      // Off screen, at the card's size when there is one.
+      let size = card?.size ?? NSSize(width: 1280, height: 800)
+      place(NSRect(origin: NSPoint(x: -20000, y: -20000), size: size), card: card != nil)
       panel.orderFrontRegardless()
       return
     }
-    let target = screen ?? Self.screenWithMouse() ?? NSScreen.main ?? NSScreen.screens.first
-    if let target { panel.setFrame(target.frame, display: true) }
+    if let card {
+      place(card, card: true)
+    } else if let target = screen ?? Self.screenWithMouse() ?? NSScreen.main ?? NSScreen.screens.first {
+      place(target.frame, card: false)
+    }
     panel.makeKeyAndOrderFront(nil)
     panel.orderFrontRegardless()
     panel.makeFirstResponder(backdrop)
+  }
+
+  /// The screen a rect mostly sits on; nil when it is on none.
+  static func screen(under rect: NSRect) -> NSScreen? {
+    let overlap = { (screen: NSScreen) -> CGFloat in
+      let part = screen.frame.intersection(rect)
+      return part.isNull ? 0 : part.width * part.height
+    }
+    guard let best = NSScreen.screens.max(by: { overlap($0) < overlap($1) }), overlap(best) > 0 else { return nil }
+    return best
   }
 
   private static func screenWithMouse() -> NSScreen? {

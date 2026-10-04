@@ -4,7 +4,7 @@
 // BlockEngine behind the app blocker. Run with scripts/test-ui.sh.
 // Pass a folder to also write sheet.png, card-0s.png, card-2.5s.png,
 // card-over-glow.png, menubar-*.png, panel-*.png (panel-fallback.png is the
-// pre-macOS 26 backdrop), notch-*.png, glow.png and block.png there.
+// pre-macOS 26 backdrop), notch-*.png, glow.png, block.png and block-card.png there.
 //
 // Nothing shows on screen: the status item lives in a private NSStatusBar
 // and the sheet is ordered in far off screen without becoming key.
@@ -1731,6 +1731,54 @@ if let up = NSEvent.mouseEvent(
 }
 check("a click off the button closes without snoozing", !blockWindow.isVisible && windowSnoozes == 1)
 
+// The card: over the app's window, at least minCard, inside the visible frame.
+let laptopVisible = NSRect(x: 0, y: 0, width: 1512, height: 949)  // a visible frame
+let sideVisible = NSRect(x: -1920, y: 0, width: 1920, height: 1055)
+let telegram = NSRect(x: 753, y: 0, width: 756, height: 584)
+check("a card covers the app's window", BlockWindow.cardFrame(over: telegram, visibleFrames: [laptopVisible]) == telegram)
+check("no window, no card", BlockWindow.cardFrame(over: nil, visibleFrames: [laptopVisible]) == nil)
+check("a window on no screen, no card", BlockWindow.cardFrame(over: NSRect(x: 5000, y: 5000, width: 400, height: 400), visibleFrames: [laptopVisible]) == nil)
+let tiny = BlockWindow.cardFrame(over: NSRect(x: 700, y: 400, width: 230, height: 300), visibleFrames: [laptopVisible])
+check("a small window gets a minCard card around its centre", tiny == NSRect(x: 575, y: 350, width: 480, height: 400), "\(String(describing: tiny))")
+let corner = BlockWindow.cardFrame(over: NSRect(x: 1400, y: 0, width: 200, height: 200), visibleFrames: [laptopVisible])
+check("a card is kept inside the visible frame", corner == NSRect(x: 1032, y: 0, width: 480, height: 400), "\(String(describing: corner))")
+let underBar = BlockWindow.cardFrame(over: NSRect(x: 0, y: 0, width: 1512, height: 982), visibleFrames: [laptopVisible])
+check("a card never covers the menu bar", underBar == laptopVisible, "\(String(describing: underBar))")
+let across = BlockWindow.cardFrame(over: NSRect(x: -900, y: 100, width: 1200, height: 600), visibleFrames: [laptopVisible, sideVisible])
+check("a window across two screens gets a card on the one it mostly sits on", across == NSRect(x: -900, y: 100, width: 900, height: 600), "\(String(describing: across))")
+let small = NSRect(x: 0, y: 0, width: 400, height: 300)
+check("a card is never bigger than its screen", BlockWindow.cardFrame(over: small, visibleFrames: [small]) == small)
+check("a rect on no screen has no screen", BlockWindow.screen(under: NSRect(x: 90000, y: 90000, width: 100, height: 100)) == nil)
+check("a rect on the main screen finds it", BlockWindow.screen(under: NSScreen.screens[0].frame.insetBy(dx: 10, dy: 10)) == NSScreen.screens[0])
+check("a Core Graphics rect flips to AppKit", BlockWindow.appKitRect(fromCG: CGRect(x: 753, y: 398, width: 756, height: 584), primaryHeight: 982) == NSRect(x: 753, y: 0, width: 756, height: 584))
+
+blockWindow.show(appName: "Telegram", bundleId: "ru.keepcoder.Telegram", icon: nil, snoozeSeconds: 180, over: telegram, visibleFrames: [laptopVisible])
+blockWindow.backdrop.layoutSubtreeIfNeeded()
+check("over a window the page is a card of its size", blockWindow.isCard && blockWindow.panel.frame.size == telegram.size, "\(blockWindow.panel.frame)")
+check("the card has rounded corners", blockWindow.backdrop.layer?.cornerRadius == BlockStyle.cardRadius)
+let cardButton = blockWindow.snoozeButton.convert(blockWindow.snoozeButton.bounds, to: blockWindow.backdrop)
+let cardFooter = blockWindow.footerLabel.convert(blockWindow.footerLabel.bounds, to: blockWindow.backdrop)
+check("the card's button sits in the middle", abs(cardButton.midX - blockWindow.backdrop.bounds.midX) < 1, "\(cardButton)")
+check("the card's footer sits under the button, inside", cardFooter.maxY < cardButton.minY && cardFooter.minY > 0, "\(cardFooter) \(cardButton)")
+blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: nil, snoozeSeconds: 180, over: NSRect(x: 0, y: 0, width: 230, height: 300), visibleFrames: [laptopVisible])
+blockWindow.backdrop.layoutSubtreeIfNeeded()
+let minFooter = blockWindow.footerLabel.convert(blockWindow.footerLabel.bounds, to: blockWindow.backdrop)
+let minButton = blockWindow.snoozeButton.convert(blockWindow.snoozeButton.bounds, to: blockWindow.backdrop)
+let minTitle = blockWindow.titleLabel.convert(blockWindow.titleLabel.bounds, to: blockWindow.backdrop)
+let minIcon = blockWindow.iconView.convert(blockWindow.iconView.bounds, to: blockWindow.backdrop)
+check("a minCard card fits everything", blockWindow.panel.frame.size == BlockWindow.minCard && minFooter.maxY < minButton.minY && minIcon.maxY < blockWindow.backdrop.bounds.maxY && minTitle.minX >= 0 && minTitle.maxX <= BlockWindow.minCard.width, "\(minIcon) \(minTitle) \(minButton) \(minFooter)")
+blockWindow.show(appName: "Extraordinarily Long Application Name Pro For Teams Enterprise Edition", bundleId: "x", icon: nil, snoozeSeconds: 150, over: NSRect(x: 0, y: 0, width: 230, height: 300), visibleFrames: [laptopVisible])
+blockWindow.backdrop.layoutSubtreeIfNeeded()
+let longTitle = blockWindow.titleLabel.convert(blockWindow.titleLabel.bounds, to: blockWindow.backdrop)
+let longButton = blockWindow.snoozeButton.convert(blockWindow.snoozeButton.bounds, to: blockWindow.backdrop)
+let longFooter = blockWindow.footerLabel.convert(blockWindow.footerLabel.bounds, to: blockWindow.backdrop)
+let longIcon = blockWindow.iconView.convert(blockWindow.iconView.bounds, to: blockWindow.backdrop)
+check("a long name at minCard keeps to two lines", blockWindow.titleLabel.maximumNumberOfLines == 2 && longTitle.height < BlockStyle.titleSize * 2.6, "\(longTitle)")
+check("a long name at minCard stays clear of the footer and the top", longFooter.maxY < longButton.minY && longIcon.maxY < blockWindow.backdrop.bounds.maxY, "\(longIcon) \(longTitle) \(longButton) \(longFooter)")
+blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: nil, snoozeSeconds: 180)
+check("without a window the page is the whole screen again", !blockWindow.isCard && blockWindow.titleLabel.maximumNumberOfLines == 3 && blockWindow.backdrop.layer?.cornerRadius == 0 && blockWindow.panel.frame.size == NSSize(width: 1280, height: 800))
+blockWindow.close()
+
 // The app blocker with a real engine: the window's Snooze reaches the engine.
 let blockedView = SessionView(
   id: 5, goal: "Deep Work", state: "running", startedAt: now, plannedEnd: now.addingTimeInterval(1500),
@@ -1751,6 +1799,58 @@ check("the engine is on", engine.isOn)
 let blockedApp = RunningApp(pid: 999_999, bundleId: "com.example.Blocked", name: "Blocked")
 check("a blocked app coming forward is blocked", engine.appCameForward(blockedApp))
 check("the page shows for it", blockWindow.isVisible && blockWindow.titleLabel.stringValue == "Blocked has been blocked" && blockWindow.snoozeButton.title == "Snooze for 2 minutes")
+check("an app that is gone gets the whole screen", !blockWindow.isCard)
+blockWindow.close()
+// Where the page goes, on this process standing in for the blocked app (nothing is really hidden).
+let selfApp = RunningApp(pid: getpid(), bundleId: "com.example.Blocked", name: "Blocked")
+var stubWindow: NSRect? = NSRect(x: 100, y: 100, width: 700, height: 500)
+var stillShowing = false
+var hideAccepted = true
+var retries: [() -> Void] = []
+appBlocker.frontWindow = { _ in stubWindow }
+appBlocker.isShowing = { _ in stillShowing }
+appBlocker.after = { _, body in retries.append(body) }
+appBlocker.hideApp = {
+  hiddenPids.append($0.processIdentifier)
+  return hideAccepted
+}
+let unsnoozed = engine.statusFields()["snoozed"]?.arrayValue ?? []
+check("nothing is snoozed before the placement checks", unsnoozed.isEmpty, "\(unsnoozed)")
+appBlocker.block(selfApp, snoozeSeconds: 120)
+check("a hidden app with a window gets a card over it", blockWindow.isCard && blockWindow.panel.frame.size == NSSize(width: 700, height: 500) && hiddenPids == [getpid()], "\(blockWindow.panel.frame) \(hiddenPids)")
+check("two hide retries are queued", retries.count == 2)
+retries.forEach { $0() }
+check("retries leave a hidden app and its card alone", blockWindow.isCard && hiddenPids.count == 1)
+retries = []
+blockWindow.close()
+appBlocker.block(selfApp, snoozeSeconds: 120)
+stillShowing = true
+retries.first?()
+check("an app that ignored the hide is hidden again", hiddenPids.count == 3, "\(hiddenPids)")
+check("and the page covers the whole screen", blockWindow.isVisible && !blockWindow.isCard && blockWindow.panel.frame.size == NSSize(width: 1280, height: 800), "\(blockWindow.panel.frame)")
+retries = []
+stillShowing = false
+blockWindow.close()
+hideAccepted = false
+appBlocker.block(selfApp, snoozeSeconds: 120)
+check("a refused hide gets the whole screen", blockWindow.isVisible && !blockWindow.isCard)
+blockWindow.close()
+retries = []
+hideAccepted = true
+stubWindow = nil
+appBlocker.block(selfApp, snoozeSeconds: 120)
+check("no window found gets the whole screen", blockWindow.isVisible && !blockWindow.isCard)
+stubWindow = NSRect(x: 100, y: 100, width: 700, height: 500)
+let hidesBefore = hiddenPids.count
+retries.first?()
+check("a window that turns up by a retry, the app hidden, makes the page a card", blockWindow.isCard && blockWindow.panel.frame.size == NSSize(width: 700, height: 500), "\(blockWindow.panel.frame)")
+check("that retry hides nothing more", hiddenPids.count == hidesBefore, "\(hiddenPids)")
+retries.last?()
+check("a later retry leaves the card alone", blockWindow.isCard && hiddenPids.count == hidesBefore)
+blockWindow.close()
+hiddenPids = []
+retries = []
+engine.appCameForward(blockedApp)
 blockWindow.snoozeButton.performClick(nil)
 let snoozedList = engine.statusFields()["snoozed"]?.arrayValue ?? []
 check("Snooze on the page snoozes the app in the engine", snoozedList.count == 1 && snoozedList.first?["target"] == "com.example.Blocked", "\(snoozedList)")
@@ -1920,6 +2020,9 @@ if CommandLine.arguments.count > 1 {
   let calculator = NSWorkspace.shared.icon(forFile: "/System/Applications/Calculator.app")
   blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: calculator, snoozeSeconds: 180)
   write(blockWindow.backdrop, "block.png")
+  // The card over a Telegram-sized window.
+  blockWindow.show(appName: "Calculator", bundleId: "com.apple.Calculator", icon: calculator, snoozeSeconds: 180, over: NSRect(x: 0, y: 0, width: 756, height: 584), visibleFrames: [NSRect(x: 0, y: 0, width: 1512, height: 949)])
+  write(blockWindow.backdrop, "block-card.png")
   blockWindow.close()
 }
 

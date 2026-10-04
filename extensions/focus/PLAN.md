@@ -36,13 +36,13 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 | How a session ends | The timer runs out and a sheet asks Extend or Finish, or Kai stops it manually at any time. |
 | What the log records | Start, end, source event, pauses and resumes, every blocked attempt, the end reason, a 5-star rating and a one-line note. |
 | Blocking configuration | Built-in categories (social, gaming, and the rest below) on by default, a default profile per startable calendar, and an allowlist mode. |
-| What a block looks like | Like Raycast Focus: a dark block page saying "<host> has been blocked", one "Snooze for 3 minutes" button, and the footer "End your focus session to access this page". Snoozes are logged. Apps get the same page as a native window. |
+| What a block looks like | Like Raycast Focus: a dark block page saying "<host> has been blocked", one "Snooze for 3 minutes" button, and the footer "End your focus session to access this page". Snoozes are logged. Apps get the same page as a native window over the spot the app's window had, not the whole screen (changed 2026-10-04; it was full screen). |
 | Overlapping events | Both are listed in Focus Today; Kai picks, and the session runs until the planned end of the one picked. |
 | Paused past planned end | A paused calendar session goes straight to the end sheet when its planned end passes, same as a running one. An ad-hoc session's pause stops its clock instead, so it never passes its end while paused. (Changed 2026-09-28; it was every session.) |
 | What pause means | A calendar session (it has a source event) takes a break inside the event: the end stays at the event's end and the countdown keeps falling. An ad-hoc session asked for a length, so pause stops the clock: the time left holds while paused and the planned end (with any extension) moves later by the pause on resume. Timed pauses resume the same way. (Kai, 2026-09-28.) |
 | Browsers | Chrome and Dia for now. Both expose tab URLs over AppleScript (checked on this Mac: Dia's dictionary has `active tab`, `URL`, `title`). |
 | Calendar access | EventKit through Calendar.app, which already syncs the Google account (41 CalDAV calendars found in `Calendar.sqlitedb` on 2026-09-27). No OAuth, works offline, one permission prompt. |
-| Surfaces in v1 | Countdown (floating panel by default, or the menu bar or the notch), full-screen block overlay, stats view, end-of-session sheet. |
+| Surfaces in v1 | Countdown (floating panel by default, or the menu bar or the notch), block page (a tab for sites, a card over the app's window for apps), stats view, end-of-session sheet. |
 | Where it lives | `extensions/focus/` in this repo. Data in `~/.raycast/focus/` (gitignored). Helper pattern copied from `extensions/notes`. |
 
 ## Parts
@@ -142,9 +142,11 @@ Rules:
   under a minute) from that setting, never a fixed "3".
 - Apps: the helper observes `NSWorkspace.didActivateApplicationNotification`.
   When a blocked app comes forward it is hidden (`NSRunningApplication.hide`)
-  and the same block page opens as a native full-screen window showing the
-  app name instead of a host; Snooze unhides the app, Escape or clicking
-  outside just closes the page. Whenever blocking turns on (session start,
+  and the same block page opens as a native window showing the app name
+  instead of a host, as a card where the app's front window was (at least
+  480 × 400, inside the screen's visible frame), so the rest of the desktop
+  stays usable; the whole screen only when that window is unknown. Snooze
+  unhides the app, Escape or clicking outside just closes the page. Whenever blocking turns on (session start,
   resume, extend, profile change) the helper applies the same rule to
   `NSWorkspace.shared.frontmostApplication` at once and polls both browsers
   immediately, so an app or tab that was already in front is blocked without
