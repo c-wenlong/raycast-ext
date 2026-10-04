@@ -312,6 +312,15 @@ final class BlockWindow: NSObject {
     panel.setFrame(frame, display: true)
   }
 
+  /// Moves a showing full-screen page over `window` as a card (the app's window turned up after the page appeared).
+  func refit(over window: NSRect) {
+    guard panel.isVisible, !isCard,
+      let card = Self.cardFrame(over: window, visibleFrames: NSScreen.screens.map(\.visibleFrame))
+    else { return }
+    // Tests keep it off screen at the card's size.
+    place(headless ? NSRect(origin: NSPoint(x: -20000, y: -20000), size: card.size) : card, card: true)
+  }
+
   /// Turns a showing card into the whole screen (the app ignored the hide, so any of its windows may show).
   func cover() {
     guard panel.isVisible, isCard else { return }
@@ -362,13 +371,14 @@ final class BlockWindow: NSObject {
     panel.makeFirstResponder(backdrop)
   }
 
-  /// The screen a rect mostly sits on.
-  private static func screen(under rect: NSRect) -> NSScreen? {
+  /// The screen a rect mostly sits on; nil when it is on none.
+  static func screen(under rect: NSRect) -> NSScreen? {
     let overlap = { (screen: NSScreen) -> CGFloat in
       let part = screen.frame.intersection(rect)
       return part.isNull ? 0 : part.width * part.height
     }
-    return NSScreen.screens.max { overlap($0) < overlap($1) }
+    guard let best = NSScreen.screens.max(by: { overlap($0) < overlap($1) }), overlap(best) > 0 else { return nil }
+    return best
   }
 
   private static func screenWithMouse() -> NSScreen? {

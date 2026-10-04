@@ -1748,6 +1748,8 @@ let across = BlockWindow.cardFrame(over: NSRect(x: -900, y: 100, width: 1200, he
 check("a window across two screens gets a card on the one it mostly sits on", across == NSRect(x: -900, y: 100, width: 900, height: 600), "\(String(describing: across))")
 let small = NSRect(x: 0, y: 0, width: 400, height: 300)
 check("a card is never bigger than its screen", BlockWindow.cardFrame(over: small, visibleFrames: [small]) == small)
+check("a rect on no screen has no screen", BlockWindow.screen(under: NSRect(x: 90000, y: 90000, width: 100, height: 100)) == nil)
+check("a rect on the main screen finds it", BlockWindow.screen(under: NSScreen.screens[0].frame.insetBy(dx: 10, dy: 10)) == NSScreen.screens[0])
 check("a Core Graphics rect flips to AppKit", BlockWindow.appKitRect(fromCG: CGRect(x: 753, y: 398, width: 756, height: 584), primaryHeight: 982) == NSRect(x: 753, y: 0, width: 756, height: 584))
 
 blockWindow.show(appName: "Telegram", bundleId: "ru.keepcoder.Telegram", icon: nil, snoozeSeconds: 180, over: telegram, visibleFrames: [laptopVisible])
@@ -1833,10 +1835,18 @@ hideAccepted = false
 appBlocker.block(selfApp, snoozeSeconds: 120)
 check("a refused hide gets the whole screen", blockWindow.isVisible && !blockWindow.isCard)
 blockWindow.close()
+retries = []
 hideAccepted = true
 stubWindow = nil
 appBlocker.block(selfApp, snoozeSeconds: 120)
 check("no window found gets the whole screen", blockWindow.isVisible && !blockWindow.isCard)
+stubWindow = NSRect(x: 100, y: 100, width: 700, height: 500)
+let hidesBefore = hiddenPids.count
+retries.first?()
+check("a window that turns up by a retry, the app hidden, makes the page a card", blockWindow.isCard && blockWindow.panel.frame.size == NSSize(width: 700, height: 500), "\(blockWindow.panel.frame)")
+check("that retry hides nothing more", hiddenPids.count == hidesBefore, "\(hiddenPids)")
+retries.last?()
+check("a later retry leaves the card alone", blockWindow.isCard && hiddenPids.count == hidesBefore)
 blockWindow.close()
 hiddenPids = []
 retries = []

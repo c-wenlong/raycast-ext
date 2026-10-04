@@ -106,7 +106,9 @@ final class AppBlocker: NSObject, AppWorkspace {
       // Read before the hide; a card only when the hide was accepted, so no other window of the app can show.
       let window = running.flatMap { self.frontWindow($0.processIdentifier) }
       let hidden = running.map { self.hide($0, bundleId: app.bundleId) } ?? false
-      self.present(app, icon: running?.icon, snoozeSeconds: snoozeSeconds, over: hidden ? window : nil)
+      // A refused hide still covers the screen the app's window is on, not just the one with the mouse.
+      let screen = hidden ? nil : window.flatMap(BlockWindow.screen(under:))
+      self.present(app, icon: running?.icon, snoozeSeconds: snoozeSeconds, over: hidden ? window : nil, screen: screen)
     }
   }
 
@@ -135,13 +137,13 @@ final class AppBlocker: NSObject, AppWorkspace {
   }
 
   /// Shows the page for `app`, its Snooze wired to the engine.
-  func present(_ app: RunningApp, icon: NSImage?, snoozeSeconds: Int, over appWindow: NSRect? = nil) {
+  func present(_ app: RunningApp, icon: NSImage?, snoozeSeconds: Int, over appWindow: NSRect? = nil, screen: NSScreen? = nil) {
     let bundleId = app.bundleId ?? ""
     window.onSnooze = { [weak self] in
       guard !bundleId.isEmpty else { return }
       self?.engine?.snoozeApp(bundleId: bundleId, activate: true)
     }
-    window.show(appName: app.name, bundleId: app.bundleId, icon: icon, snoozeSeconds: snoozeSeconds, over: appWindow)
+    window.show(appName: app.name, bundleId: app.bundleId, icon: icon, snoozeSeconds: snoozeSeconds, over: appWindow, screen: screen)
     // A non-activating panel of a background app never becomes key, so
     // Escape would go to whatever app macOS brought forward after the hide.
     // Taking activation for the page fixes that; closing it hands it back.
@@ -158,10 +160,18 @@ final class AppBlocker: NSObject, AppWorkspace {
     let accepted = hideApp(running)
     for delay in Self.hideRetries {
       after(delay) { [weak self] in
-        guard let self, let engine = self.engine, self.isShowing(running), engine.blocksApp(bundleId) else { return }
+        guard let self, let engine = self.engine, engine.blocksApp(bundleId) else { return }
+        let ours = bundleId.map { self.window.bundleId?.lowercased() == $0.lowercased() } ?? false
+        guard self.isShowing(running) else {
+          // Hidden now: a launching app's window may have turned up since, so a full-screen page becomes a card over it.
+          if ours, !self.window.isCard, let appWindow = self.frontWindow(running.processIdentifier) {
+            self.window.refit(over: appWindow)
+          }
+          return
+        }
         _ = self.hideApp(running)
         // It ignored the hide, so any of its windows may show: the page covers the whole screen again.
-        if let id = bundleId?.lowercased(), self.window.bundleId?.lowercased() == id { self.window.cover() }
+        if ours { self.window.cover() }
       }
     }
     return accepted
