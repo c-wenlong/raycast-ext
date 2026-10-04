@@ -7,9 +7,10 @@ import Foundation
 // NSWorkspace for apps coming forward, hides a blocked one with
 // NSRunningApplication.hide() and shows the block window (BlockWindow.swift)
 // in its place: a card over where the app's front window was, read just
-// before the hide (on screen, else off screen for a hidden app, else the
-// last one seen for that app, as for a relaunch), or the whole screen when
-// the window is unknown. The engine decides; this file only acts, always on the main
+// before the hide (on screen, else off screen for a hidden app), or the
+// whole screen when that window is unknown, the hide was refused, or the
+// app ignored it (a launching app can), since then any of its windows may
+// still show. The engine decides; this file only acts, always on the main
 // thread. The daemon itself, Raycast and the always-allowed set never reach
 // `block` (Matching.alwaysAllowedApps, and the engine skips its own pid).
 
@@ -22,8 +23,12 @@ final class AppBlocker: NSObject, AppWorkspace {
   var hideApp: (NSRunningApplication) -> Bool = { $0.hide() }
   /// The front window of a pid, in screen coordinates; tests replace it.
   var frontWindow: (pid_t) -> NSRect? = AppBlocker.frontWindow(pid:)
-  /// The last front window seen per bundle id (lowercased), for an app that comes forward with no window on screen.
-  private(set) var lastWindows: [String: NSRect] = [:]
+  /// Whether an app still shows after a hide; tests replace it.
+  var isShowing: (NSRunningApplication) -> Bool = { !$0.isTerminated && !$0.isHidden }
+  /// Runs a hide retry after a delay; tests replace it to run them at once.
+  var after: (TimeInterval, @escaping () -> Void) -> Void = { delay, body in
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: body)
+  }
   /// A launching app can ignore the first hide, so it is repeated after these delays while the app still shows.
   static let hideRetries: [TimeInterval] = [0.3, 1.0]
   /// Another app coming forward this long after the page appeared closes it
@@ -98,20 +103,11 @@ final class AppBlocker: NSObject, AppWorkspace {
       // been snoozed or unlisted since, and then must not be hidden.
       guard let self, self.engine?.blocksApp(app.bundleId) == true else { return }
       let running = NSRunningApplication(processIdentifier: app.pid)
-      let window = self.window(of: app.pid, bundleId: app.bundleId)
-      if let running { self.hide(running, bundleId: app.bundleId) }
-      self.present(app, icon: running?.icon, snoozeSeconds: snoozeSeconds, over: window)
+      // Read before the hide; a card only when the hide was accepted, so no other window of the app can show.
+      let window = running.flatMap { self.frontWindow($0.processIdentifier) }
+      let hidden = running.map { self.hide($0, bundleId: app.bundleId) } ?? false
+      self.present(app, icon: running?.icon, snoozeSeconds: snoozeSeconds, over: hidden ? window : nil)
     }
-  }
-
-  /// The app's front window now, remembered for next time; else the one remembered.
-  private func window(of pid: pid_t, bundleId: String?) -> NSRect? {
-    let key = bundleId?.lowercased()
-    if let frame = frontWindow(pid) {
-      if let key { lastWindows[key] = frame }
-      return frame
-    }
-    return key.flatMap { lastWindows[$0] }
   }
 
   /// The frontmost ordinary window (layer 0, visible, at least 100 pt each
@@ -157,21 +153,18 @@ final class AppBlocker: NSObject, AppWorkspace {
     log("block window shown for \(app.name), \(place) (key: \(window.panel.isKeyWindow))")
   }
 
-  private func hide(_ running: NSRunningApplication, bundleId: String?) {
-    _ = hideApp(running)
+  /// Hides the app and retries while it still shows. Returns whether the first hide was accepted.
+  private func hide(_ running: NSRunningApplication, bundleId: String?) -> Bool {
+    let accepted = hideApp(running)
     for delay in Self.hideRetries {
-      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-        guard let self, let engine = self.engine, !running.isTerminated, !running.isHidden,
-          engine.blocksApp(bundleId)
-        else { return }
-        // A launching app may only now have its window: read it before hiding and move the page over it.
-        let appWindow = self.window(of: running.processIdentifier, bundleId: bundleId)
+      after(delay) { [weak self] in
+        guard let self, let engine = self.engine, self.isShowing(running), engine.blocksApp(bundleId) else { return }
         _ = self.hideApp(running)
-        if let id = bundleId?.lowercased(), self.window.bundleId?.lowercased() == id, !self.window.isCard {
-          self.window.refit(over: appWindow)
-        }
+        // It ignored the hide, so any of its windows may show: the page covers the whole screen again.
+        if let id = bundleId?.lowercased(), self.window.bundleId?.lowercased() == id { self.window.cover() }
       }
     }
+    return accepted
   }
 
   func unblock(bundleId: String, activate: Bool) {

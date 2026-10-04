@@ -306,15 +306,20 @@ final class BlockWindow: NSObject {
     isCard = card
     backdrop.layer?.cornerRadius = card ? BlockStyle.cardRadius : 0
     footerBottom?.constant = card ? -32 : -56
+    // Two lines in a card, so a long name never reaches the footer at minCard.
+    titleLabel.maximumNumberOfLines = card ? 2 : 3
     titleLabel.preferredMaxLayoutWidth = min(BlockStyle.textWidth, frame.width - 64)
     panel.setFrame(frame, display: true)
   }
 
-  /// Moves a showing page over `window` (the app's window turned up after the page appeared).
-  func refit(over window: NSRect?) {
-    guard panel.isVisible, !headless, let card = Self.cardFrame(over: window, visibleFrames: NSScreen.screens.map(\.visibleFrame))
-    else { return }
-    place(card, card: true)
+  /// Turns a showing card into the whole screen (the app ignored the hide, so any of its windows may show).
+  func cover() {
+    guard panel.isVisible, isCard else { return }
+    if headless {
+      place(NSRect(x: -20000, y: -20000, width: 1280, height: 800), card: false)
+    } else if let target = Self.screen(under: panel.frame) {
+      place(target.frame, card: false)
+    }
   }
 
   // MARK: Showing
@@ -355,6 +360,15 @@ final class BlockWindow: NSObject {
     panel.makeKeyAndOrderFront(nil)
     panel.orderFrontRegardless()
     panel.makeFirstResponder(backdrop)
+  }
+
+  /// The screen a rect mostly sits on.
+  private static func screen(under rect: NSRect) -> NSScreen? {
+    let overlap = { (screen: NSScreen) -> CGFloat in
+      let part = screen.frame.intersection(rect)
+      return part.isNull ? 0 : part.width * part.height
+    }
+    return NSScreen.screens.max { overlap($0) < overlap($1) }
   }
 
   private static func screenWithMouse() -> NSScreen? {
