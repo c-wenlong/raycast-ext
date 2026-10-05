@@ -44,6 +44,7 @@ Inside the window:
 | `⌘W` or `Esc` | hide |
 | `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again with the caret or selection inside to remove |
 | `⌘L` | link the selection, caret between the `()` |
+| `[[` | link to another note: a picker of the folder's notes by title, most recently edited first; type to filter, `↩` inserts `[Title](file%20name.md)` in place of `[[query`, `Esc` keeps the text. Clicking such a link opens that note in the window |
 | hover or right-click a link | hovering an `http(s)` link shows a bubble with the address, Open, Edit and Copy; right-clicking any link gives Copy, Open and Edit, and for a `[text](url)` link Remove Link too. Edit opens a small form for text and address |
 | `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
 | `\| ` or `⇧⌘B` | quote the line (`\| text` in the file); `↩` continues the quote, `↩` on an empty quote line ends it |

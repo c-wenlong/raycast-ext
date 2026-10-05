@@ -926,5 +926,32 @@ do {
   check("one after another", short("👏:tada:")?.0 == "👏🎉")
 }
 
+// Note link trigger and the link a pick inserts
+
+do {
+  func trigger(_ text: String) -> Int? { ListEditing.noteLinkTrigger(in: text, cursor: (text as NSString).length) }
+  check("[[ opens at the first bracket", trigger("[[") == 0)
+  check("after text, with a query", trigger("see [[Proj") == 4)
+  check("the query may hold spaces", trigger("[[my big note") == 0)
+  check("a closing bracket ends it", trigger("[[a]") == nil && trigger("[[a]] b") == nil)
+  check("a third bracket is not a trigger", trigger("[[[") == nil)
+  check("one bracket is not enough", trigger("x [") == nil)
+  check("only on the caret's line", trigger("[[a\nb") == nil && trigger("a\n[[b") == 2)
+  check("not in a code span", trigger("`[[") == nil)
+  check("not in a link address", trigger("[x](a[[") == nil)
+  check("not in a fenced block", ListEditing.noteLinkTrigger(in: "```\n[[\n```", cursor: 6) == nil)
+  check("the latest [[ on the line wins", trigger("[[a]] and [[b") == 10)
+  check("a [ after [ does not start a new one", !ListEditing.noteLinkCanStart(in: "[", at: 1) && ListEditing.noteLinkCanStart(in: "a ", at: 2))
+
+  check("a note link encodes spaces", ListEditing.noteLink(title: "My Note", target: "2026-10-05 1200 - my-note.md") == "[My Note](2026-10-05%201200%20-%20my-note.md)",
+    ListEditing.noteLink(title: "My Note", target: "2026-10-05 1200 - my-note.md"))
+  check("brackets leave the title", ListEditing.noteLink(title: "[draft] plan", target: "plan.md") == "[draft plan](plan.md)")
+  check("an empty title reads Untitled", ListEditing.noteLink(title: "  ", target: "a.md") == "[Untitled](a.md)")
+  check("parentheses and colons in the name are encoded", ListEditing.noteLink(title: "T", target: "a (1): b.md") == "[T](a%20%281%29%3A%20b.md)",
+    ListEditing.noteLink(title: "T", target: "a (1): b.md"))
+  check("a full path keeps its slashes", ListEditing.noteLink(title: "T", target: "/Users/k/My Notes/a.md") == "[T](/Users/k/My%20Notes/a.md)")
+  check("accents are percent-encoded", ListEditing.noteLink(title: "Café", target: "café.md") == "[Café](caf%C3%A9.md)")
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

@@ -801,6 +801,8 @@ final class NoteTextView: NSTextView {
   //   to the line.
   // - ":" and two letters (":cl"), where a name can start: emoji, inserted
   //   in place of ":query".
+  // - "[[": the other notes in the folder, most recently modified first;
+  //   a pick puts `[Title](file.md)` in place of "[[query".
   // They share one InlinePicker look and these rules: typing filters it;
   // up/down, return, tab and escape go to it while it is open; the caret
   // leaving the query, an invalid query or nothing matching closes it;
@@ -808,7 +810,7 @@ final class NoteTextView: NSTextView {
   // makes its edit as one undo step.
 
   enum PickerKind {
-    case slash, emoji
+    case slash, emoji, noteLink
   }
 
   private struct OpenPicker {
@@ -833,15 +835,29 @@ final class NoteTextView: NSTextView {
     title: "Emoji", accessibilityLabel: "Emoji",
     source: { query in Emoji.matches(query).map { InlinePicker.Item(id: $0.emoji, title: $0.name, glyph: $0.emoji) } },
     pick: { [weak self] item in self?.pickEmoji(item) })
+  private lazy var notePicker = InlinePicker(
+    title: "Link to note", accessibilityLabel: "Notes", width: 320,
+    source: { [weak self] query in self?.noteItems(matching: query) ?? [] },
+    pick: { [weak self] item in self?.pickNote(item) })
+
+  /// The notes "[[" can link to, most recently modified first (the panel
+  /// controller lists the folder). Nil: no note picker.
+  var noteLinkTargets: (() -> [NoteLinks.Target])?
+  /// The targets as read when the note picker last opened, and the "[["
+  /// they were read for: typing on after the same "[[" reuses them.
+  private var noteTargets: [NoteLinks.Target] = []
+  private var noteTargetsTrigger: Int?
 
   var slashMenuIsOpen: Bool { openPicker?.kind == .slash }
   var emojiPickerIsOpen: Bool { openPicker?.kind == .emoji }
+  var notePickerIsOpen: Bool { openPicker?.kind == .noteLink }
   var pickerIsOpen: Bool { openPicker != nil }
 
   private func picker(for kind: PickerKind) -> InlinePicker {
     switch kind {
     case .slash: return slashMenu
     case .emoji: return emojiPicker
+    case .noteLink: return notePicker
     }
   }
 
@@ -875,6 +891,7 @@ final class NoteTextView: NSTextView {
     switch kind {
     case .slash: return query.rangeOfCharacter(from: .newlines) == nil
     case .emoji: return ListEditing.isEmojiQuery(query)
+    case .noteLink: return query.rangeOfCharacter(from: CharacterSet(charactersIn: "[]").union(.newlines)) == nil
     }
   }
 
@@ -940,6 +957,27 @@ final class NoteTextView: NSTextView {
   private func pickEmoji(_ item: InlinePicker.Item) {
     guard let emoji = item.glyph else { return }
     finishPick { insertion(of: emoji) }
+  }
+
+  private func noteItems(matching query: String) -> [InlinePicker.Item] {
+    NoteLinks.matches(query, in: noteTargets).map {
+      InlinePicker.Item(id: $0.target, title: $0.title, hint: Self.shortDate($0.modified), symbol: "doc.text")
+    }
+  }
+
+  private func pickNote(_ item: InlinePicker.Item) {
+    finishPick { insertion(of: ListEditing.noteLink(title: item.title, target: item.id)) }
+  }
+
+  /// "Today", "Yesterday", else "3 Oct" (with the year when not this one).
+  private static func shortDate(_ date: Date) -> String {
+    let calendar = Calendar.current
+    if calendar.isDateInToday(date) { return "Today" }
+    if calendar.isDateInYesterday(date) { return "Yesterday" }
+    let formatter = DateFormatter()
+    let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+    formatter.setLocalizedDateFormatFromTemplate(sameYear ? "d MMM" : "d MMM yyyy")
+    return formatter.string(from: date)
   }
 
   /// `text` typed at the caret, as an edit.
@@ -1013,11 +1051,19 @@ final class NoteTextView: NSTextView {
   }
 
   /// After a keystroke with no picker open: opens the one whose trigger
-  /// the caret has just completed (":" and two letters).
+  /// the caret has just completed (":" and two letters, or "[[").
   private func openPickerForTypedTrigger() {
     let caret = selectedRange().location
     if let colon = ListEditing.emojiTrigger(in: string, cursor: caret), colon != dismissedTrigger {
       showPicker(.emoji, at: colon, trigger: ":")
+    } else if let source = noteLinkTargets, let open = ListEditing.noteLinkTrigger(in: string, cursor: caret),
+      open != dismissedTrigger
+    {
+      if noteTargetsTrigger != open {
+        noteTargets = source()
+        noteTargetsTrigger = open
+      }
+      showPicker(.noteLink, at: open, trigger: "[[")
     }
   }
 
@@ -1286,7 +1332,7 @@ final class NoteTextView: NSTextView {
     // decided before the insert, and starts a fresh undo group, so a pick
     // can take the whole "/query" back out with one undo.
     var opensMenu = false
-    if typed == "/", !slashMenuIsOpen, typing {
+    if typed == "/", openPicker == nil, typing {
       let pre = selectedRange()
       let ns = self.string as NSString
       let lineStart = ns.lineRange(for: NSRange(location: pre.location, length: 0)).location
@@ -1300,11 +1346,19 @@ final class NoteTextView: NSTextView {
     let caretBefore = selectedRange().location
     let markerBefore = typed.map(ListEditing.typographyTriggers.contains) == true
       && (1...2).contains { caretBefore - $0 >= 0 && hiddenRun(at: caretBefore - $0) != nil }
-    // A ":" that could start an emoji name also starts its own undo
-    // group, for the same reason: the picker opens a few letters later.
+    // A ":" that could start an emoji name, or a "[" that could start
+    // "[[", also starts its own undo group, for the same reason: the
+    // picker opens a keystroke or two later.
     if typed == ":", typing {
       dismissedTrigger = nil
       if ListEditing.emojiColonCanStart(in: self.string, at: selectedRange().location) { breakUndoCoalescing() }
+    }
+    if typed == "[", typing {
+      if ListEditing.noteLinkCanStart(in: self.string, at: selectedRange().location) {
+        dismissedTrigger = nil
+        noteTargetsTrigger = nil
+        breakUndoCoalescing()
+      }
     }
     super.insertText(string, replacementRange: replacementRange)
     if opensMenu {
@@ -1316,7 +1370,7 @@ final class NoteTextView: NSTextView {
     let selection = selectedRange()
     guard selection.length == 0 else { return }
     // ":clap:" becomes 👏 as its own undo step, so ⌘Z gives back the name.
-    if typed == ":", !pasting, apply(ListEditing.emojiShortcode(in: self.string, cursor: selection.location, lookup: Emoji.lookup)) {
+    if typed == ":", !pasting, !notePickerIsOpen, apply(ListEditing.emojiShortcode(in: self.string, cursor: selection.location, lookup: Emoji.lookup)) {
       return
     }
     if openPicker == nil, typed != nil { openPickerForTypedTrigger() }

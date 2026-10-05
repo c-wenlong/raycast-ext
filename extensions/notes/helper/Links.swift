@@ -7,7 +7,8 @@ import Foundation
 // the address and Open / Edit / Copy buttons; right-clicking any link offers
 // Edit, Copy, Open and Remove. Edit opens a small panel with the link's text
 // and address, and saving rewrites the whole `[text](url)` (or bare URL) as
-// one undoable change. Clicking a link still opens it, as before.
+// one undoable change. Clicking a link still opens it, as before; a link to
+// another note (`[Title](file.md)`) opens that note in the window.
 
 final class LinkController: NSObject {
   /// One link's markdown source.
@@ -53,13 +54,15 @@ final class LinkController: NSObject {
   }
 
   /// The address as typed, trimmed, with `https://` added when it has no
-  /// scheme, and with the characters that would end a markdown target
+  /// scheme (except a relative `.md` path, a link to a note), and with the characters that would end a markdown target
   /// early (whitespace, ")") percent-encoded. Empty stays empty.
   static func normalizedURL(_ raw: String) -> String {
     var url = raw.components(separatedBy: .newlines).joined().trimmingCharacters(in: .whitespaces)
     guard !url.isEmpty else { return "" }
     if url.hasPrefix("//") {
       url = "https:" + url
+    } else if url.range(of: #"^[^:#?]+\.md(#.*)?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+      // "Other Note.md": a link to a note, kept relative.
     } else if url.range(of: #"^[A-Za-z][A-Za-z0-9+.\-]*:(?![0-9])"#, options: .regularExpression) == nil {
       // "example.com", "localhost:3000/x" (a port is not a scheme)
       url = "https://" + url
@@ -859,5 +862,68 @@ final class LinkEditor: NSObject, NSTextFieldDelegate {
       return false
     }
     return true
+  }
+}
+
+// MARK: - Links between notes
+//
+// "[[" opens a picker over the other notes in the folder; a pick inserts
+// `[Title](file.md)` (ListEditing.noteLink). Clicking such a link opens the
+// note in the window instead of handing it to the browser.
+
+enum NoteLinks {
+  /// A note the picker offers.
+  struct Target: Equatable {
+    let title: String
+    /// The address the link gets, before encoding: the filename for a
+    /// note beside the open one, else the full path.
+    let target: String
+    let modified: Date
+  }
+
+  /// The targets matching `query`: every word of it appears in the title
+  /// or the address (any case). Order (most recently modified first) is
+  /// kept. An empty query matches all.
+  static func matches(_ query: String, in targets: [Target], limit: Int = 200) -> [Target] {
+    let words = query.lowercased().split(separator: " ").map(String.init)
+    let found = words.isEmpty ? targets : targets.filter { target in
+      let title = target.title.lowercased()
+      let address = target.target.lowercased()
+      return words.allSatisfy { title.contains($0) || address.contains($0) }
+    }
+    return Array(found.prefix(limit))
+  }
+
+  /// The address for a link from a note in `directory` to the note at
+  /// `path`: its filename when it sits in the same folder, else its path.
+  static func linkTarget(for path: String, from directory: String) -> String {
+    let folder = ((path as NSString).deletingLastPathComponent as NSString).standardizingPath
+    if folder == (directory as NSString).standardizingPath { return (path as NSString).lastPathComponent }
+    return path
+  }
+
+  /// The file a note link points at, resolved against `directory` (the
+  /// open note's folder): a link with no scheme (or file:) whose path ends
+  /// in ".md". Nil for web links and anything else.
+  static func notePath(for url: URL, in directory: String) -> String? {
+    guard url.scheme == nil || url.scheme?.lowercased() == "file" else { return nil }
+    let path = url.path
+    guard !path.isEmpty, path.lowercased().hasSuffix(".md") else { return nil }
+    let full = path.hasPrefix("/") ? path : (directory as NSString).appendingPathComponent(path)
+    return (full as NSString).standardizingPath
+  }
+
+  private static let generatedPrefix = try! NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2} \d{4} - "#)
+
+  /// A generated filename (`YYYY-MM-DD HHmm - slug.md`) is renamed when
+  /// its note's title changes, but keeps its timestamp. For a link to such
+  /// a file that no longer exists, the one file in `names` with the same
+  /// timestamp; nil when there is none or more than one (a duplicate).
+  static func renamedNote(_ filename: String, among names: [String]) -> String? {
+    let ns = filename as NSString
+    guard let match = generatedPrefix.firstMatch(in: filename, range: NSRange(location: 0, length: ns.length)) else { return nil }
+    let prefix = ns.substring(with: match.range)
+    let candidates = names.filter { $0.hasPrefix(prefix) && $0.lowercased().hasSuffix(".md") && $0 != filename }
+    return candidates.count == 1 ? candidates[0] : nil
   }
 }
