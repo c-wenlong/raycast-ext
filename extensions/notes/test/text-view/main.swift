@@ -25,13 +25,16 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") { print((ok ? "ok 
 func load(_ text: String) { tv.undoManager?.removeAllActions(); tv.string = text; Markdown.apply(to: tv.textStorage!); tv.layoutManager?.ensureLayout(for: tv.textContainer!) }
 func caret() -> Int { tv.selectedRange().location }
 /// Runs the run loop until everything already queued on the main queue
-/// has run (a marker block queued now runs after it), however loaded the
-/// machine is; gives up after `timeout`.
+/// has run (a marker block queued now runs after it) and the text view's
+/// undo group for the current event has closed, as the event loop would,
+/// however loaded the machine is; gives up after `timeout`.
 func drainMain(timeout: TimeInterval = 10) {
   var done = false
   DispatchQueue.main.async { done = true }
   let deadline = Date().addingTimeInterval(timeout)
-  while !done && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+  repeat {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+  } while (!done || (tv.undoManager?.groupingLevel ?? 0) > 0) && Date() < deadline
 }
 
 // 1. clicking the header lands in the body
