@@ -761,7 +761,7 @@ enum Markdown {
   static let italic = ListEditing.italicPattern
   static let strike = ListEditing.strikePattern
   static let code = ListEditing.codePattern
-  static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
+  static let link = NoteNames.linkPattern
   static let bareURL = try! NSRegularExpression(pattern: ListEditing.bareURLPattern + "+")
 
   /// One fenced code block: the opening fence line, the language word on

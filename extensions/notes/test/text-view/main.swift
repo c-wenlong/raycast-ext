@@ -650,14 +650,7 @@ let inserted = ListEditing.noteLink(title: "Project plan", target: "2026-10-05 1
 let insertedSpan = LinkController.span(in: "x " + inserted, at: 3)
 check("the inserted link is one markdown link the window styles", insertedSpan?.range == NSRange(location: 2, length: (inserted as NSString).length) && insertedSpan.flatMap { URL(string: $0.url) }.flatMap { NoteLinks.notePath(for: $0, in: "/n") } == "/n/2026-10-05 1200 - project-plan.md",
   "\(String(describing: insertedSpan))")
-let titlesByName = ["2026-10-05 1200 - plan.md": "# Project **plan**", "2026-10-05 1200 - shopping.md": "Shopping", "2026-10-05 1200 - plan-copy.md": "Project plan copy"]
-func renamed(_ file: String, _ names: [String], _ text: String) -> String? {
-  NoteLinks.renamedNote(file, among: names, linkText: text, firstLineOf: { titlesByName[$0].flatMap(Titles.firstLine(of:)) })
-}
-check("a renamed generated note is found by its timestamp and title", renamed("2026-10-05 1200 - project-plan.md", ["2026-10-05 1200 - plan.md", "other.md"], "Project plan") == "2026-10-05 1200 - plan.md")
-check("an unrelated note from the same minute is not opened", renamed("2026-10-05 1200 - project-plan.md", ["2026-10-05 1200 - shopping.md"], "Project plan") == nil)
-check("among notes sharing the timestamp, the one titled like the link", renamed("2026-10-05 1200 - x.md", ["2026-10-05 1200 - shopping.md", "2026-10-05 1200 - plan.md", "2026-10-05 1200 - plan-copy.md"], "Project plan") == "2026-10-05 1200 - plan.md")
-check("not for a hand-named note", renamed("groceries.md", ["groceries-2.md"], "Groceries") == nil)
+check("a link to a renamed note is resolved by its id", NoteLinks.noteWithSameID(as: "2026-10-05 1200 ab12 - old.md", among: ["2026-10-05 1200 ab12 - new.md", "2026-10-05 1200 cd34 - other.md"]) == "2026-10-05 1200 ab12 - new.md")
 let headFile = NSTemporaryDirectory() + "notes-head-\(getpid()).md"
 try! ("# Big note\n" + String(repeating: "word ", count: 400_000)).write(toFile: headFile, atomically: true, encoding: .utf8)
 let head = NoteLinks.headText(atPath: headFile)

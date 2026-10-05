@@ -953,5 +953,264 @@ do {
   check("accents are percent-encoded", ListEditing.noteLink(title: "Café", target: "café.md") == "[Café](caf%C3%A9.md)")
 }
 
+// Note filenames with stable ids (mirrored by test/lib.test.ts over the same fixture)
+
+do {
+  struct Case: Decodable {
+    struct Parsed: Decodable, Equatable { let stamp: String; let id: String?; let slug: String }
+    let name: String
+    let parsed: Parsed?
+    let title: String
+    let clash: String
+    let renameClash: String
+  }
+  let cases = try! JSONDecoder().decode([Case].self, from: Data(contentsOf: URL(fileURLWithPath: "test/note-names.json")))
+  for c in cases {
+    let got = NoteNames.parse(c.name).map { Case.Parsed(stamp: $0.stamp, id: $0.id, slug: $0.slug) }
+    check("parses \(c.name)", got == c.parsed, "\(String(describing: got))")
+    check("a rename clashing on \(c.name) keeps the id and tries \(c.renameClash)", NoteNames.renameClashCandidate(c.name, attempt: 2) == c.renameClash, NoteNames.renameClashCandidate(c.name, attempt: 2))
+    check("a clash on \(c.name) tries \(c.clash)", NoteNames.clashCandidate(c.name, attempt: 2, newID: { "zzzz" }) == c.clash, NoteNames.clashCandidate(c.name, attempt: 2, newID: { "zzzz" }))
+    check("an empty note named \(c.name) is titled \(c.title)", title(of: "# \n", filename: c.name) == c.title, title(of: "# \n", filename: c.name))
+  }
+  check("the empty-note title never shows the date, time or id", !title(of: "", filename: "2026-10-05 1200 ab12 - untitled.md").contains("ab12")
+    && !title(of: "", filename: "2026-10-05 1200 ab12 - untitled.md").contains("2026"))
+  check("a filename is stamp, id, slug", NoteNames.filename(stamp: "2026-10-05 1200", id: "ab12", slug: "x") == "2026-10-05 1200 ab12 - x.md")
+  let id = NoteNames.randomID()
+  check("an id is four lowercase base36 characters", id.range(of: #"^[0-9a-z]{4}$"#, options: .regularExpression) != nil, id)
+  var draws = ["ab12", "ab12", "cd34"].makeIterator()
+  check("a clashing id is drawn again", NoteNames.newID(avoiding: ["ab12"], random: { draws.next()! }) == "cd34")
+  check("the ids of a folder", NoteNames.ids(in: ["2026-10-05 1200 ab12 - x.md", "2026-10-05 1200 - y.md", "z.md"]) == ["ab12"])
+
+  check("a rename keeps the id and follows the title", NoteNames.renamed("2026-10-05 1200 ab12 - old.md", title: "New Title", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 ab12 - new-title.md")
+  check("no rename when the slug already matches", NoteNames.renamed("2026-10-05 1200 ab12 - new-title.md", title: "New title", newID: { "zzzz" }, exists: { _ in false }) == nil)
+  check("a name from before ids gets one when renamed", NoteNames.renamed("2026-10-05 1200 - old.md", title: "Old", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 zzzz - old.md")
+  check("daily and hand-named notes are never renamed", NoteNames.renamed("2026-10-05.md", title: "X", newID: { "zzzz" }, exists: { _ in false }) == nil
+    && NoteNames.renamed("groceries.md", title: "X", newID: { "zzzz" }, exists: { _ in false }) == nil)
+
+  var ids = ["ab12", "ab12", "cd34", "ef56"].makeIterator()
+  let folder = ["2026-10-05 1200 - a.md", "2026-10-05 1201 ab12 - b.md", "2026-10-05.md", "groceries.md", "2026-10-05 1202 - c.md"]
+  let plan = NoteNames.migration(of: folder, random: { ids.next()! })
+  check("migration gives each name from before ids a fresh, unique id", plan.map(\.from) == ["2026-10-05 1200 - a.md", "2026-10-05 1202 - c.md"]
+    && plan.map(\.to) == ["2026-10-05 1200 cd34 - a.md", "2026-10-05 1202 ef56 - c.md"], "\(plan)")
+  let migrated = folder.map { name in plan.first { $0.from == name }?.to ?? name }
+  check("migration run again finds nothing", NoteNames.migration(of: migrated).isEmpty)
+  check("migration leaves daily and hand-named notes alone", migrated.contains("2026-10-05.md") && migrated.contains("groceries.md"))
+
+  check("a stale link finds the note with its id", NoteLinks.noteWithSameID(as: "2026-10-05 1200 ab12 - old.md", among: ["2026-10-05 1200 ab12 - new.md", "x.md"]) == "2026-10-05 1200 ab12 - new.md")
+  check("not without an id in the link", NoteLinks.noteWithSameID(as: "2026-10-05 1200 - old.md", among: ["2026-10-05 1200 ab12 - old.md"]) == nil)
+  check("not when no note or two carry it", NoteLinks.noteWithSameID(as: "2026-10-05 1200 ab12 - old.md", among: ["2026-10-05 1200 cd34 - x.md"]) == nil
+    && NoteLinks.noteWithSameID(as: "2026-10-05 1200 ab12 - old.md", among: ["2026-10-05 1200 ab12 - a.md", "2026-10-05 1200 ab12 - b.md"]) == nil)
+
+  let old = "/n/2026-10-05 1200 ab12 - old.md"
+  let new = "/n/2026-10-05 1200 ab12 - new-title.md"
+  let moves = [old: new]
+  func rewrite(_ text: String, in dir: String = "/n") -> String? { NoteNames.rewriteLinks(in: text, directory: dir, moves: moves) }
+  check("a picker link follows the rename", rewrite("See [Old](2026-10-05%201200%20ab12%20-%20old.md).") == "See [Old](2026-10-05%201200%20ab12%20-%20new-title.md).", rewrite("See [Old](2026-10-05%201200%20ab12%20-%20old.md).") ?? "nil")
+  check("other encodings of the same name follow too", rewrite("[a](./2026-10-05%201200%20ab12%20-%20old.md) [b](2026-10-05%201200%20ab12%20%2D%20old.md)")
+    == "[a](2026-10-05%201200%20ab12%20-%20new-title.md) [b](2026-10-05%201200%20ab12%20-%20new-title.md)", rewrite("[a](./2026-10-05%201200%20ab12%20-%20old.md) [b](2026-10-05%201200%20ab12%20%2D%20old.md)") ?? "nil")
+  check("from a subfolder note, ../ stays relative", rewrite("[x](../2026-10-05%201200%20ab12%20-%20old.md)", in: "/n/sub") == "[x](../2026-10-05%201200%20ab12%20-%20new-title.md)")
+  check("an absolute link stays absolute; a fragment is kept", rewrite("[x](/n/2026-10-05%201200%20ab12%20-%20old.md#top)") == "[x](/n/2026-10-05%201200%20ab12%20-%20new-title.md#top)")
+  check("a file: link stays a file: link", rewrite("[x](file:///n/2026-10-05%201200%20ab12%20-%20old.md)") == "[x](file:///n/2026-10-05%201200%20ab12%20-%20new-title.md)")
+  check("link text naming the old file is untouched", rewrite("[2026-10-05%201200%20ab12%20-%20old.md](2026-10-05%201200%20ab12%20-%20old.md)") == "[2026-10-05%201200%20ab12%20-%20old.md](2026-10-05%201200%20ab12%20-%20new-title.md)")
+  check("the name outside a link is untouched", rewrite("old file: 2026-10-05%201200%20ab12%20-%20old.md and (2026-10-05 1200 ab12 - old.md)") == nil)
+  check("links in code are untouched", rewrite("`[x](2026-10-05%201200%20ab12%20-%20old.md)`") == nil
+    && rewrite("```\n[x](2026-10-05%201200%20ab12%20-%20old.md)\n```") == nil)
+  check("links to other notes and the web are untouched", rewrite("[a](other.md) [b](https://x.com/2026-10-05%201200%20ab12%20-%20old.md) [c](sub/2026-10-05%201200%20ab12%20-%20old.md)") == nil)
+  check("a link from another folder to the same name is not this note", rewrite("[x](2026-10-05%201200%20ab12%20-%20old.md)", in: "/m") == nil)
+  check("legacy names migrate with their links", NoteNames.rewriteLinks(in: "[a](2026-10-05%201200%20-%20a.md)", directory: "/n", moves: ["/n/2026-10-05 1200 - a.md": "/n/2026-10-05 1200 cd34 - a.md"])
+    == "[a](2026-10-05%201200%20cd34%20-%20a.md)")
+
+  let e = NoteNames.edit(from: "ab [x](old.md) cd", to: "ab [x](new-name.md) cd", caret: 17)
+  check("the open note is rewritten as one edit, caret carried", e.map { applied("ab [x](old.md) cd", $0)!.0 } == "ab [x](new-name.md) cd" && e?.cursor == 22, "\(String(describing: e))")
+
+  let root = NSTemporaryDirectory() + "notes-walk-\(getpid())"
+  let fm = FileManager.default
+  try? fm.removeItem(atPath: root)
+  try! fm.createDirectory(atPath: root + "/sub", withIntermediateDirectories: true)
+  try! fm.createDirectory(atPath: root + "/.hidden", withIntermediateDirectories: true)
+  for file in ["a.md", "sub/b.md", ".hidden/c.md", ".d.md", "e.txt"] { try! "x".write(toFile: root + "/" + file, atomically: true, encoding: .utf8) }
+  try! fm.createSymbolicLink(atPath: root + "/link.md", withDestinationPath: "/etc/hosts")
+  let walked = NoteNames.markdownFiles(under: root)
+  let walkedNames = NoteNames.markdownFiles(under: root).map { ($0 as NSString).lastPathComponent }
+  check("rewriting walks every .md under the root, never hidden files or symlinks", walkedNames == ["a.md", "b.md"], "\(walked) \(walkedNames)")
+  check("the walk keeps the root as given, so paths match the window's", NoteNames.markdownFiles(under: root).allSatisfy { $0.hasPrefix(root + "/") }, "\(NoteNames.markdownFiles(under: root))")
+  try? fm.removeItem(atPath: root)
+}
+
+// Migrating a folder: the rename log, retries and modification dates
+
+do {
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-migrate-\(getpid())"
+  func reset() {
+    try? fm.removeItem(atPath: dir)
+    try! fm.createDirectory(atPath: dir + "/sub", withIntermediateDirectories: true)
+    let old = Date(timeIntervalSince1970: 1_700_000_000)
+    for (name, text) in [
+      ("2026-10-01 0900 - a.md", "# A\n\n[b](2026-10-01%200900%20-%20b.md)\n"),
+      ("2026-10-01 0900 - b.md", "# B\n"),
+      ("2026-10-01.md", "[a](2026-10-01%200900%20-%20a.md)\n"),
+      ("sub/s.md", "[b](../2026-10-01%200900%20-%20b.md)\n"),
+    ] {
+      try! text.write(toFile: dir + "/" + name, atomically: true, encoding: .utf8)
+      try! fm.setAttributes([.modificationDate: old], ofItemAtPath: dir + "/" + name)
+    }
+  }
+  func read(_ name: String) -> String { (try? String(contentsOfFile: dir + "/" + name, encoding: .utf8)) ?? "<missing>" }
+  var ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+
+  reset()
+  let first = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! })
+  let log = NoteNames.renameLog(in: dir)
+  check("migration records the exact old to new filenames", log?.renames == ["2026-10-01 0900 - a.md": "2026-10-01 0900 aaaa - a.md", "2026-10-01 0900 - b.md": "2026-10-01 0900 bbbb - b.md"], "\(String(describing: log))")
+  check("a full run is complete and rewrites links", first.complete && log?.linksRewritten == true
+    && read("2026-10-01 0900 aaaa - a.md").contains("](2026-10-01%200900%20bbbb%20-%20b.md)")
+    && read("2026-10-01.md") == "[a](2026-10-01%200900%20aaaa%20-%20a.md)\n" && read("sub/s.md") == "[b](../2026-10-01%200900%20bbbb%20-%20b.md)\n",
+    "\(read("2026-10-01.md")) \(read("sub/s.md"))")
+  let bumped = (try? fm.attributesOfItem(atPath: dir + "/2026-10-01.md"))?[.modificationDate] as? Date
+  check("a rewritten note's modification date moves on, so editors see the change", (bumped ?? .distantPast) > Date(timeIntervalSince1970: 1_700_000_000), "\(String(describing: bumped))")
+  check("a run after a complete one does nothing", NoteNames.migrateFolder(dir, root: dir, openPath: nil).complete
+    && NoteNames.renameLog(in: dir)?.renames.count == 2 && (try! fm.contentsOfDirectory(atPath: dir)).filter { $0.hasSuffix(".md") }.count == 3)
+
+  reset()
+  ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  let failedMove = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! },
+    move: { from, to in from.hasSuffix(" - b.md") ? false : ((try? fm.moveItem(atPath: from, toPath: to)) != nil) })
+  check("a failed rename leaves the run incomplete", !failedMove.complete && fm.fileExists(atPath: dir + "/2026-10-01 0900 - b.md"))
+  let retried = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! })
+  let retriedLog = NoteNames.renameLog(in: dir)
+  check("the next run retries it and completes", retried.complete && !fm.fileExists(atPath: dir + "/2026-10-01 0900 - b.md")
+    && retriedLog?.renames["2026-10-01 0900 - b.md"].map { fm.fileExists(atPath: dir + "/" + $0) } == true
+    && retriedLog?.renames["2026-10-01 0900 - a.md"] == "2026-10-01 0900 aaaa - a.md", "\(String(describing: retriedLog))")
+  check("and the links to it follow", read("sub/s.md").contains(ListEditing.encodedLinkTarget("../" + (retriedLog?.renames["2026-10-01 0900 - b.md"] ?? "?"))), read("sub/s.md"))
+
+  reset()
+  ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  let failedWrite = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! }, write: { path, _ in !path.hasSuffix("s.md") })
+  check("the open note still gets the mapping when another note fails", failedWrite.rewritten.count == 2, "\(failedWrite.rewritten)")
+  check("a failed link rewrite leaves the run incomplete", !failedWrite.complete && NoteNames.renameLog(in: dir)?.linksRewritten == false
+    && read("sub/s.md") == "[b](../2026-10-01%200900%20-%20b.md)\n")
+  check("the next run rewrites the links it missed", NoteNames.migrateFolder(dir, root: dir, openPath: nil).complete
+    && read("sub/s.md") == "[b](../2026-10-01%200900%20bbbb%20-%20b.md)\n", read("sub/s.md"))
+
+  let names = ["2026-10-01 0900 bbbb - b.md", "x.md"]
+  let renames = ["2026-10-01 0900 - b.md": "2026-10-01 0900 bbbb - b.md"]
+  check("a stale link to a name from before ids resolves through the log", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, among: names) == "2026-10-01 0900 bbbb - b.md")
+  check("the logged note renamed since is found by the id in the logged name", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, among: ["2026-10-01 0900 bbbb - new-title.md", "x.md"]) == "2026-10-01 0900 bbbb - new-title.md")
+  check("not when the logged note is gone, or the name is not logged", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, among: ["x.md"]) == nil
+    && NoteLinks.renamedByLog("2026-10-01 0900 - c.md", renames: renames, among: names) == nil)
+  check("a log entry renamed again is followed", NoteLinks.renamedByLog("o.md", renames: ["o.md": "m.md", "m.md": "n.md"], among: ["n.md"]) == "n.md")
+  check("the log is hidden from the note list", NoteNames.renameLogName.hasPrefix("."))
+  try? fm.removeItem(atPath: dir)
+}
+
+do {
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-clash-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "x".write(toFile: dir + "/2026-10-05 1200 ab12 - x.md", atomically: true, encoding: .utf8)
+  let free = uniqueNotePath(for: "2026-10-05 1200 ab12 - x.md", in: dir)
+  let parsed = NoteNames.parse((free as NSString).lastPathComponent)
+  check("a taken generated name gets a new id, never a shared one", parsed?.slug == "x" && parsed?.id != nil && parsed?.id != "ab12", free)
+  try! "x".write(toFile: dir + "/2026-10-05 1200 ab12 - y.md", atomically: true, encoding: .utf8)
+  check("a rename onto a taken name keeps its id and suffixes the slug", uniqueNotePath(for: "2026-10-05 1200 ab12 - y.md", in: dir, renaming: true) == dir + "/2026-10-05 1200 ab12 - y-2.md")
+  check("a free name is used as it is", uniqueNotePath(for: "2026-10-05 1200 cd34 - y.md", in: dir) == dir + "/2026-10-05 1200 cd34 - y.md")
+  try? fm.removeItem(atPath: dir)
+}
+
+// Renames settle; ids are never drawn twice
+
+do {
+  let planTaken: (String) -> Bool = { $0 == "2026-10-05 1200 cd34 - plan.md" || $0 == "2026-10-05 1200 ab12 - plan.md" }
+  check("\"Plan 2\" renamed \"Plan\" becomes plan when that name is free", NoteNames.renamed("2026-10-05 1200 ab12 - plan-2.md", title: "Plan", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 ab12 - plan.md")
+  check("and stays plan-2 while plan is another note's, save after save", NoteNames.renamed("2026-10-05 1200 ab12 - plan-2.md", title: "Plan", newID: { "zzzz" }, exists: planTaken) == nil)
+  check("a clash suffix moves down when a lower one frees up", NoteNames.renamed("2026-10-05 1200 ab12 - plan-3.md", title: "Plan", newID: { "zzzz" }, exists: planTaken) == "2026-10-05 1200 ab12 - plan-2.md")
+  check("a real title change still renames it", NoteNames.renamed("2026-10-05 1200 ab12 - second-2.md", title: "Third", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 ab12 - third.md")
+  check("a title that only looks like a suffix is not one", NoteNames.renamed("2026-10-05 1200 ab12 - second-2x.md", title: "Second", newID: { "zzzz" }, exists: { $0 == "2026-10-05 1200 ab12 - second.md" }) == "2026-10-05 1200 ab12 - second-2.md")
+
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-ids-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "x".write(toFile: dir + "/2026-10-05 1200 aaaa - here.md", atomically: true, encoding: .utf8)
+  check("the log appends", NoteNames.appendLog([.rename("2026-10-01 0900 - old.md", "2026-10-01 0900 bbbb - old.md")], in: dir))
+  check("a note deleted from the window retires its id, keeping the log", NoteNames.retireID(of: "2026-10-05 1300 cccc - gone.md", in: dir)
+    && NoteNames.renameLog(in: dir)?.retiredIDs == ["cccc"] && NoteNames.renameLog(in: dir)?.renames.count == 1)
+  check("a name without an id retires nothing", !NoteNames.retireID(of: "groceries.md", in: dir))
+  check("ids in use: the folder's, the log's and retired ones", NoteNames.usedIDs(in: dir) == ["aaaa", "bbbb", "cccc"], "\(NoteNames.usedIDs(in: dir))")
+  var draws = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  check("a new id skips all of them", NoteNames.newID(avoiding: NoteNames.usedIDs(in: dir), random: { draws.next()! }) == "dddd")
+  try! "x".write(toFile: dir + "/2026-10-05 1400 - legacy.md", atomically: true, encoding: .utf8)
+  var migrationDraws = ["bbbb", "cccc", "eeee"].makeIterator()
+  _ = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { migrationDraws.next()! })
+  check("migration never hands out a logged or retired id", fm.fileExists(atPath: dir + "/2026-10-05 1400 eeee - legacy.md"), "\((try? fm.contentsOfDirectory(atPath: dir)) ?? [])")
+  try? fm.removeItem(atPath: dir)
+}
+
+// The rename log is append-only JSON Lines
+
+do {
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-log-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! fm.copyItem(atPath: "test/note-log.jsonl", toPath: dir + "/" + NoteNames.renameLogName)
+  let folded = NoteNames.renameLog(in: dir)
+  check("the shared log fixture folds the same as in TS (bad and half-written lines skipped)",
+    folded?.renames == ["2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md"] && folded?.retiredIDs == ["cccc", "dddd"] && folded?.linksRewritten == true,
+    "\(String(describing: folded))")
+  check("an append after a half-written line still reads", NoteNames.appendLog([.retire("eeee")], in: dir)
+    && NoteNames.renameLog(in: dir)?.retiredIDs == ["cccc", "dddd", "eeee"], "\(String(describing: NoteNames.renameLog(in: dir)))")
+
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  DispatchQueue.concurrentPerform(iterations: 200) { i in
+    _ = NoteNames.appendLog([i % 2 == 0 ? .retire(String(format: "r%03d", i)) : .rename("o\(i).md", "n\(i).md")], in: dir)
+  }
+  let both = NoteNames.renameLog(in: dir)
+  check("two writers appending at once lose nothing", both?.retiredIDs?.count == 100 && both?.renames.count == 100, "\(both?.retiredIDs?.count ?? -1) \(both?.renames.count ?? -1)")
+
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  _ = NoteNames.appendLog([.links(done: true), .links(done: false)], in: dir)
+  check("the links state follows line order: a later pending wins over an earlier done", NoteNames.renameLog(in: dir)?.linksRewritten == false)
+  _ = NoteNames.appendLog([.links(done: true)], in: dir)
+  check("and a later done over an earlier pending", NoteNames.renameLog(in: dir)?.linksRewritten == true)
+
+  // A rename that keeps failing reuses its logged name and id.
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "x".write(toFile: dir + "/2026-10-01 0900 - stuck.md", atomically: true, encoding: .utf8)
+  var draws = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  for _ in 0..<3 {
+    _ = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { draws.next() ?? "zzzz" }, move: { _, _ in false })
+  }
+  let lines = ((try? String(contentsOfFile: dir + "/" + NoteNames.renameLogName, encoding: .utf8)) ?? "").split(separator: "\n").filter { $0.contains("rename") }
+  check("a move failing three times leaves one logged rename and one reserved id", lines.count == 1
+    && NoteNames.usedIDs(in: dir) == ["aaaa"], "\(lines) \(NoteNames.usedIDs(in: dir))")
+  let done = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { draws.next() ?? "zzzz" })
+  check("and once it can move, it lands on the logged name", done.complete && fm.fileExists(atPath: dir + "/2026-10-01 0900 aaaa - stuck.md"))
+  try? fm.removeItem(atPath: dir)
+}
+
+do {
+  // The rename was logged but the "pending" after it never made it.
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-pending-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "# A\n".write(toFile: dir + "/2026-10-01 0900 - a.md", atomically: true, encoding: .utf8)
+  try! "[a](2026-10-01%200900%20-%20a.md)\n".write(toFile: dir + "/links.md", atomically: true, encoding: .utf8)
+  _ = NoteNames.appendLog([.rename("2026-10-01 0900 - a.md", "2026-10-01 0900 aaaa - a.md")], in: dir)
+  check("a logged rename alone counts as links pending", NoteNames.renameLog(in: dir)?.linksRewritten == false)
+  let outcome = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { "zzzz" })
+  check("so the next listing still rewrites its links before calling it done", outcome.complete
+    && (try? String(contentsOfFile: dir + "/links.md", encoding: .utf8)) == "[a](2026-10-01%200900%20aaaa%20-%20a.md)\n"
+    && NoteNames.renameLog(in: dir)?.linksRewritten == true,
+    (try? String(contentsOfFile: dir + "/links.md", encoding: .utf8)) ?? "")
+  try? fm.removeItem(atPath: dir)
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

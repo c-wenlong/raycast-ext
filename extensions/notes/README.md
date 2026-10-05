@@ -102,9 +102,28 @@ Raycast LocalStorage so the files stay untouched.
 Naming:
 
 - Daily note: `2026-09-26.md`
-- Regular note: `2026-09-26 1400 - project-ideas.md`; the slug follows the
-  note's first line (markdown stripped) and is renamed on save when that
-  line changes. Pins follow the rename.
+- Regular note: `2026-09-26 1400 k3x9 - project-ideas.md`: the minute it was
+  made, a stable id (four lowercase base36 characters, unique in the folder)
+  and a slug. The slug follows the note's first line (markdown stripped) and
+  the file is renamed on save when that line changes; the id never changes
+  and never shows as a title. Pins follow the rename, and when the window
+  renames a note it rewrites links to it (link addresses only) in every note
+  under the notes folder. A rewritten note counts as edited (its date moves
+  on, so it rises in newest-first lists). A link that went stale anyway (a
+  rename made by Browse Notes) still opens the note carrying its id. A new
+  note whose name is taken draws a new id rather than sharing one; a rename
+  onto a taken name keeps its id and adds "-2" to the slug (and stays there
+  on later saves). The id of a note deleted from the window or Browse Notes
+  is retired in `.note-renames.jsonl` and never handed out again, so an old
+  link or pin cannot land on a different note.
+- Notes from before ids (`2026-09-26 1400 - project-ideas.md`) get one once,
+  when the window first lists the folder, with their links rewritten. Each
+  rename is recorded first in `.note-renames.jsonl` in the notes folder (old
+  filename to new; hidden, append-only, safe to keep): Browse Notes moves
+  pins with it, and a link to an old name still opens through it (by the id
+  in the logged name, if the note was renamed again). A run that fails part
+  way is retried at the next listing. Daily notes and hand-named files keep
+  their names: they are never renamed, so links to them never go stale.
 
 ## Development
 

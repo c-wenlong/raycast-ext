@@ -1,4 +1,5 @@
 import { LocalStorage } from "@raycast/api";
+import { parseGeneratedFilename, readRenameLog, renamedByLog } from "./notes";
 
 // Pins live in Raycast LocalStorage keyed by file path, so the markdown
 // files stay untouched. Renaming a note through the extension moves the pin.
@@ -53,35 +54,45 @@ export async function movePin(fromPath: string, toPath: string): Promise<void> {
 
 /**
  * Pins point at paths, and the notes window renames a generated file
- * ("YYYY-MM-DD HHmm - slug.md") when its first line changes without
- * being able to reach this storage. A pinned path that no longer exists
- * is moved to the existing note with the same timestamp prefix, if
- * there is exactly one; other dead pins are left alone (a note may be
- * back later). Returns the pins as they stand afterwards.
+ * ("YYYY-MM-DD HHmm <id> - slug.md") when its first line changes, and
+ * gives names from before ids one, without being able to reach this
+ * storage. A pinned path that no longer exists moves to where the
+ * window's rename log (`.note-renames.jsonl` in its folder) says it went,
+ * else to the one existing note in its folder with the same id. A pin
+ * from before ids with no log entry is left alone (a timestamp is not an
+ * identity: two notes can share a minute), as are other dead pins (a
+ * note may be back later). Returns the pins as they stand afterwards.
  */
 export async function reconcilePins(
   existingPaths: string[],
 ): Promise<Set<string>> {
   const pins = await getPinnedPaths();
   const existing = new Set(existingPaths);
+  const logs = new Map<string, Record<string, string>>();
   let changed = false;
   for (const pinned of [...pins]) {
     if (existing.has(pinned)) {
       continue;
     }
-    const prefix = generatedPrefix(pinned);
-    if (!prefix) {
-      continue;
+    const dir = dirOf(pinned);
+    if (!logs.has(dir)) {
+      logs.set(dir, await readRenameLog(dir));
     }
-    const candidates = existingPaths.filter(
-      (candidate) =>
-        candidate !== pinned &&
-        dirOf(candidate) === dirOf(pinned) &&
-        generatedPrefix(candidate) === prefix,
-    );
-    if (candidates.length === 1) {
+    // The log's name, or (renamed since by its title) the note carrying
+    // the id in the logged name.
+    const logged = renamedByLog(baseOf(pinned), logs.get(dir) ?? {});
+    let target = logged
+      ? existing.has(`${dir}/${logged}`)
+        ? `${dir}/${logged}`
+        : sameIdIn(existingPaths, dir, logged, pinned)
+      : undefined;
+    const id = parseGeneratedFilename(baseOf(pinned))?.id;
+    if (!target && id) {
+      target = sameIdIn(existingPaths, dir, baseOf(pinned), pinned);
+    }
+    if (target) {
       pins.delete(pinned);
-      pins.add(candidates[0]);
+      pins.add(target);
       changed = true;
     }
   }
@@ -91,13 +102,32 @@ export async function reconcilePins(
   return pins;
 }
 
+/** The one path in `dir` carrying the id in `filename`, if exactly one. */
+function sameIdIn(
+  paths: string[],
+  dir: string,
+  filename: string,
+  except: string,
+): string | undefined {
+  const id = parseGeneratedFilename(filename)?.id;
+  if (!id) {
+    return undefined;
+  }
+  const candidates = paths.filter(
+    (candidate) =>
+      candidate !== except &&
+      dirOf(candidate) === dir &&
+      parseGeneratedFilename(baseOf(candidate))?.id === id,
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
 function dirOf(filePath: string): string {
   return filePath.slice(0, filePath.lastIndexOf("/"));
 }
 
-function generatedPrefix(filePath: string): string | undefined {
-  const filename = filePath.slice(filePath.lastIndexOf("/") + 1);
-  return filename.match(/^(\d{4}-\d{2}-\d{2} \d{4}) - .+\.md$/)?.[1];
+function baseOf(filePath: string): string {
+  return filePath.slice(filePath.lastIndexOf("/") + 1);
 }
 
 export async function removePin(notePath: string): Promise<void> {

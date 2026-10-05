@@ -13,7 +13,12 @@ import {
 } from "@raycast/api";
 import { useCallback, useEffect, useState } from "react";
 import { moveToTrash } from "../lib/fs";
-import { NoteFile, duplicateNoteFile, getNoteByPath } from "../lib/notes";
+import {
+  NoteFile,
+  duplicateNoteFile,
+  getNoteByPath,
+  retireNoteId,
+} from "../lib/notes";
 import { removePin } from "../lib/pins";
 import { AppendTextForm, NoteEditForm } from "./NoteEditorForm";
 
@@ -114,6 +119,8 @@ export function NoteDetailView({
 
     try {
       await moveToTrash(note.path);
+      // Its id is never handed to another note (old links and pins).
+      await retireNoteId(note.path).catch(() => undefined);
       await removePin(note.path);
       onNoteDeleted?.(note.path);
       await showToast({

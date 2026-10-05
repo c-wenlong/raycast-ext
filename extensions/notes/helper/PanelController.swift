@@ -390,6 +390,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// Re-reads the folder so the order reflects the latest edits, keeping
   /// the open note selected even if it moved.
   private func refreshList() {
+    migrateNamesIfNeeded()
     notes = listNotes()
     if let current = currentPath, !notes.contains(where: { $0.path == current }) {
       currentPath = nil
@@ -410,9 +411,12 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     load(notes[index].path)
   }
 
-  private func open(_ path: String) {
+  private func open(_ requested: String) {
     saveNow()
     refreshList()
+    // A path from before the names were migrated (Browse Notes on the
+    // first launch) opens the note under its new name.
+    let path = existingNote(at: requested) ?? requested
     if !notes.contains(where: { $0.path == path }) {
       notes.insert(Note(path: path, modified: Date()), at: 0)
     }
@@ -420,8 +424,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   /// Copies the open note. The heading gets " copy" appended and a
-  /// generated filename follows that heading's slug, so the title-driven
-  /// rename on the next save leaves the copy's name alone.
+  /// generated filename follows that heading's slug (with an id of its
+  /// own), so the title-driven rename on the next save leaves the copy's
+  /// name alone.
   private func duplicateNote() {
     saveNow()
     guard let path = currentPath, textView.isEditable else {
@@ -439,12 +444,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       let line = (text as NSString).substring(with: titleRange)
       let trimmed = line.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
       text = (text as NSString).replacingCharacters(in: titleRange, with: trimmed + " copy")
-      if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)),
-        let copyTitle = Titles.firstLine(of: text)
-      {
-        let prefix = (filename as NSString).substring(with: match.range(at: 1))
-        copyName = "\(prefix) - \(slugify(copyTitle)).md"
-      }
+    }
+    if let generated = NoteNames.parse(filename) {
+      let slug = Titles.firstLine(of: text).map(slugify) ?? generated.slug
+      copyName = NoteNames.filename(stamp: generated.stamp, id: freshID(in: directory), slug: slug)
     }
 
     let copyPath = uniquePath(for: copyName, in: directory)
@@ -472,6 +475,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       watch(path)
       return
     }
+    NoteNames.retireID(of: (path as NSString).lastPathComponent, in: (path as NSString).deletingLastPathComponent)
     currentPath = nil
     loadedText = ""
     refreshList()
@@ -480,7 +484,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   private func newNote() {
     saveNow()
-    let path = uniquePath(for: "\(timestampPrefix()) - untitled.md")
+    let path = uniquePath(for: NoteNames.filename(stamp: NoteNames.timestamp(), id: freshID(in: notesDir), slug: "untitled"))
     do {
       try diskFiles.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
       try "# \n".write(toFile: path, atomically: false, encoding: .utf8)
@@ -608,25 +612,72 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   /// Generated filenames follow the note's first line (its title), as
-  /// the Raycast extension does.
+  /// the Raycast extension does. Only the slug changes; the id stays, and
+  /// links to the old name in the notes folder follow.
   private func renameToMatchTitleIfNeeded() {
-    guard let path = currentPath else { return }
+    guard let path = currentPath, let titleText = Titles.firstLine(of: loadedText) else { return }
     let filename = (path as NSString).lastPathComponent
-    guard let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)),
-      let titleText = Titles.firstLine(of: loadedText)
+    let directory = (path as NSString).deletingLastPathComponent
+    guard
+      let next = NoteNames.renamed(
+        filename, title: titleText, newID: { self.freshID(in: directory) },
+        exists: { diskFiles.fileExists(atPath: (directory as NSString).appendingPathComponent($0)) })
     else { return }
-    let currentSlug = (filename as NSString).substring(with: match.range(at: 2))
-    let nextSlug = slugify(titleText)
-    guard nextSlug != currentSlug else { return }
-    let prefix = (filename as NSString).substring(with: match.range(at: 1))
-    let nextPath = uniquePath(for: "\(prefix) - \(nextSlug).md", in: (path as NSString).deletingLastPathComponent)
-    guard (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }
+    let nextPath = uniqueNotePath(for: next, in: directory, renaming: true)
+    guard nextPath != path, (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }
     currentPath = nextPath
     if let index = notes.firstIndex(where: { $0.path == path }) {
       notes[index] = Note(path: nextPath, modified: Date())
     }
     watch(nextPath)
+    rewriteLinks(after: [path: nextPath])
     updateTitle()
+  }
+
+  /// An id no note in `directory` carries, and none the log names or retired.
+  private func freshID(in directory: String) -> String {
+    NoteNames.newID(avoiding: NoteNames.usedIDs(in: directory))
+  }
+
+  /// After the window renamed notes (`moves`, old path to new): every link
+  /// to them in a note under the notes folder points at the new name
+  /// (NoteNames.rewriteLinks: atomic writes, modification dates move on).
+  /// The open note is rewritten in the window instead (one undo step) and
+  /// saved the usual way.
+  private func rewriteLinks(after moves: [String: String]) {
+    guard !moves.isEmpty else { return }
+    NoteNames.rewriteLinks(underRoot: notesDir, moves: moves, skipping: currentPath)
+    rewriteOpenNoteLinks(moves)
+  }
+
+  private func rewriteOpenNoteLinks(_ moves: [String: String]) {
+    guard !moves.isEmpty, let current = currentPath, textView.isEditable else { return }
+    let text = textView.string
+    if let updated = NoteNames.rewriteLinks(in: text, directory: (current as NSString).deletingLastPathComponent, moves: moves),
+      let edit = NoteNames.edit(from: text, to: updated, caret: textView.selectedRange().location)
+    {
+      textView.apply(edit)
+    }
+  }
+
+  /// The folder whose names are fully brought up to date (`migrateNames`).
+  private var migratedFolder: String?
+
+  /// Generated names from before ids get one (NoteNames.migrateFolder),
+  /// with the renames logged in `.note-renames.jsonl` and links to them
+  /// rewritten. Only the notes folder itself is renamed in; daily and
+  /// hand-named notes stay as they are. Until a run completes, every
+  /// listing tries again; after that, once per folder per launch.
+  private func migrateNamesIfNeeded() {
+    guard migratedFolder != notesDir else { return }
+    saveNow()
+    let outcome = NoteNames.migrateFolder(notesDir, root: notesDir, openPath: currentPath)
+    if let current = currentPath, let moved = outcome.renamed[current] {
+      currentPath = moved
+      watch(moved)
+    }
+    rewriteOpenNoteLinks(outcome.rewritten)
+    if outcome.complete { migratedFolder = notesDir }
   }
 
   /// Reloads when another program edits the open note and we have no
@@ -734,8 +785,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     // note is in the notes folder, in its default app when it is not; one
     // to a note that is gone beeps rather than going to the browser.
     guard let target = NoteLinks.notePath(for: url, in: currentDirectory) else { return false }
-    let linkText = LinkController.span(in: textView.string, at: charIndex)?.text ?? ""
-    guard let path = existingNote(at: target, linkText: linkText) else {
+    guard let path = existingNote(at: target) else {
       NSSound.beep()
       return true
     }
@@ -756,18 +806,22 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     currentPath.map { ($0 as NSString).deletingLastPathComponent } ?? notesDir
   }
 
-  /// `path` when the file is there; otherwise, for a generated filename,
-  /// the note it was renamed to (same timestamp, titled as the link reads).
-  private func existingNote(at path: String, linkText: String) -> String? {
+  /// `path` when the file is there; otherwise the note the migration's
+  /// rename log sends its name to, or the one note beside it carrying the
+  /// same id (renamed since the link was written).
+  private func existingNote(at path: String) -> String? {
     if diskFiles.fileExists(atPath: path) { return path }
     let directory = (path as NSString).deletingLastPathComponent
+    let filename = (path as NSString).lastPathComponent
     let names = (try? diskFiles.contentsOfDirectory(atPath: directory)) ?? []
-    let renamed = NoteLinks.renamedNote(
-      (path as NSString).lastPathComponent, among: names, linkText: linkText,
-      firstLineOf: { name in
-        NoteLinks.headText(atPath: (directory as NSString).appendingPathComponent(name)).flatMap(Titles.firstLine(of:))
-      })
-    return renamed.map { (directory as NSString).appendingPathComponent($0) }
+    // A name from before ids: where the migration's log says it went.
+    if let log = NoteNames.renameLog(in: directory),
+      let logged = NoteLinks.renamedByLog(filename, renames: log.renames, among: names)
+    {
+      return (directory as NSString).appendingPathComponent(logged)
+    }
+    return NoteNames.parse(filename)?.id == nil ? nil
+      : NoteLinks.noteWithSameID(as: filename, among: names).map { (directory as NSString).appendingPathComponent($0) }
   }
 
   private static func noteTitle(_ text: String, _ filename: String) -> String { title(of: text, filename: filename) }
