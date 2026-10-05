@@ -770,6 +770,10 @@ do {
   check("backspace on *** and ___ dividers", back("***", 3)?.0 == "" && back("x\n___  ", 7)?.0 == "x\n")
   check("backspace on plain lines is nil", back("a\nb", 2) == nil && back("a\n--", 4) == nil)
   check("a --- in a code block is not a divider", back("```\n---\n```", 7) == nil && back("```\n---\nx\n```", 8) == nil)
+  let info = "``` hello world\n---\n```"
+  check("a --- under a multi-word info string is code", back(info, 19) == nil && back(info + "\nb", 24) == nil && del(info, 16) == nil, "\(String(describing: back(info, 19)))")
+  check("joining onto a --- in code is a plain join", ListEditing.deletionRange(in: "``` a b\nx\n---\n```", range: NSRange(location: 9, length: 1)) == NSRange(location: 9, length: 1))
+  check("no typography in a block with a multi-word info string", ListEditing.typography(in: "``` hello world\na->\n```", cursor: 19) == nil)
   check("delete on a divider empties its line", del(t, 5).map { $0 == ("a\n\nb", 2) } == true, "\(String(describing: del(t, 5)))")
   check("delete off a divider is nil", del(t, 1) == nil)
   check("joining onto a divider takes it whole", ListEditing.deletionRange(in: t, range: NSRange(location: 1, length: 1)) == NSRange(location: 1, length: 4))

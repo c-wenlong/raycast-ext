@@ -592,13 +592,14 @@ enum ListEditing {
     // Where a deletion may start or end inside a line's hidden prefix,
     // and where its text begins; nil for a line with nothing hidden.
     func boundaries(at location: Int) -> (lineStart: Int, stops: [Int], contentStart: Int)? {
-      let (lineStart, _, line) = line(at: location, in: text)
-      guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
+      let current = line(at: location, in: text)
+      let (lineStart, _, line) = current
       // A divider is hidden whole: kept whole or removed whole.
-      let length = (line as NSString).length
-      if rulePattern.firstMatch(in: line, range: NSRange(location: 0, length: length)) != nil {
+      if isDivider(current, in: text) {
+        let length = (line as NSString).length
         return (lineStart, [0, length], length)
       }
+      guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
       let prefix = blockPrefix(of: line)
       let child = (depth[lineStart] ?? 0) > 0
       guard prefix.hasMarkers || (child && prefix.indent > 0) else { return nil }
@@ -866,7 +867,7 @@ enum ListEditing {
   /// `<--` gives ←- and `....` gives …. (nothing further).
   /// `--` with only whitespace and dashes before it on its line stays
   /// literal, so `---` (and `----`) still types a divider. Code stays
-  /// literal: inside a fenced block, an inline code span (an odd number of
+  /// literal: inside a fenced block (as the styler draws it), an inline code span (an odd number of
   /// backticks before the pair on its line, which also covers a span still
   /// being typed), or on a fence line (``` or ~~~, closed or still being
   /// typed). So do link addresses: after `](` with no `)` yet, or inside
@@ -906,7 +907,7 @@ enum ListEditing {
     guard before.utf16.filter({ $0 == 0x60 }).count % 2 == 0,
       urlBeforeCaret.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
       fencePrefix.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
-      !insideFence(text, cursor: cursor)
+      !inCodeBlock(text, NSRange(location: start, length: length))
     else { return nil }
     return Edit(range: NSRange(location: start, length: length), replacement: symbol, cursor: start + 1)
   }
@@ -917,10 +918,25 @@ enum ListEditing {
   /// draws it as a hairline with the characters hidden.
   static let rulePattern = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
 
-  /// True when `line` (no line break) is a divider, outside a code block.
+  /// A fenced code block as the styler draws it (Markdown.fence): an
+  /// opening fence line (any info string) through its closing fence. An
+  /// opening fence with no closing fence is literal text.
+  static let fencePattern = try! NSRegularExpression(
+    pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?^ {0,3}(?:\1`*|\2~*)[ \t]*$"#, options: .anchorsMatchLines)
+
+  /// True when `range` touches a fenced code block, exactly as the styler
+  /// decides what is code (its `inCode`).
+  static func inCodeBlock(_ text: String, _ range: NSRange) -> Bool {
+    fencePattern.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
+      .contains { NSIntersectionRange($0.range, range).length > 0 }
+  }
+
+  /// True when `line` (no line break) is a divider: a rule the styler
+  /// draws, so not in a code block.
   private static func isDivider(_ line: (start: Int, end: Int, text: String), in text: String) -> Bool {
-    rulePattern.firstMatch(in: line.text, range: NSRange(location: 0, length: (line.text as NSString).length)) != nil
-      && !insideFence(text, cursor: line.start)
+    let length = (line.text as NSString).length
+    return rulePattern.firstMatch(in: line.text, range: NSRange(location: 0, length: length)) != nil
+      && !inCodeBlock(text, NSRange(location: line.start, length: length))
   }
 
   /// Backspace on a divider line takes the divider off, leaving the line

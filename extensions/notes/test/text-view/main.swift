@@ -841,6 +841,32 @@ tv.setSelectedRange(NSRange(location: 3, length: 0))
 type(">")
 check("a divider's hidden dash never starts an arrow", tv.string == "--->", tv.string.debugDescription)
 
+// 21b. a symbol finishing the next one: one ⌘Z gives back everything typed
+for (typedText, symbol) in [("<->", "\u{2194}"), ("-->", "\u{2192}"), ("<=>", "\u{21D4}"), ("<-->", "\u{2194}")] {
+  load("")
+  type("a" + typedText)
+  check("a\(typedText) makes \(symbol)", tv.string == "a" + symbol && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+  tv.undoManager?.undo()
+  let back = "a" + typedText
+  check("one undo after a\(typedText) gives back what was typed", tv.string == back && tv.selectedRange() == NSRange(location: (back as NSString).length, length: 0), "\(tv.string.debugDescription) \(tv.selectedRange())")
+  tv.undoManager?.redo()
+  check("redo after a\(typedText) brings \(symbol) back", tv.string == "a" + symbol, tv.string.debugDescription)
+}
+load("")
+type("a<->")
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+tv.undoManager?.undo()
+tv.undoManager?.undo()
+check("a second undo steps back through the typing, never leaving a symbol", !tv.string.contains("\u{2190}") && "a<->".hasPrefix(tv.string), tv.string.debugDescription)
+load("a\u{2190}")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+type(">")
+check("a pasted ← then > makes ↔", tv.string == "a\u{2194}", tv.string.debugDescription)
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+tv.undoManager?.undo()
+check("and undo gives back the ← and the typed >", tv.string == "a\u{2190}>", tv.string.debugDescription)
+
 // 22. dividers: a drawn hairline, dashes hidden, removed whole
 let dividerText = "a\n---\nb"
 load(dividerText)
@@ -872,6 +898,16 @@ tv.deleteBackward(nil)
 check("deleting a selection into a divider takes it whole", tv.string == "\nb", tv.string.debugDescription)
 load("```\n---\n```")
 check("--- in a code block is not a divider", tv.textStorage!.attribute(Markdown.divider, at: 4, effectiveRange: nil) == nil)
+let infoFence = "``` hello world\n---\n```"
+load(infoFence)
+check("--- under a multi-word info string is code, not a divider", tv.textStorage!.attribute(Markdown.divider, at: 16, effectiveRange: nil) == nil)
+tv.setSelectedRange(NSRange(location: 19, length: 0))
+tv.deleteBackward(nil)
+check("backspace there deletes one dash", tv.string == "``` hello world\n--\n```", tv.string.debugDescription)
+load(infoFence)
+tv.setSelectedRange(NSRange(location: 16, length: 0))
+tv.deleteForward(nil)
+check("delete there deletes one dash", tv.string == "``` hello world\n--\n```", tv.string.debugDescription)
 load(dividerText)
 tv.setSelectedRange(NSRange(location: 0, length: 0))
 tv.needsDisplay = true

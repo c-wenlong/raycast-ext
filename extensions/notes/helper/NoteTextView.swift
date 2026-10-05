@@ -1142,21 +1142,83 @@ final class NoteTextView: NSTextView {
     // "->", "--", "...", and the rest become one symbol as their own undo
     // step. Typing only: a paste never comes through here a character at a time.
     if let typed, ListEditing.typographyTriggers.contains(typed) {
-      guard !markerBefore, !slashMenuIsOpen, let edit = ListEditing.typography(in: self.string, cursor: selection.location)
+      guard !markerBefore, !slashMenuIsOpen, var edit = ListEditing.typography(in: self.string, cursor: selection.location)
       else { return }
+      var typedEnd = selection.location
+      var typedText = (self.string as NSString).substring(with: edit.range)
+      if let composite = rewindTypography(for: edit, typedEnd: typedEnd) {
+        (edit, typedEnd, typedText) = composite
+      }
+      if let undoManager, undoManager.groupingLevel == 1 {
+        // This event's group may hold the typed key (or the keys put back
+        // by the rewind); close it so ⌘Z takes back the symbol alone.
+        undoManager.endUndoGrouping()
+        undoManager.beginUndoGrouping()
+      }
       // Undo alone would select the restored pair, and the next key would
       // type over it: the group also puts the caret back after it.
       // Registered first, so it runs last on undo.
-      let typedEnd = selection.location
       breakUndoCoalescing()
       undoManager?.beginUndoGrouping()
-      undoManager?.registerUndo(withTarget: self) { $0.setSelectedRange(NSRange(location: typedEnd, length: 0)) }
+      let caretAfterUndo = typedEnd
+      undoManager?.registerUndo(withTarget: self) { $0.setSelectedRange(NSRange(location: caretAfterUndo, length: 0)) }
       apply(edit)
       undoManager?.endUndoGrouping()
+      lastTypography = (edit.range.location, edit.replacement, typedText)
       return
     }
     guard typed == " " else { return }
     apply(ListEditing.afterSpace(in: self.string, cursor: selection.location))
+  }
+
+  /// The last typographic symbol made, where, and what was typed for it.
+  private var lastTypography: (location: Int, symbol: String, typed: String)?
+
+  /// A symbol finishing the next one (`<-` made ←, then `>` makes ↔):
+  /// takes the earlier symbol and the keys since back off the undo stack,
+  /// puts back what was typed as one step, and returns the composite edit
+  /// over the typed text, so one ⌘Z after it restores exactly what was
+  /// typed (`<->`). Nil, with the history untouched, when the earlier
+  /// symbol was not just made here (pasted, or edited since).
+  private func rewindTypography(for edit: ListEditing.Edit, typedEnd: Int)
+    -> (edit: ListEditing.Edit, typedEnd: Int, typed: String)?
+  {
+    guard let prior = lastTypography, let undoManager, let storage = textStorage else { return nil }
+    let ns = string as NSString
+    let start = edit.range.location
+    guard prior.location == start, edit.range.length >= 2, NSMaxRange(edit.range) == typedEnd,
+      ns.substring(with: NSRange(location: start, length: 1)) == prior.symbol
+    else { return nil }
+    let since = ns.substring(with: NSRange(location: start + 1, length: typedEnd - start - 1))
+    let expected = ns.replacingCharacters(in: NSRange(location: start, length: typedEnd - start), with: prior.typed)
+    // The keys since the symbol (a typing group or two), then the symbol
+    // itself; a few more steps for empty event groups along the way.
+    var steps = 0
+    while string != expected, undoManager.canUndo, steps < 6 {
+      undoManager.undo()
+      steps += 1
+    }
+    guard string == expected else {
+      while steps > 0, undoManager.canRedo {
+        undoManager.redo()
+        steps -= 1
+      }
+      return nil
+    }
+    let insertAt = start + (prior.typed as NSString).length
+    let insertion = NSRange(location: insertAt, length: 0)
+    breakUndoCoalescing()
+    undoManager.beginUndoGrouping()
+    if shouldChangeText(in: insertion, replacementString: since) {
+      storage.replaceCharacters(in: insertion, with: since)
+      setSelectedRange(NSRange(location: insertAt + (since as NSString).length, length: 0))
+      didChangeText()
+    }
+    undoManager.endUndoGrouping()
+    let typed = prior.typed + since
+    let length = (typed as NSString).length
+    let composite = ListEditing.Edit(range: NSRange(location: start, length: length), replacement: edit.replacement, cursor: start + 1)
+    return (composite, start + length, typed)
   }
 
   /// Pasting a lone http(s) URL over selected text links the text.

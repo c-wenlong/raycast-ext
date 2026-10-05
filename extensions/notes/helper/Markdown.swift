@@ -658,7 +658,7 @@ enum Markdown {
   // A block needs its closing fence: an opening fence typed on its own
   // stays literal text (the Enter and Space rules add the closing fence)
   // rather than swallowing the rest of the note.
-  static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?^ {0,3}(?:\1`*|\2~*)[ \t]*$"#, options: .anchorsMatchLines)
+  static let fence = ListEditing.fencePattern
   static let rule = ListEditing.rulePattern
   // Shared with the formatting keys (ListEditing.toggleWrap).
   static let bold = ListEditing.boldPattern
