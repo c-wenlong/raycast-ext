@@ -867,9 +867,8 @@ enum ListEditing {
   /// `<--` gives ←- and `....` gives …. (nothing further).
   /// `--` with only whitespace and dashes before it on its line stays
   /// literal, so `---` (and `----`) still types a divider. Code stays
-  /// literal: inside a fenced block (as the styler draws it), an inline code span (an odd number of
-  /// backticks before the pair on its line, which also covers a span still
-  /// being typed), or on a fence line (``` or ~~~, closed or still being
+  /// literal: inside a fenced block (as the styler draws it), an inline code
+  /// span (`inCodeSpan`, closed or still being typed), or on a fence line (``` or ~~~, closed or still being
   /// typed). So do link addresses: after `](` with no `)` yet, or inside
   /// an `http(s)://` address as the styler bounds it.
   static func typography(in text: String, cursor: Int) -> Edit? {
@@ -904,12 +903,47 @@ enum ListEditing {
     let before = ns.substring(with: NSRange(location: lineStart, length: start - lineStart))
     // Dashes that start a line stay dashes: "---" types a divider.
     if symbol == "\u{2013}", before.drop(while: { $0 == " " || $0 == "\t" }).allSatisfy({ $0 == "-" }) { return nil }
-    guard before.utf16.filter({ $0 == 0x60 }).count % 2 == 0,
+    guard !inCodeSpan(ns, NSRange(location: start, length: length)),
       urlBeforeCaret.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
       fencePrefix.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
       !inCodeBlock(text, NSRange(location: start, length: length))
     else { return nil }
     return Edit(range: NSRange(location: start, length: length), replacement: symbol, cursor: start + 1)
+  }
+
+  /// True when `range` sits in inline code on its line, for the typing
+  /// rules (typography, date keywords): inside a span the styler draws
+  /// (`codePattern`), inside a backtick run closed by the next run of the
+  /// same length (``` ``a->b`` ```), or after a run that nothing closes yet
+  /// (a span still being typed). That last case errs towards code: a stray
+  /// backtick earlier on the line keeps the rest of it literal, which only
+  /// ever leaves typed text alone.
+  static func inCodeSpan(_ ns: NSString, _ range: NSRange) -> Bool {
+    let line = ns.lineRange(for: NSRange(location: range.location, length: 0))
+    let end = NSMaxRange(line)
+    var runs: [NSRange] = []
+    var index = line.location
+    while index < end {
+      guard ns.character(at: index) == 0x60 else { index += 1; continue }
+      var after = index
+      while after < end, ns.character(at: after) == 0x60 { after += 1 }
+      runs.append(NSRange(location: index, length: after - index))
+      index = after
+    }
+    guard !runs.isEmpty else { return false }
+    var next = 0
+    while next < runs.count, runs[next].location < NSMaxRange(range) {
+      let open = runs[next]
+      guard let close = runs[(next + 1)...].firstIndex(where: { $0.length == open.length }) else {
+        if open.location < range.location { return true }
+        break
+      }
+      if NSIntersectionRange(NSRange(location: open.location, length: NSMaxRange(runs[close]) - open.location), range).length > 0 {
+        return true
+      }
+      next = close + 1
+    }
+    return codePattern.matches(in: ns as String, range: line).contains { NSIntersectionRange($0.range, range).length > 0 }
   }
 
   // MARK: Dividers

@@ -71,20 +71,11 @@ enum Dates {
   }
 
   /// True when `range` sits in a link's address (`](...)`) or an inline
-  /// code span on its line, closed or still being typed. Closed spans are
-  /// the renderer's own (`ListEditing.codePattern`, as Markdown.apply
-  /// styles them); a backtick before `range` that no such span covers is
-  /// a span still being typed. That errs towards code (```x`` @today``
-  /// stays as typed), which only ever leaves the keyword alone.
+  /// code span on its line, closed or still being typed
+  /// (`ListEditing.inCodeSpan`, shared with the typography rule).
   private static func inCodeOrLinkTarget(_ ns: NSString, _ range: NSRange) -> Bool {
+    if ListEditing.inCodeSpan(ns, range) { return true }
     let line = ns.lineRange(for: NSRange(location: range.location, length: 0))
-    let lineText = ns.substring(with: line)
-    let spans = ListEditing.codePattern.matches(in: lineText, range: NSRange(location: 0, length: (lineText as NSString).length))
-      .map { NSRange(location: $0.range.location + line.location, length: $0.range.length) }
-    if spans.contains(where: { NSIntersectionRange($0, range).length > 0 }) { return true }
-    for index in line.location..<range.location where ns.character(at: index) == 0x60 {
-      if !spans.contains(where: { NSLocationInRange(index, $0) }) { return true }
-    }
     let before = ns.substring(with: NSRange(location: line.location, length: range.location - line.location))
     // After a "](" with no ")" since: a link address.
     if let open = before.range(of: "](", options: .backwards) {
