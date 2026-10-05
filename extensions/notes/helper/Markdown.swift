@@ -626,7 +626,7 @@ enum Markdown {
   static let strike = ListEditing.strikePattern
   static let code = ListEditing.codePattern
   static let link = try! NSRegularExpression(pattern: #"(\[)([^\]\n]+)(\]\()([^)\s]+)(\))"#)
-  static let bareURL = try! NSRegularExpression(pattern: #"(?<![\(\w])https?://[^\s<>\)\]]+"#)
+  static let bareURL = try! NSRegularExpression(pattern: ListEditing.bareURLPattern + "+")
 
   /// One fenced code block: the opening fence line, the language word on
   /// it (may be empty), the body between the fences (may be empty), and
