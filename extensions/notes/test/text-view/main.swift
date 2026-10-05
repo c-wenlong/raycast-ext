@@ -1388,5 +1388,102 @@ load(chipText)
 let natural = ("2026-10-05" as NSString).size(withAttributes: [.font: Markdown.baseFont]).width
 check("one chip rect, the date's width plus its padding", chipRects.count == 1 && abs(chipRects[0].width - (natural + 2 * Markdown.dateChipPad)) < 1 && chipRects[0].minX < dateBounds.minX && chipRects[0].height > 12 && chipRects[0].height < dateBounds.height + 2, "\(chipRects) \(dateBounds) \(natural)")
 
+// Appearance and font settings
+let settingsSuite = "notes-theme-tests-\(getpid())"
+let settingsDefaults = UserDefaults(suiteName: settingsSuite)!
+check("settings default to the system appearance and sans serif", NoteSettings.appearance(in: settingsDefaults) == .system && NoteSettings.font(in: settingsDefaults) == .sans)
+NoteSettings.save(.dark, in: settingsDefaults)
+NoteSettings.save(.serif, in: settingsDefaults)
+settingsDefaults.synchronize()
+let settingsReloaded = UserDefaults(suiteName: settingsSuite)!
+check("settings persist and reload", NoteSettings.appearance(in: settingsReloaded) == .dark && NoteSettings.font(in: settingsReloaded) == .serif)
+settingsDefaults.set("purple", forKey: NoteSettings.appearanceKey)
+settingsDefaults.set("comic", forKey: NoteSettings.fontKey)
+check("an unknown stored setting falls back to the default", NoteSettings.appearance(in: settingsDefaults) == .system && NoteSettings.font(in: settingsDefaults) == .sans)
+settingsDefaults.removePersistentDomain(forName: settingsSuite)
+check("socket commands pick each setting",
+  NoteSettings.change(forCommand: "appearance-dark") == .appearance(.dark) && NoteSettings.change(forCommand: "appearance-light") == .appearance(.light)
+    && NoteSettings.change(forCommand: "appearance-system") == .appearance(.system) && NoteSettings.change(forCommand: "font-serif") == .font(.serif)
+    && NoteSettings.change(forCommand: "font-mono") == .font(.mono) && NoteSettings.change(forCommand: "font-sans") == .font(.sans)
+    && NoteSettings.change(forCommand: "font-comic") == nil)
+check("light and dark force their appearance, system follows", NoteAppearance.system.nsAppearance == nil && NoteAppearance.light.nsAppearance?.name == .aqua && NoteAppearance.dark.nsAppearance?.name == .darkAqua)
+
+let settingRows = NoteSettings.paletteActions(appearance: .dark, font: .serif)
+check("the palette lists three appearances and three fonts", settingRows.map(\.title) == ["Appearance: System", "Appearance: Light", "Appearance: Dark", "Font: Sans Serif", "Font: Serif", "Font: Mono"], "\(settingRows.map(\.title))")
+check("the current choices are checked", settingRows.filter(\.checked).map(\.title) == ["Appearance: Dark", "Font: Serif"])
+check("every setting row runs its own command", settingRows.allSatisfy { NoteSettings.change(forCommand: $0.command) != nil })
+check("every setting row has a symbol", settingRows.allSatisfy { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: nil) != nil })
+func found(_ query: String) -> [String] { settingRows.filter { $0.matches(query) }.map(\.title) }
+check("\"theme\" finds the appearances", found("theme") == ["Appearance: System", "Appearance: Light", "Appearance: Dark"], "\(found("theme"))")
+check("\"dark\" and \"light\" find their appearance", found("dark") == ["Appearance: Dark"] && found("light") == ["Appearance: Light"], "\(found("dark")) \(found("light"))")
+check("\"font\" finds the fonts", found("font") == ["Font: Sans Serif", "Font: Serif", "Font: Mono"], "\(found("font"))")
+check("\"serif\" and \"mono\" find their fonts", found("serif") == ["Font: Sans Serif", "Font: Serif"] && found("mono") == ["Font: Mono"] && found("monospace") == ["Font: Mono"], "\(found("serif")) \(found("mono"))")
+check("keys still match by title", PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "x", command: "zoom-in").matches("zoom in"))
+
+// Each typeface: body and headings change, code stays mono, lists keep the grid.
+let fontNote = "# Head\nbody **bold** _it_ `code` x\n```\nlet x = 1\n```\n- a\n1. b\n- [ ] c\n> t\n"
+for choice in NoteFont.allCases {
+  Markdown.font = choice
+  load(fontNote)
+  let ts = tv.textStorage!
+  let ns = tv.string as NSString
+  func fontAt(_ needle: String) -> NSFont { ts.attribute(.font, at: ns.range(of: needle).location, effectiveRange: nil) as! NSFont }
+  let body = fontAt("body")
+  let expected = choice.font(ofSize: 15 * Markdown.zoom)
+  check("\(choice): body text is the \(choice) design", body.fontName == expected.fontName && body.pointSize == 15 * Markdown.zoom, body.fontName)
+  check("\(choice): the design resolves", choice == .sans || expected.fontName != NoteFont.sans.font(ofSize: 15).fontName, expected.fontName)
+  check("\(choice): mono is fixed pitch, the others are not", (choice == .mono) == body.isFixedPitch, body.fontName)
+  let head = fontAt("Head")
+  check("\(choice): headings keep their size and weight", head.pointSize == 24 * Markdown.zoom && head.fontDescriptor.symbolicTraits.contains(.bold) && head.familyName == body.familyName, "\(head)")
+  let bold = fontAt("bold")
+  let italic = fontAt("it_")
+  check("\(choice): bold and italic stay in the design", bold.familyName == body.familyName && bold.fontDescriptor.symbolicTraits.contains(.bold) && italic.familyName == body.familyName && italic.fontDescriptor.symbolicTraits.contains(.italic), "\(bold.fontName) \(italic.fontName)")
+  let span = fontAt("code")
+  let block = fontAt("let x")
+  check("\(choice): code spans and blocks stay monospaced", span.isFixedPitch && block.isFixedPitch && span.pointSize == Markdown.monoFont.pointSize && block.pointSize == Markdown.monoFont.pointSize, "\(span) \(block)")
+  let col = Markdown.listColumn
+  let lines = ns.components(separatedBy: "\n")
+  let bulletLine = lines.firstIndex(of: "- a")!
+  check("\(choice): bullet, number and task text sit at one column",
+    abs(textX(bulletLine, 2) - col) < 0.5 && abs(textX(bulletLine + 1, 3) - col) < 0.5 && abs(textX(bulletLine + 2, 6) - col) < 0.5,
+    "\(textX(bulletLine, 2)) \(textX(bulletLine + 1, 3)) \(textX(bulletLine + 2, 6)) vs \(col)")
+  check("\(choice): the typing font follows", Markdown.baseFont.fontName == expected.fontName)
+}
+Markdown.font = .sans
+load("x")
+
+// Colours read in both appearances.
+func resolved(_ color: NSColor, _ name: NSAppearance.Name) -> NSColor {
+  var out = color
+  NSAppearance(named: name)!.performAsCurrentDrawingAppearance { out = color.usingColorSpace(.sRGB)! }
+  return out
+}
+func luminance(_ c: NSColor) -> CGFloat {
+  func channel(_ v: CGFloat) -> CGFloat { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+  return 0.2126 * channel(c.redComponent) + 0.7152 * channel(c.greenComponent) + 0.0722 * channel(c.blueComponent)
+}
+func contrast(_ a: NSColor, on b: NSColor) -> CGFloat {
+  // `a` may be translucent: composite it over `b` first.
+  let alpha = a.alphaComponent
+  let mixed = NSColor(srgbRed: a.redComponent * alpha + b.redComponent * (1 - alpha), green: a.greenComponent * alpha + b.greenComponent * (1 - alpha), blue: a.blueComponent * alpha + b.blueComponent * (1 - alpha), alpha: 1)
+  let (x, y) = (luminance(mixed), luminance(b))
+  return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+}
+for name in [NSAppearance.Name.aqua, .darkAqua] {
+  let canvas = resolved(Markdown.canvas, name)
+  let label = name == .aqua ? "light" : "dark"
+  check("\(label): body text reads on the canvas", contrast(resolved(.labelColor, name), on: canvas) >= 7, "\(contrast(resolved(.labelColor, name), on: canvas))")
+  check("\(label): the accent reads as text (links, numbers)", contrast(resolved(Markdown.accent, name), on: canvas) >= 4.5, "\(contrast(resolved(Markdown.accent, name), on: canvas))")
+  let selected = resolved(Markdown.selection, name)
+  let selectedGround = NSColor(srgbRed: selected.redComponent * selected.alphaComponent + canvas.redComponent * (1 - selected.alphaComponent), green: selected.greenComponent * selected.alphaComponent + canvas.greenComponent * (1 - selected.alphaComponent), blue: selected.blueComponent * selected.alphaComponent + canvas.blueComponent * (1 - selected.alphaComponent), alpha: 1)
+  check("\(label): selected text reads", contrast(resolved(.labelColor, name), on: selectedGround) >= 4.5, "\(contrast(resolved(.labelColor, name), on: selectedGround))")
+  let cardTint = resolved(Markdown.codeCardColor, name)
+  let card = NSColor(srgbRed: cardTint.redComponent * cardTint.alphaComponent + canvas.redComponent * (1 - cardTint.alphaComponent), green: cardTint.greenComponent * cardTint.alphaComponent + canvas.greenComponent * (1 - cardTint.alphaComponent), blue: cardTint.blueComponent * cardTint.alphaComponent + canvas.blueComponent * (1 - cardTint.alphaComponent), alpha: 1)
+  for (kind, color) in [("keyword", Highlighter.keywordColor), ("string", Highlighter.stringColor), ("number", Highlighter.numberColor), ("type", Highlighter.typeColor), ("removed", Highlighter.removedColor)] {
+    check("\(label): \(kind) highlight reads on the code card", contrast(resolved(color, name), on: card) >= 4.5, "\(contrast(resolved(color, name), on: card))")
+  }
+  check("\(label): dividers and callout borders show", contrast(resolved(Markdown.dividerColor, name), on: canvas) >= 1.3 && contrast(resolved(Markdown.calloutBorder, name), on: canvas) >= 1.3, "\(contrast(resolved(Markdown.dividerColor, name), on: canvas)) \(contrast(resolved(Markdown.calloutBorder, name), on: canvas))")
+}
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

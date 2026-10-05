@@ -8,6 +8,17 @@ struct PaletteAction {
   let keys: String
   let symbol: String
   let command: String
+  /// More words the search matches besides the title.
+  var keywords: String = ""
+  /// A setting's current choice: a checkmark in place of the keys.
+  var checked: Bool = false
+
+  /// True when every word of `query` (already lowercased and trimmed)
+  /// appears in the title or the keywords.
+  func matches(_ query: String) -> Bool {
+    let haystack = (title + " " + keywords).lowercased()
+    return query.split(separator: " ").allSatisfy { haystack.contains($0) }
+  }
 }
 
 /// Child panel that lets ⌘K close the palette while its search field is key.
@@ -30,7 +41,8 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   private let panel: PalettePanel
   private let search = NSSearchField()
   private let table = NSTableView()
-  private let actions: [PaletteAction]
+  /// The rows; replaced while hidden when a setting's checkmark moves.
+  var actions: [PaletteAction]
   private var visible: [PaletteAction] = []
   private let run: (String) -> Void
   private static let width: CGFloat = 420
@@ -124,13 +136,7 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
   private func filter() {
     let query = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
-    visible = query.isEmpty
-      ? actions
-      : actions.filter { action in
-        let words = query.split(separator: " ")
-        let haystack = action.title.lowercased()
-        return words.allSatisfy { haystack.contains($0) }
-      }
+    visible = query.isEmpty ? actions : actions.filter { $0.matches(query) }
     table.reloadData()
     if !visible.isEmpty {
       table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -207,12 +213,25 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
       badge.textColor = .secondaryLabelColor
       badge.alignment = .center
       badge.wantsLayer = true
-      badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
+      // A layer colour is fixed when set: resolve it in the palette's
+      // own appearance (forced light or dark, or the system's).
+      tableView.effectiveAppearance.performAsCurrentDrawingAppearance {
+        badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
+      }
       badge.layer?.cornerRadius = 5
       badge.translatesAutoresizingMaskIntoConstraints = false
       badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
       badge.heightAnchor.constraint(equalToConstant: 22).isActive = true
       keys.addArrangedSubview(badge)
+    }
+
+    if action.checked {
+      let check = NSImageView()
+      check.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Current")
+      check.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+      check.contentTintColor = Markdown.accent
+      check.setAccessibilityLabel("Current")
+      keys.addArrangedSubview(check)
     }
 
     cell.addSubview(icon)

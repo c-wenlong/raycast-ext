@@ -57,6 +57,9 @@ enum Highlighter {
   }
 
   // MARK: Colours
+  //
+  // Each keeps 4.5:1 against the code card in its appearance (tested in
+  // test/text-view).
 
   private static func dynamic(dark: (CGFloat, CGFloat, CGFloat), light: (CGFloat, CGFloat, CGFloat)) -> NSColor {
     NSColor(name: nil) { appearance in
@@ -66,8 +69,8 @@ enum Highlighter {
     }
   }
 
-  static let keywordColor = dynamic(dark: (0.93, 0.55, 0.29), light: (0.78, 0.36, 0.08))
-  static let stringColor = dynamic(dark: (0.60, 0.80, 0.50), light: (0.22, 0.52, 0.18))
+  static let keywordColor = dynamic(dark: (0.93, 0.55, 0.29), light: (0.68, 0.30, 0.04))
+  static let stringColor = dynamic(dark: (0.60, 0.80, 0.50), light: (0.18, 0.47, 0.15))
   static let numberColor = dynamic(dark: (0.55, 0.75, 0.95), light: (0.13, 0.42, 0.78))
   static let typeColor = dynamic(dark: (0.76, 0.62, 0.95), light: (0.50, 0.30, 0.78))
   static let removedColor = dynamic(dark: (0.95, 0.45, 0.45), light: (0.78, 0.18, 0.18))
