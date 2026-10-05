@@ -61,7 +61,12 @@ const cases: Case[] = [
       assert.equal(firstLineTitle("hello\n"), "hello");
       assert.equal(firstLineTitle("- [ ] buy milk"), "buy milk");
       assert.equal(firstLineTitle("1. first"), "first");
-      assert.equal(firstLineTitle("> quoted _words_"), "quoted words");
+      assert.equal(firstLineTitle("| quoted _words_"), "quoted words");
+      assert.equal(firstLineTitle("> folded"), "folded");
+      assert.equal(firstLineTitle("!> boxed"), "boxed");
+      assert.equal(firstLineTitle("| > ## Deep"), "Deep");
+      assert.equal(firstLineTitle(">text"), ">text");
+      assert.equal(firstLineTitle(">> two"), ">> two");
       assert.equal(firstLineTitle("\n```\ncode\n```\nafter"), "code");
       assert.equal(firstLineTitle("see [the manual](https://x.y)"), "see the manual");
       assert.equal(firstLineTitle("\n\n"), undefined);

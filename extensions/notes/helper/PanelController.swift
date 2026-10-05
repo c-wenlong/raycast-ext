@@ -8,6 +8,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var textView: NoteTextView!
   private var notes: [Note] = []
   private var currentPath: String?
+  /// Line numbers of the collapsed toggles in each note shown since the
+  /// helper started, so a note opens again as it was left. Never saved.
+  private var collapsedToggles: [String: Set<Int>] = [:]
   private var loadedText = ""
   private var saveTimer: Timer?
   private var watcher: DispatchSourceFileSystemObject?
@@ -191,6 +194,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.allowsUndo = true
     textView.usesFindBar = true
     textView.delegate = self
+    textView.onRestyle = { [weak self] in self?.restyle() }
     textView.onCommand = { [weak self] command in
       self?.handle(command)
       return true
@@ -501,6 +505,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   // MARK: Loading and saving
 
   private func load(_ path: String) {
+    rememberCollapsedToggles()
     currentPath = path
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
       // Not UTF-8 (or unreadable): show it read-only so nothing here can
@@ -521,6 +526,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     textView.suppressFenceRelocation = true
     textView.string = text
     textView.suppressFenceRelocation = false
+    textView.restoreCollapsedToggles(collapsedToggles[path] ?? [])
     restyle()
     textView.suppressFenceEdits = true
     textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
@@ -638,12 +644,20 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let onDisk = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     guard onDisk != loadedText, textView.string == loadedText else { return }
     let selection = textView.selectedRange()
+    let collapsed = textView.collapsedToggleLines()
     loadedText = onDisk
     textView.string = onDisk
+    textView.restoreCollapsedToggles(collapsed)
     restyle()
     let length = (onDisk as NSString).length
     textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
     updateTitle()
+  }
+
+  /// Notes the open note's collapsed toggles before another replaces it.
+  private func rememberCollapsedToggles() {
+    guard let path = currentPath, textView.isEditable else { return }
+    collapsedToggles[path] = textView.collapsedToggleLines()
   }
 
   // MARK: Editing helpers

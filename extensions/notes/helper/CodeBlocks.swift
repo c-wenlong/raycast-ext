@@ -259,6 +259,8 @@ final class CodeBlockOverlay: NSObject {
 
     var used = 0
     for block in blocks {
+      // A block inside a collapsed toggle is hidden, controls and all.
+      if (layoutManager as? TaskBoxLayoutManager)?.isFolded(block.openingLine.location) == true { continue }
       let glyphs = layoutManager.glyphRange(forCharacterRange: block.openingLine, actualCharacterRange: nil)
       guard glyphs.location != NSNotFound, glyphs.length > 0 else { continue }
       // The card's top is the top of the opening line's fragment.
