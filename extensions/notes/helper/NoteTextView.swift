@@ -683,7 +683,9 @@ final class NoteTextView: NSTextView {
 
   override func scrollRangeToVisible(_ range: NSRange) {
     super.scrollRangeToVisible(range)
-    liftOutOfBottomBand(range)
+    // Only a caret is lifted: lifting a selection's last line could push
+    // its start off the top.
+    if range.length == 0 { liftOutOfBottomBand(range) }
   }
 
   private func liftOutOfBottomBand(_ range: NSRange) {

@@ -602,6 +602,11 @@ stv.setSelectedRange(NSRange(location: (stv.string as NSString).length, length: 
 stv.insertText("\nmore", replacementRange: stv.selectedRange())
 check("typing at the end lifts the line out of the bottom band", caretLineBottom() <= bandLimit() + 0.5, "\(caretLineBottom()) > \(bandLimit())")
 check("and the line is still on screen", caretLineBottom() > scroller.contentView.bounds.minY + 52, "\(caretLineBottom())")
+scroller.contentView.scroll(to: NSPoint(x: 0, y: -52))
+let endLength = (stv.string as NSString).length
+let selectionStart = stv.layoutManager!.lineFragmentRect(forGlyphAt: (endLength - 120), effectiveRange: nil).minY + stv.textContainerOrigin.y
+stv.scrollRangeToVisible(NSRange(location: endLength - 120, length: 120))
+check("a selection is not lifted past its start", selectionStart >= scroller.contentView.bounds.minY + 52, "\(selectionStart) vs \(scroller.contentView.bounds.minY)")
 stv.setSelectedRange(NSRange(location: 0, length: 0))
 stv.scrollRangeToVisible(stv.selectedRange())
 check("the top of a note scrolls back to the start", scroller.contentView.bounds.minY <= -52 + 0.5, "\(scroller.contentView.bounds.minY)")
