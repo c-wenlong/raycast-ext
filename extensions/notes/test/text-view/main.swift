@@ -567,5 +567,44 @@ for y in (16 * scale)..<(40 * scale) {
 }
 check("selection render shows the box", accentPixels > 20, "\(accentPixels)")
 check("selection render shows no hidden characters", brightPixels == 0, "\(brightPixels)")
+// Overscroll: a long note scrolls past its last line, and typing there
+// keeps the caret line out of the bottom band.
+let scrollWin = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+let scroller = NSScrollView(frame: scrollWin.contentView!.bounds)
+scroller.automaticallyAdjustsContentInsets = false
+scroller.contentInsets = NSEdgeInsets(top: 52, left: 0, bottom: 30, right: 0)
+let stv = NoteTextView(frame: scroller.bounds)
+stv.isRichText = false
+stv.textContainerInset = NSSize(width: 18, height: 16)
+stv.minSize = NSSize(width: 0, height: scroller.bounds.height)
+stv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+stv.isVerticallyResizable = true
+stv.autoresizingMask = [.width]
+stv.textContainer?.widthTracksTextView = true
+scroller.documentView = stv
+scrollWin.contentView = scroller
+scrollWin.makeFirstResponder(stv)
+let visible: CGFloat = 400 - 52 - 30
+func bandLimit() -> CGFloat { scroller.contentView.bounds.maxY - 30 - visible * NoteTextView.overscrollShare }
+func caretLineBottom() -> CGFloat {
+  let lm = stv.layoutManager!
+  let r = lm.extraLineFragmentRect.isEmpty ? lm.lineFragmentRect(forGlyphAt: lm.numberOfGlyphs - 1, effectiveRange: nil) : lm.extraLineFragmentRect
+  return r.maxY + stv.textContainerOrigin.y
+}
+stv.string = "short"
+stv.sizeToFit()
+check("a short note does not grow past the window", stv.frame.height <= 400, "\(stv.frame.height)")
+stv.string = (1...40).map { "line \($0)" }.joined(separator: "\n")
+stv.sizeToFit()
+let used = stv.layoutManager!.usedRect(for: stv.textContainer!).height + 32
+check("a long note scrolls 40% past its last line", abs(stv.frame.height - (used + visible * 0.4)) < 1, "\(stv.frame.height) vs \(used)")
+stv.setSelectedRange(NSRange(location: (stv.string as NSString).length, length: 0))
+stv.insertText("\nmore", replacementRange: stv.selectedRange())
+check("typing at the end lifts the line out of the bottom band", caretLineBottom() <= bandLimit() + 0.5, "\(caretLineBottom()) > \(bandLimit())")
+check("and the line is still on screen", caretLineBottom() > scroller.contentView.bounds.minY + 52, "\(caretLineBottom())")
+stv.setSelectedRange(NSRange(location: 0, length: 0))
+stv.scrollRangeToVisible(stv.selectedRange())
+check("the top of a note scrolls back to the start", scroller.contentView.bounds.minY <= -52 + 0.5, "\(scroller.contentView.bounds.minY)")
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

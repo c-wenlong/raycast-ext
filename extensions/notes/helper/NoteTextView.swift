@@ -657,6 +657,58 @@ final class NoteTextView: NSTextView {
     return true
   }
 
+  // MARK: Overscroll
+
+  /// Share of the visible height a long note scrolls past its last line,
+  /// and the band at the bottom the caret is lifted out of, so the line
+  /// being typed sits above the window's bottom edge.
+  static let overscrollShare: CGFloat = 0.4
+
+  /// Height the text shows in: the clip view less the header and footer
+  /// insets of the scroll view.
+  private var visibleTextHeight: CGFloat {
+    guard let scroll = enclosingScrollView else { return 0 }
+    let insets = scroll.contentInsets
+    return max(0, scroll.contentView.bounds.height - insets.top - insets.bottom)
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    var size = newSize
+    if isVerticallyResizable, let layoutManager, let textContainer {
+      let content = layoutManager.usedRect(for: textContainer).height + textContainerInset.height * 2
+      size.height = max(size.height, content + visibleTextHeight * Self.overscrollShare)
+    }
+    super.setFrameSize(size)
+  }
+
+  override func scrollRangeToVisible(_ range: NSRange) {
+    super.scrollRangeToVisible(range)
+    liftOutOfBottomBand(range)
+  }
+
+  private func liftOutOfBottomBand(_ range: NSRange) {
+    guard let scroll = enclosingScrollView, let layoutManager else { return }
+    let length = (string as NSString).length
+    let index = min(NSMaxRange(range), length)
+    var line: NSRect
+    if index == length, !layoutManager.extraLineFragmentRect.isEmpty {
+      line = layoutManager.extraLineFragmentRect
+    } else if length > 0 {
+      let glyph = layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
+      line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+    } else {
+      return
+    }
+    line.origin.y += textContainerOrigin.y
+    let clip = scroll.contentView
+    let limit = clip.bounds.maxY - scroll.contentInsets.bottom - visibleTextHeight * Self.overscrollShare
+    guard line.maxY > limit else { return }
+    var target = clip.bounds
+    target.origin.y += line.maxY - limit
+    clip.scroll(to: clip.constrainBoundsRect(target).origin)
+    scroll.reflectScrolledClipView(clip)
+  }
+
   override func didChangeText() {
     super.didChangeText()
     syncSlashMenu()
