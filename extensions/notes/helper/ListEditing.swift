@@ -838,8 +838,18 @@ enum ListEditing {
 
   // MARK: Arrows
 
-  private static let urlBeforeCaret = try! NSRegularExpression(
-    pattern: #"(?:\]\([^)\s]*|https?://\S*)$"#, options: .caseInsensitive)
+  /// A bare http(s) address, as the styler links it (Markdown.bareURL):
+  /// not right after `(` or a word character, and ending at whitespace,
+  /// `<`, `>`, `)` or `]`.
+  static let bareURLPattern = #"(?<![\(\w])https?://[^\s<>\)\]]"#
+
+  /// Text before the caret that ends inside a link address: after `](`
+  /// with no `)` yet, or in a bare address with the styler's boundary.
+  private static let urlBeforeCaret = try! NSRegularExpression(pattern: #"(?:\]\([^)\s]*|"# + bareURLPattern + "*)$")
+
+  /// A line that opens (or closes) a fence, from its start up to the
+  /// caret: the pair would be fence text or the info string.
+  private static let fencePrefix = try! NSRegularExpression(pattern: #"^ {0,3}(?:`{3,}|~{3,})"#)
 
   /// A typed `>` right after `-` or `=` turns the pair into `→` or `⇒`,
   /// checked after the `>` is in the text (like `afterSpace`) so the
@@ -847,8 +857,9 @@ enum ListEditing {
   /// the caret count, so `-->` gives `-→`. Code stays literal: inside a
   /// fenced block, or an inline code span (an odd number of backticks
   /// before the `-` on its line, which also covers a span still being
+  /// typed), or on a fence line (``` or ~~~, closed or still being
   /// typed). So do link addresses: after `](` with no `)` yet, or inside
-  /// an `http(s)://` address.
+  /// an `http(s)://` address as the styler bounds it.
   static func arrow(in text: String, cursor: Int) -> Edit? {
     let ns = text as NSString
     guard cursor >= 2, cursor <= ns.length, ns.character(at: cursor - 1) == 0x3E else { return nil }
@@ -862,6 +873,7 @@ enum ListEditing {
     let before = ns.substring(with: NSRange(location: lineStart, length: cursor - 2 - lineStart))
     guard before.utf16.filter({ $0 == 0x60 }).count % 2 == 0,
       urlBeforeCaret.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
+      fencePrefix.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
       !insideFence(text, cursor: cursor)
     else { return nil }
     return Edit(range: NSRange(location: cursor - 2, length: 2), replacement: arrow, cursor: cursor - 1)
