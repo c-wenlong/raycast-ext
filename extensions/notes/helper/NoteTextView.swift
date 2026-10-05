@@ -199,8 +199,8 @@ final class NoteTextView: NSTextView {
   override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
     defer { lastCaret = selectedRange().location }
     // Every way out of here (including a caret relocated off a marker or
-    // fence line) tells the slash menu where the caret ended up.
-    defer { if slashMenuIsOpen, !stillSelecting { syncSlashMenu(caretMoved: true) } }
+    // fence line) tells the open picker where the caret ended up.
+    defer { if pickerIsOpen, !stillSelecting { syncPicker(caretMoved: true) } }
     if !suppressCaretRules, !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0 {
       let target = caretTarget(range.location, forward: range.location >= lastCaret)
       if target != range.location {
@@ -722,7 +722,7 @@ final class NoteTextView: NSTextView {
   }
 
   override func keyDown(with event: NSEvent) {
-    if slashMenuHandles(event) { return }
+    if pickerHandles(event) { return }
     if event.keyCode == 53 {  // escape
       _ = onCommand?("hide")
       return
@@ -794,73 +794,127 @@ final class NoteTextView: NSTextView {
     }
   }
 
-  // MARK: Slash menu
+  // MARK: Inline pickers
   //
-  // Typing "/" at the start of a line, or after a space, opens a menu of
-  // block formats under the caret. Typing on filters it; up/down, return
-  // and escape go to it while it is open. Picking an entry removes the
-  // "/query" and applies the format to the line, as one undo step.
+  // Menus that open under the caret while typing:
+  // - "/" at the start of a line or after a space: block formats, applied
+  //   to the line.
+  // - ":" and two letters (":cl"), where a name can start: emoji, inserted
+  //   in place of ":query".
+  // They share one InlinePicker look and these rules: typing filters it;
+  // up/down, return, tab and escape go to it while it is open; the caret
+  // leaving the query, an invalid query or nothing matching closes it;
+  // escape keeps the text. A pick removes the trigger and the query and
+  // makes its edit as one undo step.
+
+  enum PickerKind {
+    case slash, emoji
+  }
+
+  private struct OpenPicker {
+    let kind: PickerKind
+    /// Offset of the trigger's first character.
+    let start: Int
+    let trigger: String
+    /// End of the query (the caret) and the text length as of the last
+    /// edit while the picker is open.
+    var end: Int
+    var textLength: Int
+    var queryStart: Int { start + (trigger as NSString).length }
+  }
+
+  private var openPicker: OpenPicker?
+  /// The trigger last closed with escape: typing on after it does not
+  /// open the picker again (until a new trigger character is typed).
+  private var dismissedTrigger: Int?
 
   private lazy var slashMenu = SlashMenu { [weak self] entry in self?.pickSlashEntry(entry) }
-  /// Offset of the "/" that opened the menu, while it is open.
-  private var slashStart: Int?
+  private lazy var emojiPicker = InlinePicker(
+    title: "Emoji", accessibilityLabel: "Emoji",
+    source: { query in Emoji.matches(query).map { InlinePicker.Item(id: $0.emoji, title: $0.name, glyph: $0.emoji) } },
+    pick: { [weak self] item in self?.pickEmoji(item) })
 
-  var slashMenuIsOpen: Bool { slashStart != nil }
+  var slashMenuIsOpen: Bool { openPicker?.kind == .slash }
+  var emojiPickerIsOpen: Bool { openPicker?.kind == .emoji }
+  var pickerIsOpen: Bool { openPicker != nil }
 
-  private func openSlashMenu(at slash: Int) {
-    slashStart = slash
-    slashEnd = slash + 1
-    slashTextLength = (string as NSString).length
-    if slashMenu.superview == nil { addSubview(slashMenu, positioned: .above, relativeTo: nil) }
-    slashMenu.filter("")
-    positionSlashMenu()
-    slashMenu.isHidden = false
+  private func picker(for kind: PickerKind) -> InlinePicker {
+    switch kind {
+    case .slash: return slashMenu
+    case .emoji: return emojiPicker
+    }
   }
 
-  func closeSlashMenu() {
-    slashStart = nil
-    slashMenu.isHidden = true
-  }
-
-  /// Keeps the menu in step with the text: filters on what follows the
-  /// "/", closes when the caret leaves it or nothing matches.
-  /// Set while Backspace edits the query, so its transient selection
-  /// does not close the menu.
-  private var slashEditing = false
-
-  private func syncSlashMenu(caretMoved: Bool = false) {
-    guard let slash = slashStart, !slashEditing else { return }
+  /// Opens the `kind` picker for the trigger at `start`, filtered by what
+  /// lies between the trigger and the caret. False (and nothing shown)
+  /// when nothing matches.
+  @discardableResult
+  private func showPicker(_ kind: PickerKind, at start: Int, trigger: String) -> Bool {
+    closePicker()
     let ns = string as NSString
     let caret = selectedRange().location
-    // The query is everything typed after the "/"; a caret that moves
-    // anywhere else (even back inside the query) closes the menu, so a
+    let state = OpenPicker(kind: kind, start: start, trigger: trigger, end: caret, textLength: ns.length)
+    guard caret >= state.queryStart, caret <= ns.length else { return false }
+    let view = picker(for: kind)
+    guard view.filter(ns.substring(with: NSRange(location: state.queryStart, length: caret - state.queryStart))) else { return false }
+    openPicker = state
+    if view.superview == nil { addSubview(view, positioned: .above, relativeTo: nil) }
+    positionPicker()
+    view.isHidden = false
+    return true
+  }
+
+  func closePicker() {
+    guard let kind = openPicker?.kind else { return }
+    openPicker = nil
+    picker(for: kind).isHidden = true
+  }
+
+  /// Whether `query` (what follows the trigger) keeps the picker open.
+  private static func queryKeepsPickerOpen(_ query: String, kind: PickerKind) -> Bool {
+    switch kind {
+    case .slash: return query.rangeOfCharacter(from: .newlines) == nil
+    case .emoji: return ListEditing.isEmojiQuery(query)
+    }
+  }
+
+  /// Set while Backspace edits the query, so its transient selection
+  /// does not close the picker.
+  private var pickerEditing = false
+
+  /// Keeps the picker in step with the text: filters on what follows the
+  /// trigger, closes when the caret leaves it or nothing matches.
+  private func syncPicker(caretMoved: Bool = false) {
+    guard let open = openPicker, !pickerEditing else { return }
+    let ns = string as NSString
+    let caret = selectedRange().location
+    // The query is everything typed after the trigger; a caret that moves
+    // anywhere else (even back inside the query) closes the picker, so a
     // pick never leaves part of the query behind.
     // An edit moves the caret before didChangeText runs; only a move
     // with the text unchanged counts as leaving.
-    let moved = caretMoved && caret != slashEnd && ns.length == slashTextLength
-    guard selectedRange().length == 0, slash < ns.length, ns.character(at: slash) == 0x2F, caret > slash, !moved else {
-      closeSlashMenu()
+    let moved = caretMoved && caret != open.end && ns.length == open.textLength
+    let triggerRange = NSRange(location: open.start, length: open.queryStart - open.start)
+    guard selectedRange().length == 0, open.queryStart <= ns.length, ns.substring(with: triggerRange) == open.trigger,
+      caret >= open.queryStart, !moved
+    else {
+      closePicker()
       return
     }
-    let query = ns.substring(with: NSRange(location: slash + 1, length: caret - slash - 1))
-    guard query.rangeOfCharacter(from: .newlines) == nil, slashMenu.filter(query) else {
-      closeSlashMenu()
+    let query = ns.substring(with: NSRange(location: open.queryStart, length: caret - open.queryStart))
+    guard Self.queryKeepsPickerOpen(query, kind: open.kind), picker(for: open.kind).filter(query) else {
+      closePicker()
       return
     }
-    slashEnd = caret
-    slashTextLength = ns.length
-    positionSlashMenu()
+    openPicker?.end = caret
+    openPicker?.textLength = ns.length
+    positionPicker()
   }
 
-  /// End of the query (the caret) and the text length as of the last
-  /// edit while the menu is open.
-  private var slashEnd = 0
-  private var slashTextLength = 0
-
-  /// The menu hangs under the caret's line, at the caret, so it follows
+  /// The picker hangs under the caret's line, at the caret, so it follows
   /// a query that grows or wraps.
-  private func positionSlashMenu() {
-    guard let layoutManager, let textContainer else { return }
+  private func positionPicker() {
+    guard let open = openPicker, let layoutManager, let textContainer else { return }
     let caret = selectedRange().location
     let count = layoutManager.numberOfGlyphs
     let glyph = min(layoutManager.glyphIndexForCharacter(at: min(caret, max(0, string.utf16.count - 1))), max(0, count - 1))
@@ -876,21 +930,39 @@ final class NoteTextView: NSTextView {
     }
     anchor = anchor.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
     let visible = enclosingScrollView?.documentVisibleRect ?? bounds
-    slashMenu.place(below: anchor, within: visible, container: textContainer)
+    picker(for: open.kind).place(below: anchor, within: visible, container: textContainer)
   }
 
   private func pickSlashEntry(_ entry: SlashMenu.Entry) {
-    guard let slash = slashStart, let storage = textStorage else { return }
+    finishPick { edit(for: entry.format) }
+  }
+
+  private func pickEmoji(_ item: InlinePicker.Item) {
+    guard let emoji = item.glyph else { return }
+    finishPick { insertion(of: emoji) }
+  }
+
+  /// `text` typed at the caret, as an edit.
+  private func insertion(of text: String) -> ListEditing.Edit {
     let caret = selectedRange().location
-    closeSlashMenu()
-    let typed = NSRange(location: slash, length: max(0, caret - slash))
+    return ListEditing.Edit(range: NSRange(location: caret, length: 0), replacement: text, cursor: caret + (text as NSString).length)
+  }
+
+  /// Takes the trigger and query out, puts the caret where the trigger
+  /// was, and applies `makeEdit` (worked out on the text without them).
+  private func finishPick(_ makeEdit: () -> ListEditing.Edit?) {
+    guard let open = openPicker, let storage = textStorage else { return }
+    let start = open.start
+    let caret = selectedRange().location
+    closePicker()
+    let typed = NSRange(location: start, length: max(0, caret - start))
     guard NSMaxRange(typed) <= storage.length else { return }
-    // The "/" began its own typing group (insertText breaks coalescing
-    // just before it), so undoing takes the "/query" back out and leaves
-    // the text as it was before the slash: usually one group, a few when
-    // the query was edited (a deletion coalesces apart from typing). The
-    // format then goes on as the only step above that: one ⌘Z after a
-    // pick lands before the slash, ⇧⌘Z brings the pick back.
+    // The trigger began its own typing group (insertText breaks
+    // coalescing just before it), so undoing takes the trigger and query
+    // back out and leaves the text as it was before them: usually one
+    // group, a few when the query was edited (a deletion coalesces apart
+    // from typing). The edit then goes on as the only step above that:
+    // one ⌘Z after a pick lands before the trigger, ⇧⌘Z brings the pick back.
     let withoutQuery = (string as NSString).replacingCharacters(in: typed, with: "")
     if let undoManager, undoManager.canUndo {
       // The length check is what stops the loop (each group only ever
@@ -903,8 +975,8 @@ final class NoteTextView: NSTextView {
         steps += 1
       }
       if string == withoutQuery {
-        setSelectedRange(NSRange(location: slash, length: 0))
-        apply(edit(for: entry.format))
+        setSelectedRange(NSRange(location: start, length: 0))
+        apply(makeEdit())
         return
       }
       // Not the groups we expected: put them back and take the plain route.
@@ -917,24 +989,36 @@ final class NoteTextView: NSTextView {
     undoManager?.beginUndoGrouping()
     if shouldChangeText(in: typed, replacementString: "") {
       storage.replaceCharacters(in: typed, with: "")
-      setSelectedRange(NSRange(location: slash, length: 0))
+      setSelectedRange(NSRange(location: start, length: 0))
       didChangeText()
     }
-    apply(edit(for: entry.format))
+    apply(makeEdit())
     undoManager?.endUndoGrouping()
   }
 
-  /// Keys the open menu takes before the text view sees them.
-  private func slashMenuHandles(_ event: NSEvent) -> Bool {
-    guard slashMenuIsOpen else { return false }
+  /// Keys the open picker takes before the text view sees them.
+  private func pickerHandles(_ event: NSEvent) -> Bool {
+    guard let open = openPicker else { return false }
+    let view = picker(for: open.kind)
     switch event.keyCode {
-    case 125: slashMenu.move(by: 1)
-    case 126: slashMenu.move(by: -1)
-    case 36, 48: slashMenu.pick()  // return, tab
-    case 53: closeSlashMenu()  // escape
+    case 125: view.move(by: 1)
+    case 126: view.move(by: -1)
+    case 36, 48: view.pick()  // return, tab
+    case 53:  // escape
+      if open.kind != .slash { dismissedTrigger = open.start }
+      closePicker()
     default: return false
     }
     return true
+  }
+
+  /// After a keystroke with no picker open: opens the one whose trigger
+  /// the caret has just completed (":" and two letters).
+  private func openPickerForTypedTrigger() {
+    let caret = selectedRange().location
+    if let colon = ListEditing.emojiTrigger(in: string, cursor: caret), colon != dismissedTrigger {
+      showPicker(.emoji, at: colon, trigger: ":")
+    }
   }
 
   // MARK: Overscroll
@@ -993,7 +1077,7 @@ final class NoteTextView: NSTextView {
 
   override func didChangeText() {
     super.didChangeText()
-    syncSlashMenu()
+    syncPicker()
     // Quote bars and code cards reach outside the lines that changed.
     needsDisplay = true
   }
@@ -1126,13 +1210,13 @@ final class NoteTextView: NSTextView {
 
   override func deleteBackward(_ sender: Any?) {
     let selection = selectedRange()
-    // Backspace inside the slash query: the text view selects the
+    // Backspace inside a picker's query: the text view selects the
     // character first, which would read as the caret leaving the query.
-    if slashMenuIsOpen, selection.length == 0, let slash = slashStart, selection.location > slash + 1 {
-      slashEditing = true
+    if let open = openPicker, selection.length == 0, selection.location > open.queryStart {
+      pickerEditing = true
       super.deleteBackward(sender)
-      slashEditing = false
-      syncSlashMenu()
+      pickerEditing = false
+      syncPicker()
       return
     }
     if selection.length == 0, !hasMarkedText() {
@@ -1197,11 +1281,12 @@ final class NoteTextView: NSTextView {
       setSelectedRange(deletionRange(for: selectedRange()))
     }
     let typed = (string as? String) ?? (string as? NSAttributedString)?.string
+    let typing = !hasMarkedText() && replacementRange.location == NSNotFound
     // A "/" at a line start or after a space opens the block menu. It is
     // decided before the insert, and starts a fresh undo group, so a pick
     // can take the whole "/query" back out with one undo.
     var opensMenu = false
-    if typed == "/", !slashMenuIsOpen, !hasMarkedText(), replacementRange.location == NSNotFound {
+    if typed == "/", !slashMenuIsOpen, typing {
       let pre = selectedRange()
       let ns = self.string as NSString
       let lineStart = ns.lineRange(for: NSRange(location: pre.location, length: 0)).location
@@ -1215,18 +1300,30 @@ final class NoteTextView: NSTextView {
     let caretBefore = selectedRange().location
     let markerBefore = typed.map(ListEditing.typographyTriggers.contains) == true
       && (1...2).contains { caretBefore - $0 >= 0 && hiddenRun(at: caretBefore - $0) != nil }
+    // A ":" that could start an emoji name also starts its own undo
+    // group, for the same reason: the picker opens a few letters later.
+    if typed == ":", typing {
+      dismissedTrigger = nil
+      if ListEditing.emojiColonCanStart(in: self.string, at: selectedRange().location) { breakUndoCoalescing() }
+    }
     super.insertText(string, replacementRange: replacementRange)
     if opensMenu {
-      openSlashMenu(at: selectedRange().location - 1)
+      showPicker(.slash, at: selectedRange().location - 1, trigger: "/")
       return
     }
     // Programmatic replacements (the task box toggle) pass a non-empty range.
     guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
+    // ":clap:" becomes 👏 as its own undo step, so ⌘Z gives back the name.
+    if typed == ":", apply(ListEditing.emojiShortcode(in: self.string, cursor: selection.location, lookup: Emoji.lookup)) {
+      return
+    }
+    if openPicker == nil, typed != nil { openPickerForTypedTrigger() }
     // "@today" and friends: the date follows on the next pass (Date keywords).
     // A date terminator never completes a typographic pair after a keyword.
-    if !pasting, let single = typed, (single as NSString).length == 1,
+    // Neither happens inside an open picker's query.
+    if !pasting, !pickerIsOpen, let single = typed, (single as NSString).length == 1,
       let edit = Dates.afterTerminator(in: self.string, cursor: selection.location)
     {
       scheduleDateConversion((edit, self.string))
@@ -1235,7 +1332,7 @@ final class NoteTextView: NSTextView {
     // "->", "--", "...", and the rest become one symbol as their own undo
     // step. Typing only: a paste never comes through here a character at a time.
     if let typed, ListEditing.typographyTriggers.contains(typed) {
-      guard !markerBefore, !slashMenuIsOpen, var edit = ListEditing.typography(in: self.string, cursor: selection.location)
+      guard !markerBefore, !pickerIsOpen, var edit = ListEditing.typography(in: self.string, cursor: selection.location)
       else { return }
       var typedEnd = selection.location
       var typedText = (self.string as NSString).substring(with: edit.range)

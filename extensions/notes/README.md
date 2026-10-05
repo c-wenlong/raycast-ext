@@ -30,6 +30,7 @@ Inside the window:
 |---|---|
 | `⌘K` | action palette (New Note, Open Today's Note, Duplicate, Browse, zoom…): type to filter, `↑` `↓` to move, `↩` to run |
 | `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, toggle, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
+| `:` and two letters, as in `:cla` | emoji picker under the caret, searched by GitHub/Slack shortcode (about 780 common emoji, built in): type to filter, `↑` `↓`, `↩` to insert the emoji in place of `:cla`, `Esc` or a space to keep the text. A closing colon on an exact name (`:clap:`) converts at once (`⌘Z` gives the name back). Only at a line start or after a space or punctuation, so `10:30`, `key:value` and `std::string` stay text, as does anything in code or a link address |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (its first line, markdown stripped, becomes the title and filename) |
 | `⌘D` | duplicate note |

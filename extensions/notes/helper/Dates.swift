@@ -70,20 +70,6 @@ enum Dates {
     return i == 0 || isWhitespace(ns.character(at: i - 1))
   }
 
-  /// True when `range` sits in a link's address (`](...)`) or an inline
-  /// code span on its line, closed or still being typed
-  /// (`ListEditing.inCodeSpan`, shared with the typography rule).
-  private static func inCodeOrLinkTarget(_ ns: NSString, _ range: NSRange) -> Bool {
-    if ListEditing.inCodeSpan(ns, range) { return true }
-    let line = ns.lineRange(for: NSRange(location: range.location, length: 0))
-    let before = ns.substring(with: NSRange(location: line.location, length: range.location - line.location))
-    // After a "](" with no ")" since: a link address.
-    if let open = before.range(of: "](", options: .backwards) {
-      if !before[open.upperBound...].contains(")") { return true }
-    }
-    return false
-  }
-
   /// The "@keyword" that ends exactly at `end`, as an edit replacing it
   /// with its date (cursor at the end of the date), or nil.
   static func keyword(endingAt end: Int, in text: String, now: Date = Dates.now(), calendar: Calendar = Dates.calendar()) -> ListEditing.Edit? {
@@ -99,7 +85,7 @@ enum Dates {
     let word = ns.substring(with: NSRange(location: at, length: end - at))
     guard let date = date(forKeyword: word, now: now, calendar: calendar), startsWord(ns, at: start) else { return nil }
     let range = NSRange(location: start, length: end - start)
-    guard !inCodeOrLinkTarget(ns, range), !ListEditing.insideFence(text, cursor: start) else { return nil }
+    guard !ListEditing.inCodeSpanOrLinkTarget(ns, range), !ListEditing.insideFence(text, cursor: start) else { return nil }
     return ListEditing.Edit(range: range, replacement: date, cursor: start + (date as NSString).length)
   }
 

@@ -1,0 +1,836 @@
+import Foundation
+
+// MARK: - Emoji names
+//
+// The table the ":" picker searches: common emoji with their GitHub/Slack
+// shortcodes (from GitHub's gemoji), most used first, no network. One line
+// per emoji: the character, then every name it answers to. Kept free of
+// AppKit so the matching can be tested anywhere.
+
+enum Emoji {
+  struct Match: Equatable {
+    /// The name the query matched ("clap").
+    let name: String
+    let emoji: String
+  }
+
+  /// (emoji, names) in table order.
+  static let entries: [(emoji: String, names: [String])] = table.split(separator: "\n").compactMap { line in
+    let parts = line.split(separator: " ").map(String.init)
+    guard parts.count >= 2 else { return nil }
+    return (parts[0], Array(parts.dropFirst()))
+  }
+
+  private static let byName: [String: String] = {
+    var names: [String: String] = [:]
+    for entry in entries {
+      for name in entry.names where names[name] == nil { names[name] = entry.emoji }
+    }
+    return names
+  }()
+
+  /// The emoji named exactly `name` (any case), for ":clap:".
+  static func lookup(_ name: String) -> String? { byName[name.lowercased()] }
+
+  /// Emoji whose names match `query`, best first, each emoji once: an
+  /// exact name, then names starting with the query, then names with a
+  /// "_"-separated word starting with it (":eyes" finds heart_eyes). Within
+  /// a group the table order (most used first) holds.
+  static func matches(_ query: String, limit: Int = 60) -> [Match] {
+    let q = query.lowercased()
+    guard !q.isEmpty else { return [] }
+    var exact: [Match] = []
+    var prefix: [Match] = []
+    var word: [Match] = []
+    for entry in entries {
+      if let name = entry.names.first(where: { $0 == q }) {
+        exact.append(Match(name: name, emoji: entry.emoji))
+      } else if let name = entry.names.first(where: { $0.hasPrefix(q) }) {
+        prefix.append(Match(name: name, emoji: entry.emoji))
+      } else if let name = entry.names.first(where: { $0.split(separator: "_").dropFirst().contains { $0.hasPrefix(q) } }) {
+        word.append(Match(name: name, emoji: entry.emoji))
+      }
+    }
+    return Array((exact + prefix + word).prefix(limit))
+  }
+
+  private static let table = """
+    👍 +1 thumbsup
+    ❤️ heart
+    😂 joy
+    🎉 tada
+    🔥 fire
+    👀 eyes
+    🚀 rocket
+    ✅ white_check_mark
+    🙏 pray
+    👏 clap
+    💯 100
+    ✨ sparkles
+    😄 smile
+    🤔 thinking
+    🙌 raised_hands
+    😭 sob
+    🤣 rofl
+    👋 wave
+    👌 ok_hand
+    💪 muscle
+    ⭐ star
+    ⚠️ warning
+    ❌ x
+    💡 bulb
+    📝 memo pencil
+    📌 pushpin
+    📆 calendar
+    ⚡ zap
+    😅 sweat_smile
+    😍 heart_eyes
+    😉 wink
+    😁 grin
+    🙂 slightly_smiling_face
+    😊 blush
+    👎 -1 thumbsdown
+    🙈 see_no_evil
+    🥳 partying_face
+    💀 skull
+    🧠 brain
+    🤝 handshake
+    ✌️ v
+    👉 point_right
+    ☝️ point_up
+    🏆 trophy
+    🎁 gift
+    😃 smiley
+    😀 grinning
+    😆 laughing satisfied
+    🙃 upside_down_face
+    😇 innocent
+    🥰 smiling_face_with_three_hearts
+    🤩 star_struck
+    😘 kissing_heart
+    😗 kissing
+    ☺️ relaxed
+    😚 kissing_closed_eyes
+    😙 kissing_smiling_eyes
+    😋 yum
+    😛 stuck_out_tongue
+    😜 stuck_out_tongue_winking_eye
+    🤪 zany_face
+    😝 stuck_out_tongue_closed_eyes
+    🤑 money_mouth_face
+    🤗 hugs
+    🤭 hand_over_mouth
+    🤫 shushing_face
+    🤐 zipper_mouth_face
+    🤨 raised_eyebrow
+    😐 neutral_face
+    😑 expressionless
+    😶 no_mouth
+    😏 smirk
+    😒 unamused
+    🙄 roll_eyes
+    😬 grimacing
+    🤥 lying_face
+    😌 relieved
+    😔 pensive
+    😪 sleepy
+    🤤 drooling_face
+    😴 sleeping
+    😷 mask
+    🤒 face_with_thermometer
+    🤕 face_with_head_bandage
+    🤢 nauseated_face
+    🤮 vomiting_face
+    🤧 sneezing_face
+    🥵 hot_face
+    🥶 cold_face
+    🥴 woozy_face
+    😵 dizzy_face
+    🤯 exploding_head
+    🤠 cowboy_hat_face
+    😎 sunglasses
+    🤓 nerd_face
+    🧐 monocle_face
+    😕 confused
+    😟 worried
+    🙁 slightly_frowning_face
+    ☹ frowning_face
+    😮 open_mouth
+    😯 hushed
+    😲 astonished
+    😳 flushed
+    🥺 pleading_face
+    😦 frowning
+    😧 anguished
+    😨 fearful
+    😰 cold_sweat
+    😥 disappointed_relieved
+    😢 cry
+    😱 scream
+    😖 confounded
+    😣 persevere
+    😞 disappointed
+    😓 sweat
+    😩 weary
+    😫 tired_face
+    🥱 yawning_face
+    😤 triumph
+    😡 rage pout
+    😠 angry
+    🤬 cursing_face
+    😈 smiling_imp
+    👿 imp
+    ☠ skull_and_crossbones
+    💩 hankey poop shit
+    🤡 clown_face
+    👹 japanese_ogre
+    👺 japanese_goblin
+    👻 ghost
+    👽 alien
+    👾 space_invader
+    🤖 robot
+    😺 smiley_cat
+    😸 smile_cat
+    😹 joy_cat
+    😻 heart_eyes_cat
+    😼 smirk_cat
+    😽 kissing_cat
+    🙀 scream_cat
+    😿 crying_cat_face
+    😾 pouting_cat
+    🙉 hear_no_evil
+    🙊 speak_no_evil
+    💋 kiss
+    💌 love_letter
+    💘 cupid
+    💝 gift_heart
+    💖 sparkling_heart
+    💗 heartpulse
+    💓 heartbeat
+    💞 revolving_hearts
+    💕 two_hearts
+    💟 heart_decoration
+    ❣️ heavy_heart_exclamation
+    💔 broken_heart
+    🧡 orange_heart
+    💛 yellow_heart
+    💚 green_heart
+    💙 blue_heart
+    💜 purple_heart
+    🤎 brown_heart
+    🖤 black_heart
+    🤍 white_heart
+    💢 anger
+    💥 boom collision
+    💫 dizzy
+    💦 sweat_drops
+    💨 dash
+    🕳 hole
+    💣 bomb
+    💬 speech_balloon
+    👁️‍🗨️ eye_speech_bubble
+    🗨 left_speech_bubble
+    🗯 right_anger_bubble
+    💭 thought_balloon
+    💤 zzz
+    🤚 raised_back_of_hand
+    🖐 raised_hand_with_fingers_splayed
+    ✋ hand raised_hand
+    🖖 vulcan_salute
+    🤏 pinching_hand
+    🤞 crossed_fingers
+    🤟 love_you_gesture
+    🤘 metal
+    🤙 call_me_hand
+    👈 point_left
+    👆 point_up_2
+    🖕 middle_finger fu
+    👇 point_down
+    ✊ fist_raised fist
+    👊 fist_oncoming facepunch punch
+    🤛 fist_left
+    🤜 fist_right
+    👐 open_hands
+    🤲 palms_up_together
+    ✍️ writing_hand
+    💅 nail_care
+    🤳 selfie
+    🦾 mechanical_arm
+    🦿 mechanical_leg
+    🦵 leg
+    🦶 foot
+    👂 ear
+    🦻 ear_with_hearing_aid
+    👃 nose
+    🦷 tooth
+    🦴 bone
+    👁 eye
+    👅 tongue
+    👄 lips
+    👶 baby
+    🧒 child
+    👦 boy
+    👧 girl
+    🧑 adult
+    👱 blond_haired_person
+    👨 man
+    🧔 bearded_person
+    👱‍♂ blond_haired_man
+    👨‍🦰 red_haired_man
+    👨‍🦱 curly_haired_man
+    👨‍🦳 white_haired_man
+    👩 woman
+    👴 older_man
+    👵 older_woman
+    💁‍♀ tipping_hand_woman sassy_woman
+    🙋 raising_hand
+    🙇 bow
+    🙇‍♂ bowing_man
+    🤦 facepalm
+    🤦‍♂ man_facepalming
+    🤦‍♀ woman_facepalming
+    🤷 shrug
+    🤷‍♂ man_shrugging
+    🤷‍♀ woman_shrugging
+    👨‍💻 man_technologist
+    👩‍💻 woman_technologist
+    🕵 detective
+    👼 angel
+    🎅 santa
+    🦸 superhero
+    🧙 mage
+    🧟 zombie
+    🚶 walking
+    🏃 runner running
+    🏃‍♂ running_man
+    💃 woman_dancing dancer
+    🏄 surfer
+    🏊 swimmer
+    🏋 weight_lifting
+    🚴 bicyclist
+    🤹 juggling_person
+    🛀 bath
+    🛌 sleeping_bed
+    👫 couple
+    👪 family
+    🗣 speaking_head
+    👤 bust_in_silhouette
+    👥 busts_in_silhouette
+    👣 footprints
+    🐵 monkey_face
+    🐒 monkey
+    🦍 gorilla
+    🦧 orangutan
+    🐶 dog
+    🐕 dog2
+    🦮 guide_dog
+    🐕‍🦺 service_dog
+    🐩 poodle
+    🐺 wolf
+    🦊 fox_face
+    🦝 raccoon
+    🐱 cat
+    🐈 cat2
+    🦁 lion
+    🐯 tiger
+    🐅 tiger2
+    🐆 leopard
+    🐴 horse
+    🐎 racehorse
+    🦄 unicorn
+    🦓 zebra
+    🦌 deer
+    🐮 cow
+    🐂 ox
+    🐃 water_buffalo
+    🐄 cow2
+    🐷 pig
+    🐖 pig2
+    🐗 boar
+    🐽 pig_nose
+    🐏 ram
+    🐑 sheep
+    🐐 goat
+    🐪 dromedary_camel
+    🐫 camel
+    🦙 llama
+    🦒 giraffe
+    🐘 elephant
+    🦏 rhinoceros
+    🦛 hippopotamus
+    🐭 mouse
+    🐁 mouse2
+    🐀 rat
+    🐹 hamster
+    🍇 grapes
+    🍈 melon
+    🍉 watermelon
+    🍊 tangerine orange mandarin
+    🍋 lemon
+    🍌 banana
+    🍍 pineapple
+    🥭 mango
+    🍎 apple
+    🍏 green_apple
+    🍐 pear
+    🍑 peach
+    🍒 cherries
+    🍓 strawberry
+    🥝 kiwi_fruit
+    🍅 tomato
+    🥥 coconut
+    🥑 avocado
+    🍆 eggplant
+    🥔 potato
+    🥕 carrot
+    🌽 corn
+    🌶 hot_pepper
+    🥒 cucumber
+    🥬 leafy_green
+    🥦 broccoli
+    🧄 garlic
+    🧅 onion
+    🍄 mushroom
+    🥜 peanuts
+    🌰 chestnut
+    🍞 bread
+    🥐 croissant
+    🥖 baguette_bread
+    🥨 pretzel
+    🥯 bagel
+    🥞 pancakes
+    🧇 waffle
+    🧀 cheese
+    🍖 meat_on_bone
+    🎃 jack_o_lantern
+    🎄 christmas_tree
+    🎆 fireworks
+    🎇 sparkler
+    🧨 firecracker
+    🎈 balloon
+    🎊 confetti_ball
+    🎋 tanabata_tree
+    🎍 bamboo
+    🎎 dolls
+    🎏 flags
+    🎐 wind_chime
+    🎑 rice_scene
+    🧧 red_envelope
+    🎀 ribbon
+    🎗 reminder_ribbon
+    🎟 tickets
+    🎫 ticket
+    🎖 medal_military
+    🏅 medal_sports
+    🥇 1st_place_medal
+    🌍 earth_africa
+    🌎 earth_americas
+    🌏 earth_asia
+    🌐 globe_with_meridians
+    🗺 world_map
+    ⛰ mountain
+    🌋 volcano
+    🏕 camping
+    🏖 beach_umbrella
+    🏝 desert_island
+    🏟 stadium
+    🏠 house
+    🏡 house_with_garden
+    🏢 office
+    🏥 hospital
+    🏨 hotel
+    🏫 school
+    🏰 european_castle
+    🗼 tokyo_tower
+    🗽 statue_of_liberty
+    ⛲ fountain
+    ⛺ tent
+    🌃 night_with_stars
+    🌄 sunrise_over_mountains
+    🌅 sunrise
+    🌆 city_sunset
+    🌉 bridge_at_night
+    🎡 ferris_wheel
+    🎢 roller_coaster
+    🎪 circus_tent
+    🚂 steam_locomotive
+    🚄 bullettrain_side
+    🚇 metro
+    🚋 train
+    🚌 bus
+    🚕 taxi
+    🚗 car red_car
+    🏍 motorcycle
+    🛵 motor_scooter
+    🚲 bike
+    ⛽ fuelpump
+    🚦 vertical_traffic_light
+    🚧 construction
+    ⚓ anchor
+    ⛵ boat sailboat
+    🚤 speedboat
+    🚢 ship
+    ✈️ airplane
+    🛫 flight_departure
+    🛬 flight_arrival
+    🚁 helicopter
+    ⌛ hourglass
+    ⏳ hourglass_flowing_sand
+    ⌚ watch
+    ⏰ alarm_clock
+    ⏱ stopwatch
+    ⏲ timer_clock
+    🕐 clock1
+    🌑 new_moon
+    🌓 first_quarter_moon
+    🌕 full_moon
+    🌙 crescent_moon
+    🌡 thermometer
+    ☀️ sunny
+    🌞 sun_with_face
+    🪐 ringed_planet
+    🌟 star2
+    🌠 stars
+    🌌 milky_way
+    ☁️ cloud
+    ⛅ partly_sunny
+    ⛈ cloud_with_lightning_and_rain
+    🌧 cloud_with_rain
+    🌪 tornado
+    🌫 fog
+    🌈 rainbow
+    ☔ umbrella
+    ❄️ snowflake
+    ⛄ snowman
+    ☄ comet
+    💧 droplet
+    🌊 ocean
+    👓 eyeglasses
+    🕶 dark_sunglasses
+    👔 necktie
+    👕 shirt tshirt
+    👖 jeans
+    👗 dress
+    👘 kimono
+    👙 bikini
+    👜 handbag
+    🛍 shopping
+    🎒 school_satchel
+    👞 mans_shoe shoe
+    👠 high_heel
+    👑 crown
+    🎩 tophat
+    🎓 mortar_board
+    💄 lipstick
+    💍 ring
+    💎 gem
+    🔇 mute
+    🔈 speaker
+    🔊 loud_sound
+    📢 loudspeaker
+    📣 mega
+    🔔 bell
+    🔕 no_bell
+    🎵 musical_note
+    🎶 notes
+    🎤 microphone
+    🎧 headphones
+    📻 radio
+    🎸 guitar
+    🎹 musical_keyboard
+    🎺 trumpet
+    🎻 violin
+    🥁 drum
+    📱 iphone
+    📲 calling
+    ☎️ phone telephone
+    📞 telephone_receiver
+    🔋 battery
+    🔌 electric_plug
+    💻 computer
+    🖥 desktop_computer
+    🖨 printer
+    ⌨ keyboard
+    🖱 computer_mouse
+    💽 minidisc
+    💾 floppy_disk
+    💿 cd
+    📀 dvd
+    🧮 abacus
+    🎥 movie_camera
+    🎞 film_strip
+    📺 tv
+    📷 camera
+    📸 camera_flash
+    📹 video_camera
+    🔍 mag
+    🔎 mag_right
+    🕯 candle
+    🔦 flashlight
+    📕 closed_book
+    📖 book open_book
+    📗 green_book
+    📘 blue_book
+    📙 orange_book
+    📚 books
+    📓 notebook
+    📒 ledger
+    📃 page_with_curl
+    📜 scroll
+    📄 page_facing_up
+    📰 newspaper
+    📑 bookmark_tabs
+    🔖 bookmark
+    🏷 label
+    💰 moneybag
+    💵 dollar
+    💸 money_with_wings
+    💳 credit_card
+    🧾 receipt
+    💹 chart
+    ✉️ email envelope
+    📧 e-mail
+    📨 incoming_envelope
+    📤 outbox_tray
+    📥 inbox_tray
+    📦 package
+    📫 mailbox
+    📮 postbox
+    🗳 ballot_box
+    ✏️ pencil2
+    ✒️ black_nib
+    🖋 fountain_pen
+    🖊 pen
+    🖌 paintbrush
+    🖍 crayon
+    💼 briefcase
+    📁 file_folder
+    📂 open_file_folder
+    🗂 card_index_dividers
+    📅 date
+    🗒 spiral_notepad
+    🗓 spiral_calendar
+    📇 card_index
+    📈 chart_with_upwards_trend
+    📉 chart_with_downwards_trend
+    📊 bar_chart
+    📋 clipboard
+    📍 round_pushpin
+    📎 paperclip
+    🖇 paperclips
+    📏 straight_ruler
+    📐 triangular_ruler
+    ✂️ scissors
+    🗃 card_file_box
+    🗄 file_cabinet
+    🗑 wastebasket
+    🔒 lock
+    🔓 unlock
+    🔏 lock_with_ink_pen
+    🔐 closed_lock_with_key
+    🔑 key
+    🗝 old_key
+    🔨 hammer
+    🪓 axe
+    ⛏ pick
+    🛠 hammer_and_wrench
+    🗡 dagger
+    ⚔ crossed_swords
+    🔫 gun
+    🛡 shield
+    🔧 wrench
+    🔩 nut_and_bolt
+    ⚙ gear
+    🗜 clamp
+    ⚖ balance_scale
+    🔗 link
+    ⛓ chains
+    🧰 toolbox
+    🧲 magnet
+    ⚗ alembic
+    🧪 test_tube
+    🧫 petri_dish
+    🧬 dna
+    🔬 microscope
+    🔭 telescope
+    📡 satellite
+    💉 syringe
+    💊 pill
+    🩹 adhesive_bandage
+    🩺 stethoscope
+    🚪 door
+    🛏 bed
+    🛋 couch_and_lamp
+    🪑 chair
+    🚽 toilet
+    🚿 shower
+    🛁 bathtub
+    🧹 broom
+    🧺 basket
+    🧼 soap
+    🧽 sponge
+    🛒 shopping_cart
+    🚬 smoking
+    ⚰ coffin
+    🚮 put_litter_in_its_place
+    ♿ wheelchair
+    🚹 mens
+    🚺 womens
+    🚻 restroom
+    🚼 baby_symbol
+    🚾 wc
+    🚸 children_crossing
+    ⛔ no_entry
+    🚫 no_entry_sign
+    🚭 no_smoking
+    🚯 do_not_litter
+    🚷 no_pedestrians
+    📵 no_mobile_phones
+    🔞 underage
+    ☢ radioactive
+    ☣ biohazard
+    ⬆️ arrow_up
+    ↗️ arrow_upper_right
+    ➡️ arrow_right
+    ↘️ arrow_lower_right
+    ⬇️ arrow_down
+    ↙️ arrow_lower_left
+    ⬅️ arrow_left
+    ↖️ arrow_upper_left
+    ↕️ arrow_up_down
+    ↔️ left_right_arrow
+    ↩️ leftwards_arrow_with_hook
+    ↪️ arrow_right_hook
+    ⤴️ arrow_heading_up
+    ⤵️ arrow_heading_down
+    🔃 arrows_clockwise
+    🔄 arrows_counterclockwise
+    🔙 back
+    🔚 end
+    🔛 on
+    🔜 soon
+    🔝 top
+    ⚛ atom_symbol
+    🕉 om
+    ✡️ star_of_david
+    ☸ wheel_of_dharma
+    ☯️ yin_yang
+    ✝️ latin_cross
+    ☦ orthodox_cross
+    ☪ star_and_crescent
+    ☮ peace_symbol
+    🕎 menorah
+    🔯 six_pointed_star
+    ♈ aries
+    ⛎ ophiuchus
+    🔀 twisted_rightwards_arrows
+    🔁 repeat
+    🔂 repeat_one
+    ▶️ arrow_forward
+    ⏩ fast_forward
+    ◀️ arrow_backward
+    ⏪ rewind
+    🔼 arrow_up_small
+    ⏫ arrow_double_up
+    🔽 arrow_down_small
+    ⏬ arrow_double_down
+    ⏸ pause_button
+    ⏹ stop_button
+    ⏺ record_button
+    ⏏️ eject_button
+    🎦 cinema
+    🔅 low_brightness
+    🔆 high_brightness
+    📶 signal_strength
+    📳 vibration_mode
+    📴 mobile_phone_off
+    ♀️ female_sign
+    ♂️ male_sign
+    ⚕ medical_symbol
+    ♾ infinity
+    ♻️ recycle
+    ⚜ fleur_de_lis
+    🔱 trident
+    📛 name_badge
+    🔰 beginner
+    ⭕ o
+    ☑️ ballot_box_with_check
+    ✔️ heavy_check_mark
+    ✖️ heavy_multiplication_x
+    ➕ heavy_plus_sign
+    ➖ heavy_minus_sign
+    ➗ heavy_division_sign
+    ➰ curly_loop
+    ➿ loop
+    〽️ part_alternation_mark
+    ✳️ eight_spoked_asterisk
+    ❇️ sparkle
+    ‼️ bangbang
+    ⁉️ interrobang
+    ❓ question
+    ❔ grey_question
+    ❕ grey_exclamation
+    ❗ exclamation heavy_exclamation_mark
+    〰️ wavy_dash
+    ©️ copyright
+    ®️ registered
+    ™️ tm
+    #️⃣ hash
+    *️⃣ asterisk
+    0️⃣ zero
+    1️⃣ one
+    2️⃣ two
+    3️⃣ three
+    4️⃣ four
+    5️⃣ five
+    6️⃣ six
+    7️⃣ seven
+    8️⃣ eight
+    9️⃣ nine
+    🔟 keycap_ten
+    🔢 1234
+    🔤 abc
+    🆒 cool
+    🆓 free
+    ℹ️ information_source
+    🆕 new
+    🆗 ok
+    🅿️ parking
+    🆘 sos
+    🆙 up
+    🉐 ideograph_advantage
+    🈲 u7981
+    🉑 accept
+    ㊗️ congratulations
+    ㊙️ secret
+    🔴 red_circle
+    🟠 orange_circle
+    🟡 yellow_circle
+    🟢 green_circle
+    🟣 purple_circle
+    ⚫ black_circle
+    ⚪ white_circle
+    🟥 red_square
+    🟩 green_square
+    🟦 blue_square
+    🔶 large_orange_diamond
+    🔷 large_blue_diamond
+    🔺 small_red_triangle
+    🔻 small_red_triangle_down
+    🔘 radio_button
+    🔳 white_square_button
+    🔲 black_square_button
+    🇨🇳 cn
+    🇩🇪 de
+    🇪🇸 es
+    🇪🇺 eu european_union
+    🇫🇷 fr
+    🇬🇧 gb uk
+    🇮🇹 it
+    🇯🇵 jp
+    🇰🇷 kr
+    🇷🇺 ru
+    🇺🇳 united_nations
+    🇺🇸 us
+    """
+}

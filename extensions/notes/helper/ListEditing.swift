@@ -1382,4 +1382,113 @@ enum ListEditing {
     if let current = open, location >= current.range.location { return (current.range, nil) }
     return nil
   }
+
+  // MARK: Inline picker triggers
+  //
+  // Where the emoji picker may open (":" and two letters), and the
+  // ":name:" shortcut. The view asks after each keystroke; these only
+  // read the text. A trigger never fires inside a code block or span or
+  // inside a link's address.
+
+  /// A character an emoji name can hold: ASCII letters, digits, "_", "+"
+  /// and "-" (as in +1, t-rex, 100).
+  static func isEmojiNameCharacter(_ c: unichar) -> Bool {
+    (c >= 0x61 && c <= 0x7A) || (c >= 0x41 && c <= 0x5A) || (c >= 0x30 && c <= 0x39) || c == 0x5F || c == 0x2B || c == 0x2D
+  }
+
+  private static func isASCIILetter(_ c: unichar) -> Bool { (c >= 0x61 && c <= 0x7A) || (c >= 0x41 && c <= 0x5A) }
+
+  /// What may follow ":" for the emoji picker to show: name characters,
+  /// starting with a letter and holding at least two (":cl", ":thumbs",
+  /// ":t-r"), so ":3", ":a1" and ":-)" stay text.
+  static func isEmojiQuery(_ query: String) -> Bool {
+    let units = Array(query.utf16)
+    guard let first = units.first, isASCIILetter(first), units.allSatisfy(isEmojiNameCharacter) else { return false }
+    return units.filter(isASCIILetter).count >= 2
+  }
+
+  /// True when a ":" at `location` can start an emoji name: at a line
+  /// start or after whitespace or punctuation, but not after a letter or
+  /// digit (`10:30`, `mailto:`), another ":" (`std::string`), a "/" or a
+  /// backslash; and not in a code block, a code span or a link address.
+  static func emojiColonCanStart(in text: String, at location: Int) -> Bool {
+    let ns = text as NSString
+    guard location >= 0, location <= ns.length else { return false }
+    if location > 0 {
+      let previous = ns.character(at: location - 1)
+      if previous != 0x0A, previous != 0x0D {
+        if isEmojiNameCharacter(previous) && previous != 0x2B && previous != 0x2D && previous != 0x5F { return false }
+        if previous == 0x3A || previous == 0x2F || previous == 0x5C { return false }
+        // Any other letter or digit (é, ٣) counts as a word character too.
+        if let scalar = Unicode.Scalar(previous), CharacterSet.alphanumerics.contains(scalar) { return false }
+      }
+    }
+    return !insideCodeOrAddress(text, at: location)
+  }
+
+  /// True when `range` sits in an inline code span (`inCodeSpan`, closed
+  /// or still being typed) or a link's address (`inLinkTarget`): where the
+  /// date keywords and the emoji trigger stay as typed.
+  static func inCodeSpanOrLinkTarget(_ ns: NSString, _ range: NSRange) -> Bool {
+    inCodeSpan(ns, range) || inLinkTarget(ns, range)
+  }
+
+  /// True when `range` starts after a "](" on its line with no ")" since:
+  /// inside a markdown link's address.
+  static func inLinkTarget(_ ns: NSString, _ range: NSRange) -> Bool {
+    let line = ns.lineRange(for: NSRange(location: range.location, length: 0))
+    let before = ns.substring(with: NSRange(location: line.location, length: range.location - line.location))
+    guard let open = before.range(of: "](", options: .backwards) else { return false }
+    return !before[open.upperBound...].contains(")")
+  }
+
+  /// True inside a fenced block, an inline code span or a link address
+  /// (as `inCodeSpanOrLinkTarget` decides, shared with the date keywords),
+  /// or a word holding "://" (a bare URL).
+  static func insideCodeOrAddress(_ text: String, at location: Int) -> Bool {
+    let ns = text as NSString
+    guard location >= 0, location <= ns.length else { return false }
+    if insideFence(text, cursor: location) { return true }
+    // The character at `location`, when there is one, so a closed span
+    // around it counts.
+    if inCodeSpanOrLinkTarget(ns, NSRange(location: location, length: location < ns.length ? 1 : 0)) { return true }
+    let lineStart = ns.lineRange(for: NSRange(location: location, length: 0)).location
+    let before = ns.substring(with: NSRange(location: lineStart, length: location - lineStart)) as NSString
+    let space = before.rangeOfCharacter(from: .whitespaces, options: .backwards)
+    let wordStart = space.location == NSNotFound ? 0 : NSMaxRange(space)
+    return before.substring(from: wordStart).contains("://")
+  }
+
+  /// The ":" the emoji picker opens at, when the caret has just finished
+  /// ":" plus a query (at least two letters) at a place a name can start,
+  /// and is not in the middle of a word. Nil otherwise.
+  static func emojiTrigger(in text: String, cursor: Int) -> Int? {
+    let ns = text as NSString
+    guard cursor > 0, cursor <= ns.length else { return nil }
+    if cursor < ns.length, isEmojiNameCharacter(ns.character(at: cursor)) { return nil }
+    var start = cursor
+    while start > 0, isEmojiNameCharacter(ns.character(at: start - 1)) { start -= 1 }
+    guard start > 0, ns.character(at: start - 1) == 0x3A else { return nil }
+    let colon = start - 1
+    guard isEmojiQuery(ns.substring(with: NSRange(location: start, length: cursor - start))),
+      emojiColonCanStart(in: text, at: colon)
+    else { return nil }
+    return colon
+  }
+
+  /// Typing the closing ":" of a known ":name:" turns it into the emoji.
+  /// `lookup` gives the emoji for a name. The edit covers ":name:".
+  static func emojiShortcode(in text: String, cursor: Int, lookup: (String) -> String?) -> Edit? {
+    let ns = text as NSString
+    guard cursor >= 3, cursor <= ns.length, ns.character(at: cursor - 1) == 0x3A else { return nil }
+    var start = cursor - 1
+    while start > 0, isEmojiNameCharacter(ns.character(at: start - 1)) { start -= 1 }
+    guard start > 0, start < cursor - 1, ns.character(at: start - 1) == 0x3A else { return nil }
+    let colon = start - 1
+    let name = ns.substring(with: NSRange(location: start, length: cursor - 1 - start))
+    guard emojiColonCanStart(in: text, at: colon), let emoji = lookup(name) else { return nil }
+    return Edit(
+      range: NSRange(location: colon, length: cursor - colon), replacement: emoji,
+      cursor: colon + (emoji as NSString).length)
+  }
 }
