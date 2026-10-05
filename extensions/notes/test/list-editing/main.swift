@@ -879,5 +879,52 @@ do {
   check("not in excluded (fenced) ranges", chips(fenced, excluding: [NSRange(location: 0, length: 18)]) == ["2026-10-06"])
 }
 
+// Emoji picker trigger and the :name: shortcut
+
+do {
+  func trigger(_ text: String) -> Int? { ListEditing.emojiTrigger(in: text, cursor: (text as NSString).length) }
+  check(":cl at a line start opens at the colon", trigger(":cl") == 0, "\(String(describing: trigger(":cl")))")
+  check("after a space", trigger("hi :cla") == 3)
+  check("after punctuation", trigger("(:cl") == 1 && trigger("**:cl") == 2)
+  check("on a later line", trigger("a\n:cl") == 2)
+  check("a list item's text counts as after whitespace", trigger("- :cl") == 2)
+  check("one letter is not enough", trigger(":c") == nil)
+  check("a bare colon is not enough", trigger("hi :") == nil)
+  check("the query starts with a letter and holds two", trigger(":3a") == nil && trigger(":a1") == nil && trigger(":-)") == nil && trigger(":a1b") == 0)
+  check("digits and +-_ may follow", trigger(":t-r") == 0 && trigger(":heart_ey") == 0)
+  check("not after a digit (a time)", trigger("10:30") == nil && trigger("at 10:ab") == nil)
+  check("not after a letter (mailto:, key:value)", trigger("mailto:ab") == nil && trigger("key:value") == nil)
+  check("not after another colon (std::string)", trigger("std::string") == nil && trigger("::ab") == nil)
+  check("not after a slash", trigger("/:ab") == nil)
+  check("not inside an inline code span, closed or still open", trigger("`x :ab") == nil && trigger("a `x` :ab") == 6)
+  check("not inside a double-backtick span", trigger("``x :ab") == nil)
+  let fenced = "```\n:ab\n```"
+  check("not in a fenced block (caret after the query)", ListEditing.emojiTrigger(in: fenced, cursor: 7) == nil)
+  check("not in a link address", trigger("[x](:ab") == nil && trigger("[x](http://a.com/?q=:ab") == nil)
+  check("but after a finished link", trigger("[x](y) :ab") == 7)
+  check("not inside a bare URL", trigger("see https://a.com/x=:ab") == nil)
+  check("not with the caret mid-word", ListEditing.emojiTrigger(in: ":abc", cursor: 3) == nil)
+  check("the caret at the end of the word with text after", ListEditing.emojiTrigger(in: ":ab rest", cursor: 3) == 0)
+  check("not after an accented letter", trigger("café:ab") == nil)
+  check("after an emoji", trigger("👍:ab") == 2)
+  check("emoji query rules", ListEditing.isEmojiQuery("cl") && !ListEditing.isEmojiQuery("c") && !ListEditing.isEmojiQuery("cl ap") && !ListEditing.isEmojiQuery("cl:"))
+
+  let names = ["clap": "👏", "+1": "👍", "tada": "🎉"]
+  func lookup(_ name: String) -> String? { names[name.lowercased()] }
+  func short(_ text: String) -> (String, Int)? {
+    applied(text, ListEditing.emojiShortcode(in: text, cursor: (text as NSString).length, lookup: lookup))
+  }
+  check(":clap: becomes the emoji", short("great :clap:")?.0 == "great 👏" && short("great :clap:")?.1 == 8, "\(String(describing: short("great :clap:")))")
+  check("at a line start", short(":tada:")?.0 == "🎉")
+  check("names with + work", short(":+1:")?.0 == "👍")
+  check("any case", short(":CLAP:")?.0 == "👏")
+  check("an unknown name stays", short(":clapp:") == nil)
+  check("an empty name stays", short("::") == nil && short("a ::") == nil)
+  check("not after a digit", short("10:clap:") == nil)
+  check("not in code", short("`:clap:") == nil)
+  check("not in a link address", short("[x](:clap:") == nil)
+  check("one after another", short("👏:tada:")?.0 == "👏🎉")
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)
