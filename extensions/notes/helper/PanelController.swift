@@ -8,9 +8,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var textView: NoteTextView!
   private var notes: [Note] = []
   private var currentPath: String?
-  /// Line numbers of the collapsed toggles in each note shown since the
-  /// helper started, so a note opens again as it was left. Never saved.
-  private var collapsedToggles: [String: Set<Int>] = [:]
+  /// The collapsed toggles (NoteTextView.collapsedToggleKeys) of each
+  /// note shown since the helper started, so a note opens again as it was
+  /// left. Never saved.
+  private var collapsedToggles: [String: Set<String>] = [:]
   private var loadedText = ""
   private var saveTimer: Timer?
   private var watcher: DispatchSourceFileSystemObject?
@@ -644,7 +645,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let onDisk = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     guard onDisk != loadedText, textView.string == loadedText else { return }
     let selection = textView.selectedRange()
-    let collapsed = textView.collapsedToggleLines()
+    let collapsed = textView.collapsedToggleKeys()
     loadedText = onDisk
     textView.string = onDisk
     textView.restoreCollapsedToggles(collapsed)
@@ -657,7 +658,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// Notes the open note's collapsed toggles before another replaces it.
   private func rememberCollapsedToggles() {
     guard let path = currentPath, textView.isEditable else { return }
-    collapsedToggles[path] = textView.collapsedToggleLines()
+    collapsedToggles[path] = textView.collapsedToggleKeys()
   }
 
   // MARK: Editing helpers

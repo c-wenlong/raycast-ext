@@ -324,6 +324,19 @@ final class NoteTextView: NSTextView {
     return found
   }
 
+  /// Text set wholesale (loading a note) takes the old first character's
+  /// attributes, a collapsed ">" included; a new text starts with every
+  /// toggle open.
+  override var string: String {
+    get { super.string }
+    set {
+      super.string = newValue
+      if let storage = textStorage, storage.length > 0 {
+        storage.removeAttribute(Markdown.toggleCollapsed, range: NSRange(location: 0, length: storage.length))
+      }
+    }
+  }
+
   /// Collapses or expands the toggle whose ">" is at `marker`. Nothing in
   /// the file changes: the state is an attribute on the ">" (kept while
   /// the window shows the note) and the children are only laid out away.
@@ -351,51 +364,42 @@ final class NoteTextView: NSTextView {
     needsDisplay = true
   }
 
-  /// Line numbers of the collapsed toggles, to collapse them again when
-  /// the note is shown again.
-  func collapsedToggleLines() -> Set<Int> {
+  /// A key for each collapsed toggle, to collapse it again when the note
+  /// is shown again: its title line's text and which toggle with that
+  /// text it is (first, second...). Lines added or removed elsewhere, or
+  /// toggles moved around, do not move a fold to another toggle; a toggle
+  /// whose title changed loses its fold.
+  func collapsedToggleKeys() -> Set<String> {
     guard let storage = textStorage, storage.length > 0 else { return [] }
-    let ns = string as NSString
-    var lines = Set<Int>()
-    storage.enumerateAttribute(Markdown.toggleCollapsed, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-      guard value != nil else { return }
-      lines.insert(self.lineNumber(of: ns.lineRange(for: NSRange(location: range.location, length: 0)).location))
+    var keys = Set<String>()
+    for (key, marker) in toggleKeys() where storage.attribute(Markdown.toggleCollapsed, at: marker, effectiveRange: nil) != nil {
+      keys.insert(key)
     }
-    return lines
+    return keys
   }
 
-  private func lineNumber(of location: Int) -> Int {
-    let ns = string as NSString
-    var number = 0
-    var index = 0
-    while index < location {
-      let line = ns.lineRange(for: NSRange(location: index, length: 0))
-      guard NSMaxRange(line) <= location else { break }
-      number += 1
-      index = NSMaxRange(line)
+  /// Collapses the toggles these keys (from collapsedToggleKeys) name;
+  /// keys that match no toggle are dropped. Restyle after.
+  func restoreCollapsedToggles(_ keys: Set<String>) {
+    guard let storage = textStorage, storage.length > 0 else { return }
+    // Text set wholesale takes the old first character's attributes, a
+    // collapsed ">" included; start from nothing collapsed.
+    storage.removeAttribute(Markdown.toggleCollapsed, range: NSRange(location: 0, length: storage.length))
+    for (key, marker) in toggleKeys() where keys.contains(key) {
+      storage.addAttribute(Markdown.toggleCollapsed, value: true, range: NSRange(location: marker, length: 1))
     }
-    return number
   }
 
-  /// Collapses the toggles on these lines (as collapsedToggleLines gave
-  /// them); lines that are no longer toggles are skipped. Restyle after.
-  func restoreCollapsedToggles(_ lines: Set<Int>) {
-    guard let storage = textStorage, !lines.isEmpty else { return }
+  /// Every toggle's key and the location of its ">".
+  private func toggleKeys() -> [(String, Int)] {
     let ns = string as NSString
-    var number = 0
-    var index = 0
-    while index < ns.length {
-      let line = ns.lineRange(for: NSRange(location: index, length: 0))
-      if lines.contains(number) {
-        var end = 0
-        ns.getLineStart(nil, end: nil, contentsEnd: &end, for: line)
-        let text = ns.substring(with: NSRange(location: line.location, length: end - line.location))
-        if let toggle = ListEditing.blockPrefix(of: text).unit(.toggle) {
-          storage.addAttribute(Markdown.toggleCollapsed, value: true, range: NSRange(location: line.location + toggle.range.location, length: 1))
-        }
-      }
-      number += 1
-      index = NSMaxRange(line)
+    var seen: [String: Int] = [:]
+    return ListEditing.toggleLayout(in: string).toggles.compactMap { toggle in
+      let title = ns.substring(with: toggle.title)
+      guard let unit = ListEditing.blockPrefix(of: title).unit(.toggle) else { return nil }
+      let occurrence = seen[title, default: 0]
+      seen[title] = occurrence + 1
+      return ("\(occurrence)\u{1}\(title)", toggle.title.location + unit.range.location)
     }
   }
 

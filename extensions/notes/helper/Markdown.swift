@@ -730,15 +730,18 @@ enum Markdown {
     }
 
     // Collapsed toggles survive the reset below: the attribute rides on
-    // the toggle's ">" as the text is edited.
+    // the toggle's ">" as the text is edited. Only a toggle's own ">"
+    // counts; the attribute anywhere else (inherited by inserted text) is
+    // dropped by the reset.
+    let toggleLayout = ListEditing.toggleLayout(in: text)
     var collapsedLines = Set<Int>()
-    if storage.length > 0 {
-      let ns = text as NSString
-      storage.enumerateAttribute(toggleCollapsed, in: all) { value, range, _ in
-        if value != nil { collapsedLines.insert(ns.lineRange(for: NSRange(location: range.location, length: 0)).location) }
+    for toggle in toggleLayout.toggles {
+      let title = (text as NSString).substring(with: toggle.title)
+      guard let unit = ListEditing.blockPrefix(of: title).unit(.toggle) else { continue }
+      if storage.attribute(toggleCollapsed, at: toggle.title.location + unit.range.location, effectiveRange: nil) != nil {
+        collapsedLines.insert(toggle.title.location)
       }
     }
-    let toggleLayout = ListEditing.toggleLayout(in: text)
 
     storage.beginEditing()
     storage.setAttributes(

@@ -648,6 +648,12 @@ do {
 do {
   let joined = applied("> T\n  a\nnext\nz", ListEditing.joinLine(in: "> T\n  a\nnext\nz", lineStart: 8, onto: 3))!
   check("the line after a collapsed toggle joins its title", joined.0 == "> Tnext\n  a\nz" && joined.1 == 3, "\(joined)")
+  let heading = applied("> T\n  a\n# Head\nz", ListEditing.joinLine(in: "> T\n  a\n# Head\nz", lineStart: 8, onto: 3))!
+  check("a joined heading line leaves its markers behind, not on the title", heading.0 == "> THead\n  a\nz", "\(heading)")
+  let stacked = applied("> T\n  a\n| > # Deep", ListEditing.joinLine(in: "> T\n  a\n| > # Deep", lineStart: 8, onto: 3))!
+  check("a joined marker stack goes whole", stacked.0 == "> TDeep\n  a", "\(stacked)")
+  let listed = applied("> T\n  a\n- item", ListEditing.joinLine(in: "> T\n  a\n- item", lineStart: 8, onto: 3))!
+  check("a joined list item drops its marker too", listed.0 == "> Titem\n  a", "\(listed)")
 }
 
 // Deleting a range keeps markers whole

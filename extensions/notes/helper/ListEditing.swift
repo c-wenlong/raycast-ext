@@ -549,14 +549,25 @@ enum ListEditing {
   /// the line break before it. Backspace at the start of the line after
   /// a collapsed toggle, and Delete at the end of its title, join the
   /// title and that line this way rather than editing hidden children.
+  /// Only the line's text moves: its indent and markers (block markers or
+  /// a list marker) are dropped, so none lands mid-line as raw text.
   static func joinLine(in text: String, lineStart: Int, onto target: Int) -> Edit? {
     let ns = text as NSString
     guard target < lineStart, lineStart <= ns.length else { return nil }
-    let moved = line(at: lineStart, in: text).text
+    let whole = line(at: lineStart, in: text).text
+    let wholeNS = whole as NSString
+    let lineLength = wholeNS.length
+    var textStart = blockPrefix(of: whole).contentStart
+    if textStart == blockPrefix(of: whole).indent,
+      let list = listPrefix.firstMatch(in: whole, range: NSRange(location: 0, length: lineLength))
+    {
+      textStart = NSMaxRange(list.range)
+    }
+    let moved = wholeNS.substring(from: textStart)
     let between = ns.substring(with: NSRange(location: target, length: lineStart - target))
     let kept = (between as NSString).substring(to: (between as NSString).length - (trailingBreak(between) as NSString).length)
     return Edit(
-      range: NSRange(location: target, length: lineStart + (moved as NSString).length - target),
+      range: NSRange(location: target, length: lineStart + lineLength - target),
       replacement: moved + kept, cursor: target)
   }
 
