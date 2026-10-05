@@ -1316,7 +1316,7 @@ final class NoteTextView: NSTextView {
     let selection = selectedRange()
     guard selection.length == 0 else { return }
     // ":clap:" becomes 👏 as its own undo step, so ⌘Z gives back the name.
-    if typed == ":", apply(ListEditing.emojiShortcode(in: self.string, cursor: selection.location, lookup: Emoji.lookup)) {
+    if typed == ":", !pasting, apply(ListEditing.emojiShortcode(in: self.string, cursor: selection.location, lookup: Emoji.lookup)) {
       return
     }
     if openPicker == nil, typed != nil { openPickerForTypedTrigger() }
