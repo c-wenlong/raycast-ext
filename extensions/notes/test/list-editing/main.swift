@@ -825,6 +825,9 @@ do {
   check("not inside a code span being typed", typed("`@today ") == nil)
   check("not inside a closed code span", applied("`a @today b`", Dates.afterTerminator(in: "`a @today b`", cursor: 10, now: now, calendar: utc)) == nil)
   check("after a closed code span", typed("`x` @today ") == "`x` 2026-10-05 ")
+  check("not inside a double-backtick span being typed", typed("``@today ") == nil && typed("``a @today ") == nil)
+  check("not inside a closed double-backtick span", Dates.afterTerminator(in: "``a @today b``", cursor: 11, now: now, calendar: utc) == nil)
+  check("after two closed spans", typed("`x` and `y` @today ") == "`x` and `y` 2026-10-05 ")
   check("not in a link address", typed("[a](@today)") == nil)
   check("in link text", typed("[@today]") == "[2026-10-05]")
   check("not in a URL", typed("https://x.com/@today ") == nil)
@@ -859,6 +862,12 @@ do {
   check("not in inline code", chips("`2026-10-05` and 2026-10-06") == ["2026-10-06"])
   check("not in a link address", chips("[due](https://x.com/2026-10-05) [2026-10-06](x)") == ["2026-10-06"], "\(chips("[due](https://x.com/2026-10-05) [2026-10-06](x)"))")
   check("not in a bare URL", chips("https://x.com/?d=2026-10-05 https://x.com/ 2026-10-06") == ["2026-10-06"])
+  let big = String(repeating: "- [ ] task due 2026-10-05, see `2026-10-06` and [x](https://x.com/2026-10-07) and 3-4-5\n", count: 4000)
+  let started = Date()
+  let found = Dates.chipRanges(in: big, excluding: (0..<200).map { NSRange(location: $0 * 1000, length: 10) })
+  let elapsed = Date().timeIntervalSince(started)
+  check("chips in a 4000-line note take well under a second", elapsed < 0.5 && found.count >= 3900, "\(elapsed)s \(found.count)")
+  check("no dates, no work", Dates.chipRanges(in: String(repeating: "plain words 12 and 3-4\n", count: 100)).isEmpty)
   let fenced = "```\n2026-10-05\n```\n2026-10-06"
   check("not in excluded (fenced) ranges", chips(fenced, excluding: [NSRange(location: 0, length: 18)]) == ["2026-10-06"])
 }

@@ -330,6 +330,7 @@ final class NoteTextView: NSTextView {
   override var string: String {
     get { super.string }
     set {
+      textGeneration += 1
       super.string = newValue
       if let storage = textStorage, storage.length > 0 {
         storage.removeAttribute(Markdown.toggleCollapsed, range: NSRange(location: 0, length: storage.length))
@@ -1037,6 +1038,9 @@ final class NoteTextView: NSTextView {
 
   /// Set while pasted or dropped text goes in.
   private var pasting = false
+  /// Bumped whenever the text is set wholesale (a note loads or reloads
+  /// from disk), so a queued date conversion never lands in another text.
+  private var textGeneration = 0
 
   override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
     pasting = true
@@ -1057,7 +1061,11 @@ final class NoteTextView: NSTextView {
   /// Turns the keyword into its date on the next pass of the run loop.
   private func scheduleDateConversion(_ pending: (edit: ListEditing.Edit, text: String)?) {
     guard let pending else { return }
-    DispatchQueue.main.async { [weak self] in self?.convertDateKeyword(pending) }
+    let generation = textGeneration
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.textGeneration == generation else { return }
+      self.convertDateKeyword(pending)
+    }
   }
 
   /// Turns the keyword `pending` found in its text into the date where it

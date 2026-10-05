@@ -71,12 +71,21 @@ enum Dates {
   }
 
   /// True when `range` sits in a link's address (`](...)`) or an inline
-  /// code span on its line, closed or still being typed.
+  /// code span on its line, closed or still being typed. Closed spans are
+  /// the renderer's own (`ListEditing.codePattern`, as Markdown.apply
+  /// styles them); a backtick before `range` that no such span covers is
+  /// a span still being typed. That errs towards code (```x`` @today``
+  /// stays as typed), which only ever leaves the keyword alone.
   private static func inCodeOrLinkTarget(_ ns: NSString, _ range: NSRange) -> Bool {
     let line = ns.lineRange(for: NSRange(location: range.location, length: 0))
+    let lineText = ns.substring(with: line)
+    let spans = ListEditing.codePattern.matches(in: lineText, range: NSRange(location: 0, length: (lineText as NSString).length))
+      .map { NSRange(location: $0.range.location + line.location, length: $0.range.length) }
+    if spans.contains(where: { NSIntersectionRange($0, range).length > 0 }) { return true }
+    for index in line.location..<range.location where ns.character(at: index) == 0x60 {
+      if !spans.contains(where: { NSLocationInRange(index, $0) }) { return true }
+    }
     let before = ns.substring(with: NSRange(location: line.location, length: range.location - line.location))
-    // An odd number of backticks before it on the line: an open code span.
-    if before.utf16.filter({ $0 == 0x60 }).count % 2 == 1 { return true }
     // After a "](" with no ")" since: a link address.
     if let open = before.range(of: "](", options: .backwards) {
       if !before[open.upperBound...].contains(")") { return true }
@@ -136,13 +145,26 @@ enum Dates {
   /// fenced code blocks), inline code, link addresses and bare URLs.
   static func chipRanges(in text: String, excluding excluded: [NSRange] = []) -> [NSRange] {
     let ns = text as NSString
+    // No hyphen, no date: most restyles of a dateless note stop here.
+    guard ns.range(of: "-").location != NSNotFound else { return [] }
     let all = NSRange(location: 0, length: ns.length)
     let matches = isoDate.matches(in: text, range: all)
     guard !matches.isEmpty else { return [] }
-    var skip = excluded
-    skip += ListEditing.codePattern.matches(in: text, range: all).map(\.range)
-    skip += linkTarget.matches(in: text, range: all).map(\.range)
-    skip += bareURL.matches(in: text, range: all).map(\.range)
+    var skipped = excluded
+    skipped += ListEditing.codePattern.matches(in: text, range: all).map(\.range)
+    skipped += linkTarget.matches(in: text, range: all).map(\.range)
+    skipped += bareURL.matches(in: text, range: all).map(\.range)
+    // Merged into sorted, disjoint ranges, walked once alongside the
+    // dates (which come in order), so the scan stays linear.
+    var skip: [NSRange] = []
+    for range in skipped.sorted(by: { $0.location < $1.location }) where range.length > 0 {
+      if let last = skip.last, range.location <= NSMaxRange(last) {
+        skip[skip.count - 1] = NSUnionRange(last, range)
+      } else {
+        skip.append(range)
+      }
+    }
+    var next = 0
     var ranges: [NSRange] = []
     for match in matches {
       let range = match.range
@@ -152,12 +174,14 @@ enum Dates {
       // A link's text ends at "](", where its (hidden) address starts.
       let linkText = end < ns.length && ns.character(at: end) == 0x28 && ns.character(at: end - 1) == 0x5D
       guard end == ns.length || isWhitespace(ns.character(at: end)) || linkText else { continue }
-      if timeAfter.firstMatch(in: text, options: .anchored, range: NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))) != nil {
+      let tail = NSRange(location: NSMaxRange(range), length: min(7, ns.length - NSMaxRange(range)))
+      if timeAfter.firstMatch(in: text, options: .anchored, range: tail) != nil {
         continue
       }
       let number = { (group: Int) in Int(ns.substring(with: match.range(at: group))) ?? 0 }
       guard isValid(year: number(1), month: number(2), day: number(3)) else { continue }
-      guard !skip.contains(where: { NSIntersectionRange($0, range).length > 0 }) else { continue }
+      while next < skip.count, NSMaxRange(skip[next]) <= range.location { next += 1 }
+      if next < skip.count, skip[next].location < NSMaxRange(range) { continue }
       ranges.append(range)
     }
     return ranges
