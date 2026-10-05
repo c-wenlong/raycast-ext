@@ -48,7 +48,7 @@ func uniqueNotePath(for filename: String, in directory: String, renaming: Bool =
     let candidate = renaming
       ? NoteNames.renameClashCandidate(filename, attempt: attempt)
       : NoteNames.clashCandidate(filename, attempt: attempt) {
-        NoteNames.newID(avoiding: NoteNames.ids(in: (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []))
+        NoteNames.newID(avoiding: NoteNames.usedIDs(in: directory))
       }
     let path = (directory as NSString).appendingPathComponent(candidate)
     if !FileManager.default.fileExists(atPath: path) { return path }
@@ -135,15 +135,24 @@ enum NoteNames {
   static func renamed(_ filename: String, title: String, newID: () -> String) -> String? {
     guard let generated = parse(filename) else { return nil }
     let slug = slugify(title)
-    if generated.id != nil, generated.slug == slug { return nil }
+    if generated.id != nil, settled(generated.slug, for: slug) { return nil }
     return Self.filename(stamp: generated.stamp, id: generated.id ?? newID(), slug: slug)
+  }
+
+  /// True when `current` already is `slug`, or `slug` with a "-2", "-3"
+  /// a clash gave it: a later save must not move it on to "-3", "-4".
+  static func settled(_ current: String, for slug: String) -> Bool {
+    guard current != slug else { return true }
+    guard current.hasPrefix(slug + "-") else { return false }
+    let suffix = current.dropFirst(slug.count + 1)
+    return !suffix.isEmpty && suffix.allSatisfy(\.isASCII) && suffix.allSatisfy(\.isNumber)
   }
 
   /// The renames that give every generated name in `names` without an id
   /// one, each unique among the folder's ids and each other. Daily notes
   /// and hand-named files are left alone; run again, it finds nothing.
-  static func migration(of names: [String], random: () -> String = randomID) -> [(from: String, to: String)] {
-    var taken = ids(in: names)
+  static func migration(of names: [String], avoiding used: Set<String> = [], random: () -> String = randomID) -> [(from: String, to: String)] {
+    var taken = ids(in: names).union(used)
     let existing = Set(names)
     var plan: [(from: String, to: String)] = []
     for name in names.sorted() {
@@ -170,6 +179,34 @@ enum NoteNames {
   struct RenameLog: Codable, Equatable {
     var renames: [String: String] = [:]
     var linksRewritten = true
+    /// Ids of notes deleted from the window or Browse Notes: never drawn
+    /// again, so an old link or pin can never land on an unrelated note
+    /// that happened to get the same id. (A note deleted in Finder is not
+    /// seen; with 36^4 ids the chance of a reuse there is tiny.)
+    var retiredIDs: [String]? = nil
+  }
+
+  /// Every id a new note must not take in `directory`: those its notes
+  /// carry, those in the rename log, and retired ones.
+  static func usedIDs(in directory: String) -> Set<String> {
+    var used = ids(in: (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? [])
+    if let log = renameLog(in: directory) {
+      used.formUnion(ids(in: Array(log.renames.keys) + Array(log.renames.values)))
+      used.formUnion(log.retiredIDs ?? [])
+    }
+    return used
+  }
+
+  /// Records the id of the deleted note `filename` as retired in its
+  /// folder's log. False when the name has no id or the log cannot be written.
+  @discardableResult
+  static func retireID(of filename: String, in directory: String) -> Bool {
+    guard let id = parse(filename)?.id else { return false }
+    var log = renameLog(in: directory) ?? RenameLog()
+    var retired = log.retiredIDs ?? []
+    if !retired.contains(id) { retired.append(id) }
+    log.retiredIDs = retired
+    return saveRenameLog(log, in: directory)
   }
 
   static let renameLogName = ".note-renames.json"
@@ -226,7 +263,7 @@ enum NoteNames {
     }
     var outcome = MigrationOutcome()
     var log = renameLog(in: directory) ?? RenameLog()
-    let plan = migration(of: names, random: random)
+    let plan = migration(of: names, avoiding: usedIDs(in: directory), random: random)
     if !plan.isEmpty {
       for step in plan {
         // A name logged before and renamed again: the old entry follows.

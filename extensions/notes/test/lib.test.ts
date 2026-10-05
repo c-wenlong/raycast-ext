@@ -6,6 +6,8 @@ import {
   appendDailyEntry,
   clashCandidate,
   renameClashCandidate,
+  retireNoteId,
+  usedNoteIds,
   createNewNoteFile,
   duplicateNoteFile,
   newNoteId,
@@ -379,6 +381,55 @@ const cases: Case[] = [
       assert.equal(readFileSync(taken, "utf8"), "# Second\n\nkeep me\n");
       assert.match(readFileSync(renamed, "utf8"), /^# First/);
       assert.throws(() => readFileSync(created), /ENOENT/);
+    },
+  ],
+  [
+    "repeated saves with an unchanged title keep a clash-suffixed path",
+    async () => {
+      const dir = freshDir();
+      const created = await createNewNoteFile(dir, "First", "body");
+      const prefix = path.basename(created).slice(0, 20);
+      writeFileSync(path.join(dir, `${prefix} - second.md`), "# Second\n");
+      const renamed = await renameNoteFromTitleIfNeeded(created, "Second");
+      assert.equal(path.basename(renamed), `${prefix} - second-2.md`);
+      assert.equal(
+        await renameNoteFromTitleIfNeeded(renamed, "Second"),
+        renamed,
+      );
+      assert.equal(
+        await renameNoteFromTitleIfNeeded(renamed, "Second"),
+        renamed,
+      );
+    },
+  ],
+  [
+    "a deleted note's id is retired and never drawn again, nor a logged one",
+    async () => {
+      const dir = freshDir();
+      writeFileSync(
+        path.join(dir, ".note-renames.json"),
+        JSON.stringify({
+          renames: { "2026-01-01 0900 - a.md": "2026-01-01 0900 bbbb - a.md" },
+          linksRewritten: true,
+        }),
+      );
+      writeFileSync(path.join(dir, "2026-01-02 0900 aaaa - here.md"), "x");
+      await retireNoteId(path.join(dir, "2026-01-03 0900 cccc - gone.md"));
+      await retireNoteId(path.join(dir, "groceries.md"));
+      assert.deepEqual([...(await usedNoteIds(dir))].sort(), [
+        "aaaa",
+        "bbbb",
+        "cccc",
+      ]);
+      const log = JSON.parse(
+        readFileSync(path.join(dir, ".note-renames.json"), "utf8"),
+      );
+      assert.deepEqual(log.retiredIDs, ["cccc"]);
+      assert.equal(
+        log.renames["2026-01-01 0900 - a.md"],
+        "2026-01-01 0900 bbbb - a.md",
+      );
+      assert.equal(log.linksRewritten, true);
     },
   ],
   [

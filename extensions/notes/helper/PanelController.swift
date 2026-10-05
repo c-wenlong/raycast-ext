@@ -475,6 +475,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       watch(path)
       return
     }
+    NoteNames.retireID(of: (path as NSString).lastPathComponent, in: (path as NSString).deletingLastPathComponent)
     currentPath = nil
     loadedText = ""
     refreshList()
@@ -629,9 +630,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     updateTitle()
   }
 
-  /// An id no generated name in `directory` carries yet.
+  /// An id no note in `directory` carries, and none the log names or retired.
   private func freshID(in directory: String) -> String {
-    NoteNames.newID(avoiding: NoteNames.ids(in: (try? diskFiles.contentsOfDirectory(atPath: directory)) ?? []))
+    NoteNames.newID(avoiding: NoteNames.usedIDs(in: directory))
   }
 
   /// After the window renamed notes (`moves`, old path to new): every link

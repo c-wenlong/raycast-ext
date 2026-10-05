@@ -1119,5 +1119,34 @@ do {
   try? fm.removeItem(atPath: dir)
 }
 
+// Renames settle; ids are never drawn twice
+
+do {
+  check("a note that landed on -2 by a clash is not moved again on the next save", NoteNames.renamed("2026-10-05 1200 ab12 - second-2.md", title: "Second", newID: { "zzzz" }) == nil
+    && NoteNames.renamed("2026-10-05 1200 ab12 - second-12.md", title: "Second", newID: { "zzzz" }) == nil)
+  check("a real title change still renames it", NoteNames.renamed("2026-10-05 1200 ab12 - second-2.md", title: "Third", newID: { "zzzz" }) == "2026-10-05 1200 ab12 - third.md")
+  check("a title that only looks like a suffix is not one", NoteNames.renamed("2026-10-05 1200 ab12 - second-2x.md", title: "Second", newID: { "zzzz" }) == "2026-10-05 1200 ab12 - second.md")
+
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-ids-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "x".write(toFile: dir + "/2026-10-05 1200 aaaa - here.md", atomically: true, encoding: .utf8)
+  var log = NoteNames.RenameLog()
+  log.renames = ["2026-10-01 0900 - old.md": "2026-10-01 0900 bbbb - old.md"]
+  check("the log saves", NoteNames.saveRenameLog(log, in: dir))
+  check("a note deleted from the window retires its id, keeping the log", NoteNames.retireID(of: "2026-10-05 1300 cccc - gone.md", in: dir)
+    && NoteNames.renameLog(in: dir)?.retiredIDs == ["cccc"] && NoteNames.renameLog(in: dir)?.renames.count == 1)
+  check("a name without an id retires nothing", !NoteNames.retireID(of: "groceries.md", in: dir))
+  check("ids in use: the folder's, the log's and retired ones", NoteNames.usedIDs(in: dir) == ["aaaa", "bbbb", "cccc"], "\(NoteNames.usedIDs(in: dir))")
+  var draws = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  check("a new id skips all of them", NoteNames.newID(avoiding: NoteNames.usedIDs(in: dir), random: { draws.next()! }) == "dddd")
+  try! "x".write(toFile: dir + "/2026-10-05 1400 - legacy.md", atomically: true, encoding: .utf8)
+  var migrationDraws = ["bbbb", "cccc", "eeee"].makeIterator()
+  _ = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { migrationDraws.next()! })
+  check("migration never hands out a logged or retired id", fm.fileExists(atPath: dir + "/2026-10-05 1400 eeee - legacy.md"), "\((try? fm.contentsOfDirectory(atPath: dir)) ?? [])")
+  try? fm.removeItem(atPath: dir)
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

@@ -112,7 +112,10 @@ Naming:
   on, so it rises in newest-first lists). A link that went stale anyway (a
   rename made by Browse Notes) still opens the note carrying its id. A new
   note whose name is taken draws a new id rather than sharing one; a rename
-  onto a taken name keeps its id and adds "-2" to the slug.
+  onto a taken name keeps its id and adds "-2" to the slug (and stays there
+  on later saves). The id of a note deleted from the window or Browse Notes
+  is retired in `.note-renames.json` and never handed out again, so an old
+  link or pin cannot land on a different note.
 - Notes from before ids (`2026-09-26 1400 - project-ideas.md`) get one once,
   when the window first lists the folder, with their links rewritten. Each
   rename is recorded first in `.note-renames.json` in the notes folder (old

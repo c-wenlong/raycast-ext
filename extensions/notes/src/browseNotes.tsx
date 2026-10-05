@@ -30,6 +30,7 @@ import {
   createDailyIfMissing,
   duplicateNoteFile,
   listMarkdownFiles,
+  retireNoteId,
 } from "./lib/notes";
 import { launchPanel } from "./lib/panel";
 import {
@@ -145,6 +146,8 @@ export default function BrowseNotesCommand() {
   async function handleDelete(note: NoteFile) {
     try {
       await moveToTrash(note.path);
+      // Its id is never handed to another note (old links and pins).
+      await retireNoteId(note.path).catch(() => undefined);
       await removePin(note.path);
       await reloadNotes();
       await showToast({
