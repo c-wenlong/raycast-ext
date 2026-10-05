@@ -200,6 +200,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       self?.handle(command)
       return true
     }
+    textView.noteLinkTargets = { [weak self] in self?.noteLinkTargets() ?? [] }
     textView.minSize = NSSize(width: 0, height: scroll.bounds.height)
     textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     textView.isVerticallyResizable = true
@@ -686,11 +687,82 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-    guard let url = link as? URL, url.scheme == Markdown.taskScheme,
-      let location = Int(url.lastPathComponent)
-    else { return false }
-    toggleTask(atBox: location)
+    guard let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else { return false }
+    if url.scheme == Markdown.taskScheme {
+      if let location = Int(url.lastPathComponent) { toggleTask(atBox: location) }
+      return true
+    }
+    // A link to another note (`[Title](file.md)`) opens it here when the
+    // note is in the notes folder, in its default app when it is not; one
+    // to a note that is gone beeps rather than going to the browser.
+    guard let target = NoteLinks.notePath(for: url, in: currentDirectory) else { return false }
+    let linkText = LinkController.span(in: textView.string, at: charIndex)?.text ?? ""
+    guard let path = existingNote(at: target, linkText: linkText) else {
+      NSSound.beep()
+      return true
+    }
+    if NoteLinks.opensInWindow(path, root: notesDir) {
+      // After the click finishes, so the text is not swapped mid-tracking.
+      DispatchQueue.main.async { [weak self] in
+        self?.open(path)
+        self?.show()
+      }
+    } else {
+      NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
     return true
+  }
+
+  /// The folder links in the open note are relative to.
+  private var currentDirectory: String {
+    currentPath.map { ($0 as NSString).deletingLastPathComponent } ?? notesDir
+  }
+
+  /// `path` when the file is there; otherwise, for a generated filename,
+  /// the note it was renamed to (same timestamp, titled as the link reads).
+  private func existingNote(at path: String, linkText: String) -> String? {
+    if diskFiles.fileExists(atPath: path) { return path }
+    let directory = (path as NSString).deletingLastPathComponent
+    let names = (try? diskFiles.contentsOfDirectory(atPath: directory)) ?? []
+    let renamed = NoteLinks.renamedNote(
+      (path as NSString).lastPathComponent, among: names, linkText: linkText,
+      firstLineOf: { name in
+        NoteLinks.headText(atPath: (directory as NSString).appendingPathComponent(name)).flatMap(Titles.firstLine(of:))
+      })
+    return renamed.map { (directory as NSString).appendingPathComponent($0) }
+  }
+
+  private static func noteTitle(_ text: String, _ filename: String) -> String { title(of: text, filename: filename) }
+
+  /// Titles the "[[" picker read, by path, with the modification date they
+  /// were read at: an unchanged note is not read again.
+  private var linkTitles: [String: (modified: Date, title: String)] = [:]
+
+  /// The notes "[[" offers: every other note in the folder, most
+  /// recently modified first, titled as the title bar titles them (from
+  /// the first few KB of each file).
+  private func noteLinkTargets() -> [NoteLinks.Target] {
+    let directory = currentDirectory
+    let notes = listNotes().filter { $0.path != currentPath }
+    var titles: [String: (modified: Date, title: String)] = [:]
+    let targets = notes.map { note -> NoteLinks.Target in
+      let title: String
+      if let cached = linkTitles[note.path], cached.modified == note.modified {
+        title = cached.title
+      } else {
+        var head = NoteLinks.headText(atPath: note.path) ?? ""
+        // A note whose first lines are all blank or fences past the limit.
+        if Titles.firstLine(of: head) == nil, (head as NSString).length >= NoteLinks.headLimit - 4 {
+          head = (try? String(contentsOfFile: note.path, encoding: .utf8)) ?? head
+        }
+        title = PanelController.noteTitle(head, note.filename)
+      }
+      titles[note.path] = (note.modified, title)
+      return NoteLinks.Target(
+        title: title, target: NoteLinks.linkTarget(for: note.path, from: directory), modified: note.modified)
+    }
+    linkTitles = titles
+    return targets
   }
 
   private func toggleTask(atBox location: Int) {

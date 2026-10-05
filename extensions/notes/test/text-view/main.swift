@@ -621,6 +621,122 @@ typeKeys("/")
 check("the slash menu still opens beside the emoji picker", tv.slashMenuIsOpen && !tv.emojiPickerIsOpen)
 press(53)
 
+// 15c. note links
+let day: TimeInterval = 86_400
+let targets = [
+  NoteLinks.Target(title: "Project plan", target: "2026-10-05 1200 - project-plan.md", modified: Date()),
+  NoteLinks.Target(title: "Groceries", target: "groceries.md", modified: Date(timeIntervalSinceNow: -day)),
+  NoteLinks.Target(title: "Old project notes", target: "/elsewhere/old.md", modified: Date(timeIntervalSinceNow: -40 * day)),
+]
+check("an empty note query lists every note, newest first", NoteLinks.matches("", in: targets) == targets)
+check("words match the title in any case, order kept", NoteLinks.matches("PROJ", in: targets).map(\.title) == ["Project plan", "Old project notes"])
+check("every word must match", NoteLinks.matches("proj old", in: targets).map(\.title) == ["Old project notes"])
+check("the filename matches too", NoteLinks.matches("grocer", in: targets).map(\.title) == ["Groceries"] && NoteLinks.matches("elsewhere", in: targets).count == 1)
+check("a note beside the open one is linked by filename", NoteLinks.linkTarget(for: "/n/a b.md", from: "/n") == "a b.md" && NoteLinks.linkTarget(for: "/n/a.md", from: "/n/") == "a.md")
+check("a note elsewhere by a relative path", NoteLinks.linkTarget(for: "/m/a.md", from: "/n") == "../m/a.md", NoteLinks.linkTarget(for: "/m/a.md", from: "/n"))
+check("from a subfolder note, a root note is ../name and resolves back", NoteLinks.linkTarget(for: "/n/a b.md", from: "/n/sub") == "../a b.md"
+  && NoteLinks.notePath(for: URL(string: ListEditing.encodedLinkTarget(NoteLinks.linkTarget(for: "/n/a b.md", from: "/n/sub")))!, in: "/n/sub") == "/n/a b.md")
+check("a note in a folder below is sub/name", NoteLinks.linkTarget(for: "/n/sub/a.md", from: "/n") == "sub/a.md")
+check("only a note directly in the notes folder opens in the window", NoteLinks.opensInWindow("/n/a.md", root: "/n") && NoteLinks.opensInWindow("/n/./a.md", root: "/n/")
+  && !NoteLinks.opensInWindow("/n/sub/a.md", root: "/n") && !NoteLinks.opensInWindow("/m/a.md", root: "/n") && !NoteLinks.opensInWindow("/n/../m/a.md", root: "/n"))
+check("a relative .md link resolves in the note's folder", NoteLinks.notePath(for: URL(string: "My%20Note.md")!, in: "/n") == "/n/My Note.md")
+check("parent folders and fragments resolve", NoteLinks.notePath(for: URL(string: "../x.md#top")!, in: "/n/sub") == "/n/x.md")
+check("an absolute or file: path stays", NoteLinks.notePath(for: URL(string: "/a/b.md")!, in: "/n") == "/a/b.md" && NoteLinks.notePath(for: URL(string: "file:///a/b.md")!, in: "/n") == "/a/b.md")
+check("web links and other files are not notes", NoteLinks.notePath(for: URL(string: "https://x.com/a.md")!, in: "/n") == nil && NoteLinks.notePath(for: URL(string: "pic.png")!, in: "/n") == nil)
+let inserted = ListEditing.noteLink(title: "Project plan", target: "2026-10-05 1200 - project-plan.md")
+let insertedSpan = LinkController.span(in: "x " + inserted, at: 3)
+check("the inserted link is one markdown link the window styles", insertedSpan?.range == NSRange(location: 2, length: (inserted as NSString).length) && insertedSpan.flatMap { URL(string: $0.url) }.flatMap { NoteLinks.notePath(for: $0, in: "/n") } == "/n/2026-10-05 1200 - project-plan.md",
+  "\(String(describing: insertedSpan))")
+let titlesByName = ["2026-10-05 1200 - plan.md": "# Project **plan**", "2026-10-05 1200 - shopping.md": "Shopping", "2026-10-05 1200 - plan-copy.md": "Project plan copy"]
+func renamed(_ file: String, _ names: [String], _ text: String) -> String? {
+  NoteLinks.renamedNote(file, among: names, linkText: text, firstLineOf: { titlesByName[$0].flatMap(Titles.firstLine(of:)) })
+}
+check("a renamed generated note is found by its timestamp and title", renamed("2026-10-05 1200 - project-plan.md", ["2026-10-05 1200 - plan.md", "other.md"], "Project plan") == "2026-10-05 1200 - plan.md")
+check("an unrelated note from the same minute is not opened", renamed("2026-10-05 1200 - project-plan.md", ["2026-10-05 1200 - shopping.md"], "Project plan") == nil)
+check("among notes sharing the timestamp, the one titled like the link", renamed("2026-10-05 1200 - x.md", ["2026-10-05 1200 - shopping.md", "2026-10-05 1200 - plan.md", "2026-10-05 1200 - plan-copy.md"], "Project plan") == "2026-10-05 1200 - plan.md")
+check("not for a hand-named note", renamed("groceries.md", ["groceries-2.md"], "Groceries") == nil)
+let headFile = NSTemporaryDirectory() + "notes-head-\(getpid()).md"
+try! ("# Big note\n" + String(repeating: "word ", count: 400_000)).write(toFile: headFile, atomically: true, encoding: .utf8)
+let head = NoteLinks.headText(atPath: headFile)
+check("a large note is read only as far as its title needs", head.map { ($0 as NSString).length <= NoteLinks.headLimit } == true && head.flatMap(Titles.firstLine(of:)) == "Big note", "\(head?.count ?? -1)")
+try? FileManager.default.removeItem(atPath: headFile)
+check("editing a note link keeps it relative", LinkController.normalizedURL("Other%20Note.md") == "Other%20Note.md" && LinkController.normalizedURL("example.com") == "https://example.com")
+
+var targetReads = 0
+tv.noteLinkTargets = { targetReads += 1; return targets }
+load("see ")
+tv.setSelectedRange(NSRange(location: 4, length: 0))
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+typeKeys("[")
+check("one bracket opens nothing", !tv.notePickerIsOpen)
+typeKeys("[")
+check("[[ opens the note picker with every note", tv.notePickerIsOpen && (tv.subviews.first { ($0 as? InlinePicker)?.isHidden == false } as? InlinePicker)?.items.count == 3)
+typeKeys("proj pl")
+check("typing filters, spaces included", tv.notePickerIsOpen && (tv.subviews.first { ($0 as? InlinePicker)?.isHidden == false } as? InlinePicker)?.items.map(\.title) == ["Project plan"])
+check("the folder is read once per [[", targetReads == 1, "\(targetReads)")
+press(36, "\r")
+check("return inserts a markdown link in place of [[query", tv.string == "see [Project plan](2026-10-05%201200%20-%20project-plan.md)" && !tv.notePickerIsOpen, tv.string.debugDescription)
+check("the caret lands after the link", caret() == (tv.string as NSString).length, "\(caret())")
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+tv.undoManager?.undo()
+check("one undo restores the text from before the brackets", tv.string == "see ", tv.string.debugDescription)
+load("")
+typeKeys("[[gro")
+press(53)
+check("escape closes the note picker and keeps the text", !tv.notePickerIsOpen && tv.string == "[[gro")
+typeKeys("c")
+check("typing on after escape does not reopen it", !tv.notePickerIsOpen)
+load("")
+typeKeys("[[zzz")
+check("no matching note closes it", !tv.notePickerIsOpen)
+load("")
+typeKeys("[[gro]")
+check("a closing bracket closes it", !tv.notePickerIsOpen && tv.string == "[[gro]")
+load("")
+typeKeys("[[pro /")
+check("a slash in a note query does not open the block menu", !tv.slashMenuIsOpen)
+press(53)
+let realTargets = tv.noteLinkTargets
+tv.noteLinkTargets = { [NoteLinks.Target(title: "a -- b", target: "ab.md", modified: Date())] }
+load("")
+typeKeys("[[a --")
+check("typography waits while a picker is open (-- stays in a matching note query)", tv.notePickerIsOpen && tv.string == "[[a --", tv.string.debugDescription)
+press(53)
+tv.noteLinkTargets = { [NoteLinks.Target(title: "@today plan", target: "plan.md", modified: Date())] }
+load("")
+typeKeys("[[@today ")
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))  // the date conversion would land on this pass
+check("a date keyword in an open note query stays text", tv.notePickerIsOpen && tv.string == "[[@today ", tv.string.debugDescription)
+press(53)
+// A note loaded in place of another drops the cached targets and any dismissal.
+tv.noteLinkTargets = { [NoteLinks.Target(title: "Alpha", target: "alpha.md", modified: Date())] }
+load("")
+typeKeys("[[")
+press(53)
+tv.noteLinkTargets = { [NoteLinks.Target(title: "Beta", target: "beta.md", modified: Date())] }
+load("[[")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+typeKeys("b")
+check("another note's [[ reads the folder afresh", tv.notePickerIsOpen && (tv.subviews.first { ($0 as? InlinePicker)?.isHidden == false } as? InlinePicker)?.items.map(\.title) == ["Beta"])
+press(53)
+// Each picker keeps its own dismissal.
+tv.noteLinkTargets = { [NoteLinks.Target(title: "gro: list", target: "g.md", modified: Date())] }
+load("")
+typeKeys("[[gro")
+press(53)
+typeKeys(":")
+typeKeys(" ")
+check("a : typed after an escaped [[ does not bring the note picker back", !tv.notePickerIsOpen && tv.string == "[[gro: ", tv.string.debugDescription)
+tv.noteLinkTargets = realTargets
+load("`")
+tv.setSelectedRange(NSRange(location: 1, length: 0))
+typeKeys("[[")
+check("[[ in a code span opens nothing", !tv.notePickerIsOpen)
+tv.noteLinkTargets = nil
+load("")
+typeKeys("[[")
+check("with no note source there is no note picker", !tv.notePickerIsOpen)
+
 // 16. a held ⌃X does not repeat the delete command
 var deleteCommands = 0
 tv.onCommand = { command in

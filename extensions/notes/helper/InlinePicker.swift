@@ -4,7 +4,7 @@ import Foundation
 // MARK: - Inline picker
 //
 // The small menu that opens under the caret while typing: the "/" block
-// menu and the ":" emoji picker. It shows the items its source returns for
+// menu, the ":" emoji picker and the "[[" note picker. It shows the items its source returns for
 // the query, keeps one selected, and hands the pick back. NoteTextView owns
 // each picker and drives it (filter, move, pick, place); it is a subview of
 // the text view, so it scrolls with the note. What a pick does to the text

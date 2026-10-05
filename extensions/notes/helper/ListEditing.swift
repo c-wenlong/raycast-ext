@@ -1491,4 +1491,54 @@ enum ListEditing {
       range: NSRange(location: colon, length: cursor - colon), replacement: emoji,
       cursor: colon + (emoji as NSString).length)
   }
+
+  // MARK: Note link trigger
+
+  /// True when a "[" typed at `location` could begin "[[": not right
+  /// after another "[", not in code or a link address.
+  static func noteLinkCanStart(in text: String, at location: Int) -> Bool {
+    let ns = text as NSString
+    guard location >= 0, location <= ns.length else { return false }
+    if location > 0, ns.character(at: location - 1) == 0x5B { return false }
+    return !insideCodeOrAddress(text, at: location)
+  }
+
+  /// The "[[" the note picker opens at: the last one before the caret on
+  /// its line, with nothing but the query (no brackets) between it and
+  /// the caret. The query may be empty and may hold spaces. Nil inside
+  /// code or a link address, or after a third "[".
+  static func noteLinkTrigger(in text: String, cursor: Int) -> Int? {
+    let ns = text as NSString
+    guard cursor >= 2, cursor <= ns.length else { return nil }
+    let lineStart = ns.lineRange(for: NSRange(location: cursor, length: 0)).location
+    let before = NSRange(location: lineStart, length: cursor - lineStart)
+    let open = ns.range(of: "[[", options: .backwards, range: before)
+    guard open.location != NSNotFound else { return nil }
+    let queryStart = NSMaxRange(open)
+    let query = ns.substring(with: NSRange(location: queryStart, length: cursor - queryStart))
+    guard query.utf16.count <= 100, query.rangeOfCharacter(from: CharacterSet(charactersIn: "[]")) == nil,
+      noteLinkCanStart(in: text, at: open.location)
+    else { return nil }
+    return open.location
+  }
+
+  /// The markdown link a note pick inserts: `[Title](target)`, with the
+  /// target percent-encoded (spaces as %20) so it stays one valid link,
+  /// and brackets dropped from the title.
+  static func noteLink(title: String, target: String) -> String {
+    var label = title.components(separatedBy: .newlines).joined(separator: " ")
+      .replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+      .trimmingCharacters(in: .whitespaces)
+    if label.isEmpty { label = "Untitled" }
+    return "[\(label)](\(encodedLinkTarget(target)))"
+  }
+
+  /// A file path as a link address: every character outside the URL path
+  /// set is percent-encoded, and so are ":" (it would read as a scheme)
+  /// and "(" ")" (they end a markdown address early).
+  static func encodedLinkTarget(_ path: String) -> String {
+    var allowed = CharacterSet.urlPathAllowed
+    allowed.remove(charactersIn: ":()")
+    return path.addingPercentEncoding(withAllowedCharacters: allowed) ?? path
+  }
 }
