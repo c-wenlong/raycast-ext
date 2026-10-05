@@ -476,6 +476,9 @@ const cases: Case[] = [
         { links: "pending" },
       ]);
       assert.equal((await readNoteLog(dir))?.linksRewritten, false);
+      // A rename on its own (its "pending" lost) also means links pending.
+      await appendNoteLog(dir, [{ links: "done" }, { rename: ["p.md", "q.md"] }]);
+      assert.equal((await readNoteLog(dir))?.linksRewritten, false);
     },
   ],
   [

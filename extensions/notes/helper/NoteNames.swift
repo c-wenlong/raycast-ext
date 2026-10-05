@@ -194,7 +194,7 @@ enum NoteNames {
   /// Readers fold every line in order and skip a line that does not parse
   /// (a half-written last line included). State follows line order: the
   /// last "links" event wins, so a "done" never outlives a later
-  /// "pending".
+  /// "pending", and a "rename" counts as "pending" by itself.
   /// Browse Notes moves pins with the renames, a stale link to an old name
   /// (which has no id to look up) still opens through them, and no new note
   /// gets a logged or retired id. Mirrors readNoteLog in src/lib/notes.ts.
@@ -227,6 +227,9 @@ enum NoteNames {
   private static func fold(_ event: [String: Any], into log: inout RenameLog) {
     if let pair = event["rename"] as? [String], pair.count == 2 {
       log.renames[pair[0]] = pair[1]
+      // A rename means its links are not rewritten yet, even if the
+      // "pending" written after it was lost.
+      log.linksRewritten = false
     } else if let id = event["retire"] as? String {
       var retired = log.retiredIDs ?? []
       if !retired.contains(id) { retired.append(id) }

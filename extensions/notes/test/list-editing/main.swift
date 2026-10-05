@@ -1194,5 +1194,23 @@ do {
   try? fm.removeItem(atPath: dir)
 }
 
+do {
+  // The rename was logged but the "pending" after it never made it.
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-pending-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "# A\n".write(toFile: dir + "/2026-10-01 0900 - a.md", atomically: true, encoding: .utf8)
+  try! "[a](2026-10-01%200900%20-%20a.md)\n".write(toFile: dir + "/links.md", atomically: true, encoding: .utf8)
+  _ = NoteNames.appendLog([.rename("2026-10-01 0900 - a.md", "2026-10-01 0900 aaaa - a.md")], in: dir)
+  check("a logged rename alone counts as links pending", NoteNames.renameLog(in: dir)?.linksRewritten == false)
+  let outcome = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { "zzzz" })
+  check("so the next listing still rewrites its links before calling it done", outcome.complete
+    && (try? String(contentsOfFile: dir + "/links.md", encoding: .utf8)) == "[a](2026-10-01%200900%20aaaa%20-%20a.md)\n"
+    && NoteNames.renameLog(in: dir)?.linksRewritten == true,
+    (try? String(contentsOfFile: dir + "/links.md", encoding: .utf8)) ?? "")
+  try? fm.removeItem(atPath: dir)
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

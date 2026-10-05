@@ -189,7 +189,8 @@ async function freshNoteId(dir: string): Promise<string> {
  *   {"links":"pending"} / {"links":"done"}
  * Readers fold every line in order and skip a line that does not parse (a
  * half-written last line included). State follows line order: the last
- * "links" event wins, so a "done" never outlives a later "pending".
+ * "links" event wins, so a "done" never outlives a later "pending", and a
+ * "rename" counts as "pending" by itself.
  * Mirrors NoteNames.RenameLog in helper/NoteNames.swift.
  */
 export const RENAME_LOG_NAME = ".note-renames.jsonl";
@@ -221,6 +222,9 @@ function foldEvent(log: NoteLog, event: unknown): void {
     e.rename.every((name) => typeof name === "string")
   ) {
     log.renames[e.rename[0]] = e.rename[1];
+    // A rename means its links are not rewritten yet, even if the
+    // "pending" written after it was lost.
+    log.linksRewritten = false;
   } else if (typeof e.retire === "string") {
     const retired = log.retiredIDs ?? [];
     if (!retired.includes(e.retire)) {
