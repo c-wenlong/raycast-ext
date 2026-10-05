@@ -495,6 +495,7 @@ final class NoteTextView: NSTextView {
       super.deleteForward(sender)
       return
     }
+    if !hasMarkedText(), apply(ListEditing.dividerDelete(in: string, cursor: selection.location)) { return }
     if !hasMarkedText(), let edit = forwardJoin(at: selection.location) {
       apply(edit)
       return
@@ -629,6 +630,7 @@ final class NoteTextView: NSTextView {
     (layoutManager as? TaskBoxLayoutManager)?.drawCodeCards(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawQuoteBars(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawCalloutBoxes(in: rect, origin: textContainerOrigin)
+    (layoutManager as? TaskBoxLayoutManager)?.drawDividers(in: rect, origin: textContainerOrigin)
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -1053,6 +1055,7 @@ final class NoteTextView: NSTextView {
       if let block = codeBlock(containing: selection.location), selection.location == block.body.location {
         return  // keep the opening fence; the block is one component
       }
+      if apply(ListEditing.dividerBackspace(in: string, cursor: selection.location)) { return }
       if apply(ListEditing.backspace(in: string, cursor: selection.location)) { return }
       // Block markers come off one at a time, innermost first.
       if apply(ListEditing.peelMarker(in: string, cursor: selection.location)) { return }
@@ -1101,7 +1104,7 @@ final class NoteTextView: NSTextView {
 
   /// The space goes in first as ordinary typing, then "[] " or "``` " is
   /// rewritten as a separate undo step, so ⌘Z gives back the literal text.
-  /// A typed ">" after "-" or "=" becomes an arrow the same way.
+  /// Typographic pairs ("->", "--", "...") become one symbol the same way.
   /// `apply` edits the text storage directly, so this never re-enters.
   override func insertText(_ string: Any, replacementRange: NSRange) {
     // Typing over a selection: the selection takes whole marker pairs with it.
@@ -1121,10 +1124,12 @@ final class NoteTextView: NSTextView {
       opensMenu = (previous == 0x20 || previous == 0x09) && !ListEditing.insideFence(self.string, cursor: pre.location)
       if opensMenu { breakUndoCoalescing() }
     }
-    // A `-` or `=` that belongs to a hidden marker never makes an arrow.
-    // Decided before the insert, while the styling still matches the text.
+    // A character that belongs to a hidden marker (a divider's dashes)
+    // never starts a typographic pair. Decided before the insert, while
+    // the styling still matches the text.
     let caretBefore = selectedRange().location
-    let markerBefore = typed == ">" && caretBefore > 0 && hiddenRun(at: caretBefore - 1) != nil
+    let markerBefore = typed.map(ListEditing.typographyTriggers.contains) == true
+      && (1...2).contains { caretBefore - $0 >= 0 && hiddenRun(at: caretBefore - $0) != nil }
     super.insertText(string, replacementRange: replacementRange)
     if opensMenu {
       openSlashMenu(at: selectedRange().location - 1)
@@ -1134,13 +1139,13 @@ final class NoteTextView: NSTextView {
     guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
-    // "->" and "=>" become "→" and "⇒" as their own undo step. Typing only:
-    // a paste never comes through here as a lone ">".
-    if typed == ">" {
-      guard !markerBefore, !slashMenuIsOpen, let edit = ListEditing.arrow(in: self.string, cursor: selection.location)
+    // "->", "--", "...", and the rest become one symbol as their own undo
+    // step. Typing only: a paste never comes through here a character at a time.
+    if let typed, ListEditing.typographyTriggers.contains(typed) {
+      guard !markerBefore, !slashMenuIsOpen, let edit = ListEditing.typography(in: self.string, cursor: selection.location)
       else { return }
-      // Undo alone would select the restored "->", and the next key would
-      // type over it: the group also puts the caret back after the ">".
+      // Undo alone would select the restored pair, and the next key would
+      // type over it: the group also puts the caret back after it.
       // Registered first, so it runs last on undo.
       let typedEnd = selection.location
       breakUndoCoalescing()

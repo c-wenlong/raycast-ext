@@ -327,6 +327,39 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     drawPlaceholders(Markdown.calloutPlaceholder, in: chars, origin: origin) { _ in ("Empty callout", font) }
   }
 
+  /// Draws a hairline across the text column on every divider line
+  /// crossing `rect` (text view coordinates), centred on where its text
+  /// would sit. NoteTextView calls it from drawBackground.
+  func drawDividers(in rect: NSRect, origin: NSPoint) {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
+    let band = NSRect(x: 0, y: rect.minY - origin.y - 2, width: container.size.width, height: rect.height + 4)
+    let glyphs = glyphRange(forBoundingRect: band, in: container)
+    guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
+    let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+    guard chars.location != NSNotFound, chars.length > 0, NSMaxRange(chars) <= storage.length else { return }
+    let ns = storage.string as NSString
+    let scale = firstTextView?.window?.backingScaleFactor ?? 2
+    let font = Markdown.baseFont
+    var drawn = Set<Int>()
+    storage.enumerateAttribute(Markdown.divider, in: chars) { value, range, _ in
+      guard value != nil else { return }
+      let lineStart = ns.lineRange(for: NSRange(location: range.location, length: 0)).location
+      guard drawn.insert(lineStart).inserted, !isFolded(lineStart) else { return }
+      let glyph = glyphIndexForCharacter(at: lineStart)
+      let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+      let baseline = fragment.minY + location(forGlyphAt: glyph).y
+      // Mid-height of body text on this line, snapped to a device pixel.
+      let mid = ((origin.y + baseline - (font.ascender + font.descender) / 2) * scale).rounded(.down) / scale
+      let hairline = NSRect(
+        x: origin.x + container.lineFragmentPadding, y: mid,
+        width: container.size.width - container.lineFragmentPadding * 2, height: 1 / scale)
+      NSGraphicsContext.saveGraphicsState()
+      Markdown.dividerColor.setFill()
+      hairline.fill()
+      NSGraphicsContext.restoreGraphicsState()
+    }
+  }
+
   /// Draws the code cards behind `rect` (text view coordinates), spanning
   /// the text column like a callout box. NoteTextView calls it
   /// from `drawBackground(in:)`, which (unlike this class's own background
@@ -556,6 +589,13 @@ enum Markdown {
   /// manager); `calloutPlaceholder` marks one with no text.
   static let calloutBox = NSAttributedString.Key("calloutBox")
   static let calloutPlaceholder = NSAttributedString.Key("calloutPlaceholder")
+  /// Marks a divider line (`---`, `***`, `___`); the layout manager draws
+  /// a hairline across the text column, the characters are hidden.
+  static let divider = NSAttributedString.Key("divider")
+  static let dividerColor = NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+      ? NSColor.white.withAlphaComponent(0.22) : NSColor.black.withAlphaComponent(0.18)
+  }
   /// On a toggle's (hidden) ">": the layout manager draws a disclosure
   /// chevron in the gutter left of the title; the value is `true` when
   /// the toggle is collapsed.
@@ -619,7 +659,7 @@ enum Markdown {
   // stays literal text (the Enter and Space rules add the closing fence)
   // rather than swallowing the rest of the note.
   static let fence = try! NSRegularExpression(pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?^ {0,3}(?:\1`*|\2~*)[ \t]*$"#, options: .anchorsMatchLines)
-  static let rule = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
+  static let rule = ListEditing.rulePattern
   // Shared with the formatting keys (ListEditing.toggleWrap).
   static let bold = ListEditing.boldPattern
   static let italic = ListEditing.italicPattern
@@ -977,9 +1017,6 @@ enum Markdown {
     for toggle in toggleLayout.toggles where collapsedLines.contains(toggle.title.location) && toggle.children.length > 0 {
       storage.addAttribute(folded, value: true, range: toggle.children)
     }
-    for match in rule.matches(in: text, range: all) where !inCode(match.range) {
-      storage.addAttribute(.foregroundColor, value: dim, range: match.range)
-    }
     // Inline markers are never shown; the styled text is the only thing
     // on screen, and NoteTextView keeps the caret out of the hidden runs.
     let mono = monoFont
@@ -1065,6 +1102,16 @@ enum Markdown {
       guard let url = URL(string: target) else { continue }
       storage.addAttributes(
         [.link: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: range)
+    }
+    // A divider line: its characters collapse (last, over any pair the
+    // inline patterns found in `******`) and the layout manager draws a
+    // hairline across the text column.
+    for match in rule.matches(in: text, range: all) where !inCode(match.range) {
+      let line = ns.substring(with: match.range)
+      let marks = NSRange(location: match.range.location, length: (line.trimmingCharacters(in: .whitespaces) as NSString).length)
+      storage.removeAttribute(.strikethroughStyle, range: marks)
+      storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance, hiddenRun: HiddenRole.line.rawValue], range: marks)
+      storage.addAttribute(divider, value: true, range: match.range)
     }
     storage.endEditing()
 
