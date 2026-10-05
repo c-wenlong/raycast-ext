@@ -17,6 +17,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var watcher: DispatchSourceFileSystemObject?
   private var pendingCommand: String
   private var palette: ActionPalette!
+  private var settings: SettingsController!
   private var zoomHUD: ZoomHUD!
   private var codeBlocks: CodeBlockOverlay!
   private var links: LinkController!
@@ -142,44 +143,21 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   // MARK: Appearance and font
 
-  private var appearance = NoteAppearance.system
-
-  /// Reads the persisted appearance and typeface, applied before the
-  /// panel is built so the first show already has them.
+  /// Loads and applies both settings at launch, before the panel is
+  /// built, so the first show already has them.
   private func loadTheme() {
-    appearance = NoteSettings.appearance()
-    Markdown.font = NoteSettings.font()
-    NSApp.appearance = appearance.nsAppearance
-  }
-
-  private func setAppearance(_ value: NoteAppearance) {
-    appearance = value
-    NoteSettings.save(value)
-    // Every window of the helper inherits the app's appearance.
-    NSApp.appearance = value.nsAppearance
-    restyle()
-    textView.needsDisplay = true
-    zoomHUD.show(text: value.announcement)
-  }
-
-  private func setFont(_ value: NoteFont) {
-    Markdown.font = value
-    NoteSettings.save(value)
-    relayout()
-    zoomHUD.show(text: value.announcement)
-  }
-
-  private func apply(_ change: NoteSettings.Change) {
-    switch change {
-    case .appearance(let value): setAppearance(value)
-    case .font(let value): setFont(value)
+    settings = SettingsController()
+    settings.commandActions = Self.commandActions
+    settings.onAppearance = { [weak self] value in
+      guard let self else { return }
+      self.restyle()
+      self.textView.needsDisplay = true
+      self.zoomHUD.show(text: value.announcement)
     }
-  }
-
-  /// The palette's rows: the commands, then both settings with the
-  /// current choice checked.
-  private var paletteActions: [PaletteAction] {
-    Self.commandActions + NoteSettings.paletteActions(appearance: appearance, font: Markdown.font)
+    settings.onFont = { [weak self] value in
+      self?.relayout()
+      self?.zoomHUD.show(text: value.announcement)
+    }
   }
 
   private func applyTextContainerInset() {
@@ -281,9 +259,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     statusBar = StatusBar { [weak self] in self?.handle("format") }
     statusBar.install(in: panel.contentView!)
 
-    palette = ActionPalette(actions: paletteActions) { [weak self] command in
+    palette = ActionPalette(actions: settings.paletteActions) { [weak self] command in
       self?.handle(command)
     }
+    settings.palette = palette
   }
 
   private static let commandActions: [PaletteAction] = [
@@ -338,7 +317,6 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       if palette.isVisible {
         palette.hide()
       } else {
-        palette.actions = paletteActions
         palette.show(over: panel)
       }
     case "format":
@@ -374,8 +352,8 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     default:
       if let format = FormatOptions.format(forCommand: command) {
         applyFormat(format)
-      } else if let change = NoteSettings.change(forCommand: command) {
-        apply(change)
+      } else if settings.handle(command) {
+        return
       } else if command.hasPrefix("open ") {
         let path = String(command.dropFirst(5)).trimmingCharacters(in: .whitespaces)
         open(path)

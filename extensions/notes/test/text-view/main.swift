@@ -1500,5 +1500,39 @@ for count in [1, 3, 6, 23] {
   gapPalette.hide()
 }
 
+// An open palette follows a setting change from any path: checkmarks move
+// and key badges take the new appearance's colour.
+func pollUntil(timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
+  let deadline = Date().addingTimeInterval(timeout)
+  while !condition() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+  return condition()
+}
+let liveSuite = "notes-theme-live-\(getpid())"
+let liveDefaults = UserDefaults(suiteName: liveSuite)!
+NoteSettings.save(.light, in: liveDefaults)
+let liveSettings = SettingsController(defaults: liveDefaults)
+liveSettings.commandActions = [PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "plus.magnifyingglass", command: "zoom-in")]
+let livePalette = ActionPalette(actions: liveSettings.paletteActions) { _ in }
+liveSettings.palette = livePalette
+livePalette.show(over: win)
+func liveChecked() -> [String] { livePalette.shownRows.filter(\.checked).map(\.title) }
+func liveBadge() -> [CGFloat] { livePalette.badgeColor(atRow: 0)?.components ?? [] }
+check("the open palette starts on the stored choices", liveChecked() == ["Appearance: Light", "Font: Sans Serif"], "\(liveChecked())")
+let lightBadge = liveBadge()
+check("the open palette's rows have key badges", !lightBadge.isEmpty)
+check("a font command moves the open palette's checkmark", liveSettings.handle("font-mono") && liveChecked() == ["Appearance: Light", "Font: Mono"], "\(liveChecked())")
+check("an appearance command moves it too", liveSettings.handle("appearance-dark") && liveChecked() == ["Appearance: Dark", "Font: Mono"], "\(liveChecked())")
+check("the open palette's key badges change colour", pollUntil { !liveBadge().isEmpty && liveBadge() != lightBadge }, "\(liveBadge())")
+let refreshedBadge = liveBadge()
+livePalette.hide()
+livePalette.show(over: win)
+check("they match a palette opened in dark", pollUntil { liveBadge() == refreshedBadge }, "\(liveBadge()) vs \(refreshedBadge)")
+check("other commands are left to the window", !liveSettings.handle("zoom-in"))
+check("the changes are saved", NoteSettings.appearance(in: liveDefaults) == .dark && NoteSettings.font(in: liveDefaults) == .mono)
+livePalette.hide()
+NSApp.appearance = nil
+Markdown.font = .sans
+liveDefaults.removePersistentDomain(forName: liveSuite)
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

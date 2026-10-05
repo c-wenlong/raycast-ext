@@ -41,8 +41,11 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   private let panel: PalettePanel
   private let search = NSSearchField()
   private let table = NSTableView()
-  /// The rows; replaced while hidden when a setting's checkmark moves.
-  var actions: [PaletteAction]
+  /// The rows. Replacing them while the palette is open (a setting
+  /// changed over the socket) redraws the list in place.
+  var actions: [PaletteAction] {
+    didSet { if panel.isVisible { refresh() } }
+  }
   private var visible: [PaletteAction] = []
   private let run: (String) -> Void
   private static let width: CGFloat = 420
@@ -70,12 +73,18 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     panel.level = .floating
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-    let root = NSVisualEffectView(frame: panel.contentView!.bounds)
+    let root = PaletteRootView(frame: panel.contentView!.bounds)
     root.material = .popover
     root.blendingMode = .behindWindow
     root.state = .active
     root.autoresizingMask = [.width, .height]
     panel.contentView = root
+    // Key badges hold a layer colour fixed for one appearance: rebuild the
+    // rows when the palette's appearance changes, however it changed.
+    root.onAppearanceChange = { [weak self] in
+      guard let self, self.panel.isVisible else { return }
+      self.refresh()
+    }
 
     search.placeholderString = "Search for actions..."
     search.font = NSFont.systemFont(ofSize: 17)
@@ -153,6 +162,28 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
       table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
       table.scrollRowToVisible(0)
     }
+  }
+
+  /// Rebuilds the rows for the current query, keeping the selected
+  /// action selected (by command) when it is still listed.
+  private func refresh() {
+    let selected = table.selectedRow >= 0 && table.selectedRow < visible.count ? visible[table.selectedRow].command : nil
+    filter()
+    if let selected, let row = visible.firstIndex(where: { $0.command == selected }) {
+      table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+      table.scrollRowToVisible(row)
+    }
+  }
+
+  /// The rows as listed now, for the view tests.
+  var shownRows: [PaletteAction] { visible }
+
+  /// The background of the first key badge on `row`, for the view tests.
+  func badgeColor(atRow row: Int) -> CGColor? {
+    guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true),
+      let keys = cell.subviews.first(where: { $0 is NSStackView }) as? NSStackView
+    else { return nil }
+    return keys.arrangedSubviews.first(where: { $0 is NSTextField })?.layer?.backgroundColor
   }
 
   /// The panel height that shows every row with the gap under the last
@@ -298,5 +329,15 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     let view = NSTableRowView()
     view.isEmphasized = true
     return view
+  }
+}
+
+/// The palette's background, which reports appearance changes.
+final class PaletteRootView: NSVisualEffectView {
+  var onAppearanceChange: (() -> Void)?
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    onAppearanceChange?()
   }
 }
