@@ -840,8 +840,8 @@ enum ListEditing {
 
   /// A bare http(s) address, as the styler links it (Markdown.bareURL):
   /// not right after `(` or a word character, and ending at whitespace,
-  /// `<`, `>`, `)` or `]`.
-  static let bareURLPattern = #"(?<![\(\w])https?://[^\s<>\)\]]"#
+  /// `<`, `>`, `)` or `]`. The scheme matches in any case.
+  static let bareURLPattern = #"(?<![\(\w])(?i:https?)://[^\s<>\)\]]"#
 
   /// Text before the caret that ends inside a link address: after `](`
   /// with no `)` yet, or in a bare address with the styler's boundary.

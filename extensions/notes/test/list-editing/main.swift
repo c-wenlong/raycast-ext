@@ -719,6 +719,7 @@ do {
   check("no arrow at the start of a link address", arrow("[a](->") == nil)
   check("no arrow inside a closed link address", ListEditing.arrow(in: "[a](x->y)", cursor: 7) == nil)
   check("no arrow in a bare URL", arrow("see https://x.com/a->") == nil)
+  check("no arrow in an upper-case URL", arrow("see HTTPS://x.com/a->") == nil && arrow("see Http://x.com/a=>") == nil)
   check("an arrow right after a URL in parentheses", arrow("(https://example.com)->") == "(https://example.com)\u{2192}", arrow("(https://example.com)->") ?? "nil")
   check("an arrow right after a URL in brackets", arrow("[https://x.com]=>") == "[https://x.com]\u{21D2}", arrow("[https://x.com]=>") ?? "nil")
   check("an arrow after a link", arrow("[a](u) b->") == "[a](u) b\u{2192}", arrow("[a](u) b->") ?? "nil")
