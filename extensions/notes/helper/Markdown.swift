@@ -604,10 +604,28 @@ enum Markdown {
   /// Multiplier applied to every font size (⌘+ / ⌘- zoom).
   static var zoom: CGFloat = 1.0
 
+  /// The note's typeface (⌘K, remembered); code stays monospaced.
+  static var font: NoteFont = .sans
+
+  static func isDark(_ appearance: NSAppearance) -> Bool {
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+  }
+
   /// The one highlight colour: list markers, numbers, task boxes, links.
-  static let accent = NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 1)
-  /// Selected text: a wash of the accent, as in Raycast Notes.
-  static var selection: NSColor { accent.withAlphaComponent(0.42) }
+  /// The Raycast red over the dark canvas; a deeper red over the light
+  /// one, so links and numbers keep 4.5:1 contrast as text.
+  static let accent = NSColor(name: nil) { appearance in
+    isDark(appearance)
+      ? NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 1)
+      : NSColor(srgbRed: 0.80, green: 0.24, blue: 0.21, alpha: 1)
+  }
+  /// Selected text: a wash of the accent, as in Raycast Notes; lighter
+  /// over the light canvas so dark text stays crisp on it.
+  static let selection = NSColor(name: nil) { appearance in
+    isDark(appearance)
+      ? NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 0.42)
+      : NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: 0.3)
+  }
   /// Marks a task's "[ ]" / "[x]" characters; the value is `true` when done.
   static let taskBox = NSAttributedString.Key("taskBox")
   /// Marks the (clear) "-", "*" or "+" of a bullet item, which
@@ -617,22 +635,22 @@ enum Markdown {
   /// Side of a task box: 14pt at 15pt text, as in Raycast Notes.
   static var taskBoxSide: CGFloat { (baseFont.pointSize * 14 / 15).rounded() }
 
-  /// The note's background, as in Raycast Notes: near-black in dark mode.
+  /// The note's background, as in Raycast Notes: near-black (#1A1A1A) in
+  /// dark mode, near-white in light mode.
   static let canvas = NSColor(name: nil) { appearance in
-    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-      ? NSColor(white: 26 / 255, alpha: 1) : NSColor(white: 0.985, alpha: 1)
+    isDark(appearance) ? NSColor(white: 26 / 255, alpha: 1) : NSColor(white: 0.985, alpha: 1)
   }
 
-  static var baseFont: NSFont { NSFont.systemFont(ofSize: 15 * zoom) }
+  static var baseFont: NSFont { font.font(ofSize: 15 * zoom) }
   static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: 13.5 * zoom, weight: .regular) }
   /// Width of one monospace glyph at the current zoom.
   static var monoAdvance: CGFloat { ("-" as NSString).size(withAttributes: [.font: monoFont]).width }
   static var headingFonts: [NSFont] {
     [
-      NSFont.systemFont(ofSize: 24 * zoom, weight: .bold),
-      NSFont.systemFont(ofSize: 20 * zoom, weight: .bold),
-      NSFont.systemFont(ofSize: 17 * zoom, weight: .bold),
-      NSFont.systemFont(ofSize: 15 * zoom, weight: .semibold),
+      font.font(ofSize: 24 * zoom, weight: .bold),
+      font.font(ofSize: 20 * zoom, weight: .bold),
+      font.font(ofSize: 17 * zoom, weight: .bold),
+      font.font(ofSize: 15 * zoom, weight: .semibold),
     ]
   }
   /// Space above H1 to H4 before zoom.
@@ -690,8 +708,9 @@ enum Markdown {
   static var paragraphGap: CGFloat { 7.5 * zoom }
   /// Width of one list level: the marker column, and the indent of each
   /// nested level. The marker (dot, number) sits `listMarkerLead` in from
-  /// the column's left edge; a task box sits flush.
-  static var listColumn: CGFloat { 22 * zoom }
+  /// the column's left edge; a task box sits flush. Mono's wider glyphs
+  /// get a wider column, so "1. " still fits in one.
+  static var listColumn: CGFloat { (font == .mono ? 26 : 22) * zoom }
   static var listMarkerLead: CGFloat { 2.5 * zoom }
   static let listLine = try! NSRegularExpression(pattern: #"^([ \t]*)(?:[-*+]|\d+\.)[ \t]+"#)
   static let taskScheme = "notes-task"
@@ -703,7 +722,7 @@ enum Markdown {
   static var dateChipRadius: CGFloat { 5 * zoom }
   /// A faint wash of the accent, lighter than the selection.
   static let dateChipColor = NSColor(name: nil) { appearance in
-    accent.withAlphaComponent(appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.2 : 0.14)
+    NSColor(srgbRed: 0.91, green: 0.36, blue: 0.33, alpha: isDark(appearance) ? 0.2 : 0.14)
   }
 
   /// Marks every character of a fenced code block, opening fence line
@@ -720,6 +739,12 @@ enum Markdown {
   static let codeCardColor = NSColor(name: nil) { appearance in
     appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
       ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.045)
+  }
+
+  /// Behind an inline code span: the code card's wash, a touch stronger
+  /// since a span is small.
+  static let codeSpanColor = NSColor(name: nil) { appearance in
+    isDark(appearance) ? NSColor(white: 1, alpha: 0.1) : NSColor(white: 0, alpha: 0.07)
   }
 
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
@@ -940,7 +965,10 @@ enum Markdown {
       }
       if gap.length > 0 {
         let gapWidth = storage.attributedSubstring(from: gap).size().width
-        let stretch = max(0, listColumn - lead - markerWidth - gapWidth)
+        // The gap stretches to the column; a wide space (Mono's) may also
+        // shrink to 4pt so the text still reaches it.
+        let shrink = min(0, 4 * zoom - gapWidth)
+        let stretch = max(shrink, listColumn - lead - markerWidth - gapWidth)
         storage.addAttribute(.kern, value: stretch, range: NSRange(location: gap.location, length: 1))
       }
       let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
@@ -1152,7 +1180,7 @@ enum Markdown {
     }
     for match in code.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttributes(
-        [.font: monoFont, .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.18)], range: match.range(at: 2))
+        [.font: monoFont, .backgroundColor: codeSpanColor], range: match.range(at: 2))
       marker(match.range(at: 1), .open)
       marker(NSRange(location: match.range.location + match.range.length - 1, length: 1), .close)
     }

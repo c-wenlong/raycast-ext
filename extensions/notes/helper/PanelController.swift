@@ -17,6 +17,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var watcher: DispatchSourceFileSystemObject?
   private var pendingCommand: String
   private var palette: ActionPalette!
+  private var settings: SettingsController!
   private var zoomHUD: ZoomHUD!
   private var codeBlocks: CodeBlockOverlay!
   private var links: LinkController!
@@ -31,6 +32,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     loadZoom()
+    loadTheme()
     installMainMenu()
     buildPanel()
     handle(pendingCommand)
@@ -124,11 +126,38 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private func setZoom(_ value: CGFloat) {
     Markdown.zoom = value
     UserDefaults.standard.set(Double(value), forKey: Self.zoomDefaultsKey)
-    restyle()
+    relayout()
+    zoomHUD.show(text: "Zoomed to \(ZoomLevels.percentageString(for: value))")
+  }
+
+  /// Restyles the note and re-measures everything sized from its fonts
+  /// (insets, code block controls), after a zoom or typeface change.
+  private func relayout() {
+    // The view's font first: setting it re-fonts the whole text, so the
+    // restyle has to come after it or code loses its monospaced font.
     textView.font = Markdown.baseFont
+    restyle()
     applyTextContainerInset()
     codeBlocks.update()
-    zoomHUD.show(text: "Zoomed to \(ZoomLevels.percentageString(for: value))")
+  }
+
+  // MARK: Appearance and font
+
+  /// Loads and applies both settings at launch, before the panel is
+  /// built, so the first show already has them.
+  private func loadTheme() {
+    settings = SettingsController()
+    settings.commandActions = Self.commandActions
+    settings.onAppearance = { [weak self] value in
+      guard let self else { return }
+      self.restyle()
+      self.textView.needsDisplay = true
+      self.zoomHUD.show(text: value.announcement)
+    }
+    settings.onFont = { [weak self] value in
+      self?.relayout()
+      self?.zoomHUD.show(text: value.announcement)
+    }
   }
 
   private func applyTextContainerInset() {
@@ -230,28 +259,31 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     statusBar = StatusBar { [weak self] in self?.handle("format") }
     statusBar.install(in: panel.contentView!)
 
-    palette = ActionPalette(actions: [
-      PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
-      PaletteAction(title: "Open Today's Note", keys: "", symbol: "calendar", command: "today"),
-      PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
-      PaletteAction(title: "Browse Notes", keys: "⌘P", symbol: "square.grid.2x2", command: "browse"),
-      PaletteAction(title: "Previous Note", keys: "⌘[", symbol: "arrow.left.circle", command: "prev"),
-      PaletteAction(title: "Next Note", keys: "⌘]", symbol: "arrow.right.circle", command: "next"),
-      PaletteAction(title: "Toggle Task", keys: "⌘↩", symbol: "checkmark.circle", command: "toggle-task"),
-      PaletteAction(title: "Find in Note", keys: "⌘F", symbol: "magnifyingglass", command: "find"),
-      PaletteAction(title: "Copy Note", keys: "⇧⌘C", symbol: "doc.on.clipboard", command: "copy"),
-      PaletteAction(title: "Reveal in Finder", keys: "", symbol: "folder", command: "reveal"),
-      PaletteAction(title: "Delete Note", keys: "⌃X", symbol: "trash", command: "delete"),
-      PaletteAction(title: "Hide Window", keys: "⎋", symbol: "eye.slash", command: "hide"),
-      PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "plus.magnifyingglass", command: "zoom-in"),
-      PaletteAction(title: "Zoom Out", keys: "⌘-", symbol: "minus.magnifyingglass", command: "zoom-out"),
-      PaletteAction(title: "Actual Size", keys: "⌘0", symbol: "1.magnifyingglass", command: "zoom-reset"),
-      PaletteAction(title: "Minimize Window", keys: "⌘M", symbol: "minus.square", command: "minimize"),
-      PaletteAction(title: "Formatting…", keys: "", symbol: "textformat", command: "format"),
-    ]) { [weak self] command in
+    palette = ActionPalette(actions: settings.paletteActions) { [weak self] command in
       self?.handle(command)
     }
+    settings.palette = palette
   }
+
+  private static let commandActions: [PaletteAction] = [
+    PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
+    PaletteAction(title: "Open Today's Note", keys: "", symbol: "calendar", command: "today"),
+    PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
+    PaletteAction(title: "Browse Notes", keys: "⌘P", symbol: "square.grid.2x2", command: "browse"),
+    PaletteAction(title: "Previous Note", keys: "⌘[", symbol: "arrow.left.circle", command: "prev"),
+    PaletteAction(title: "Next Note", keys: "⌘]", symbol: "arrow.right.circle", command: "next"),
+    PaletteAction(title: "Toggle Task", keys: "⌘↩", symbol: "checkmark.circle", command: "toggle-task"),
+    PaletteAction(title: "Find in Note", keys: "⌘F", symbol: "magnifyingglass", command: "find"),
+    PaletteAction(title: "Copy Note", keys: "⇧⌘C", symbol: "doc.on.clipboard", command: "copy"),
+    PaletteAction(title: "Reveal in Finder", keys: "", symbol: "folder", command: "reveal"),
+    PaletteAction(title: "Delete Note", keys: "⌃X", symbol: "trash", command: "delete"),
+    PaletteAction(title: "Hide Window", keys: "⎋", symbol: "eye.slash", command: "hide"),
+    PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "plus.magnifyingglass", command: "zoom-in"),
+    PaletteAction(title: "Zoom Out", keys: "⌘-", symbol: "minus.magnifyingglass", command: "zoom-out"),
+    PaletteAction(title: "Actual Size", keys: "⌘0", symbol: "1.magnifyingglass", command: "zoom-reset"),
+    PaletteAction(title: "Minimize Window", keys: "⌘M", symbol: "minus.square", command: "minimize"),
+    PaletteAction(title: "Formatting…", keys: "", symbol: "textformat", command: "format"),
+  ]
 
   // MARK: Commands
 
@@ -282,7 +314,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     case "toggle-task":
       toggleTaskOnCurrentLine()
     case "palette":
-      palette.isVisible ? palette.hide() : palette.show(over: panel)
+      if palette.isVisible {
+        palette.hide()
+      } else {
+        palette.show(over: panel)
+      }
     case "format":
       palette.hide()
       if statusBar.isFormatBarVisible {
@@ -316,6 +352,8 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     default:
       if let format = FormatOptions.format(forCommand: command) {
         applyFormat(format)
+      } else if settings.handle(command) {
+        return
       } else if command.hasPrefix("open ") {
         let path = String(command.dropFirst(5)).trimmingCharacters(in: .whitespaces)
         open(path)

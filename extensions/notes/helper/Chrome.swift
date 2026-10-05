@@ -150,6 +150,13 @@ final class FadeOverlay: NSView {
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+  // The gradient is built from `color` resolved at draw time; redraw it
+  // when the window switches between light and dark.
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
+  }
+
   override func draw(_ dirtyRect: NSRect) {
     // Opaque for the outer third, then eased to clear.
     let opaque = color

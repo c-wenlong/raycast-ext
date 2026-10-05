@@ -8,6 +8,17 @@ struct PaletteAction {
   let keys: String
   let symbol: String
   let command: String
+  /// More words the search matches besides the title.
+  var keywords: String = ""
+  /// A setting's current choice: a checkmark in place of the keys.
+  var checked: Bool = false
+
+  /// True when every word of `query` (already lowercased and trimmed)
+  /// appears in the title or the keywords.
+  func matches(_ query: String) -> Bool {
+    let haystack = (title + " " + keywords).lowercased()
+    return query.split(separator: " ").allSatisfy { haystack.contains($0) }
+  }
 }
 
 /// Child panel that lets ⌘K close the palette while its search field is key.
@@ -30,10 +41,20 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   private let panel: PalettePanel
   private let search = NSSearchField()
   private let table = NSTableView()
-  private let actions: [PaletteAction]
+  /// The rows. Replacing them while the palette is open (a setting
+  /// changed over the socket) redraws the list in place.
+  var actions: [PaletteAction] {
+    didSet { if panel.isVisible { refresh() } }
+  }
   private var visible: [PaletteAction] = []
   private let run: (String) -> Void
   private static let width: CGFloat = 420
+  /// From the panel's top edge to the list's: search field and divider.
+  private static let listTop: CGFloat = 64
+  /// The divider's bottom edge sits this far above the list's top.
+  private static let dividerGap: CGFloat = 2
+  private static let maxHeight: CGFloat = 480
+  private weak var parent: NSWindow?
 
   init(actions: [PaletteAction], run: @escaping (String) -> Void) {
     self.actions = actions
@@ -52,12 +73,18 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     panel.level = .floating
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-    let root = NSVisualEffectView(frame: panel.contentView!.bounds)
+    let root = PaletteRootView(frame: panel.contentView!.bounds)
     root.material = .popover
     root.blendingMode = .behindWindow
     root.state = .active
     root.autoresizingMask = [.width, .height]
     panel.contentView = root
+    // Key badges hold a layer colour fixed for one appearance: rebuild the
+    // rows when the palette's appearance changes, however it changed.
+    root.onAppearanceChange = { [weak self] in
+      guard let self, self.panel.isVisible else { return }
+      self.refresh()
+    }
 
     search.placeholderString = "Search for actions..."
     search.font = NSFont.systemFont(ofSize: 17)
@@ -92,7 +119,9 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     table.target = self
     table.action = #selector(rowClicked)
 
-    let scroll = NSScrollView(frame: NSRect(x: 0, y: 8, width: ActionPalette.width, height: panel.frame.height - 72))
+    // The list fills the panel below the divider; `fit` sizes the panel
+    // so its bottom margin matches the top one.
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: ActionPalette.width, height: panel.frame.height - Self.listTop))
     scroll.autoresizingMask = [.width, .height]
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
@@ -104,13 +133,15 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
   func show(over parent: NSWindow) {
     search.stringValue = ""
-    filter()
+    self.parent = parent
     let width = min(ActionPalette.width, parent.frame.width - 40)
-    let height = min(CGFloat(visible.count) * (table.rowHeight + 2) + 80, parent.frame.height - 40, 480)
-    let origin = NSPoint(
-      x: parent.frame.midX - width / 2,
-      y: parent.frame.midY - height / 2)
-    panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
+    panel.setFrame(NSRect(x: parent.frame.midX - width / 2, y: parent.frame.midY, width: width, height: panel.frame.height), display: false)
+    filter()
+    // Centred on the window for the full list; filtering then keeps the
+    // top edge still and moves only the bottom.
+    var frame = panel.frame
+    frame.origin.y = parent.frame.midY - frame.height / 2
+    panel.setFrame(frame, display: false)
     parent.addChildWindow(panel, ordered: .above)
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(search)
@@ -124,18 +155,69 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
   private func filter() {
     let query = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
-    visible = query.isEmpty
-      ? actions
-      : actions.filter { action in
-        let words = query.split(separator: " ")
-        let haystack = action.title.lowercased()
-        return words.allSatisfy { haystack.contains($0) }
-      }
+    visible = query.isEmpty ? actions : actions.filter { $0.matches(query) }
     table.reloadData()
+    fit()
     if !visible.isEmpty {
       table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
       table.scrollRowToVisible(0)
     }
+  }
+
+  /// Rebuilds the rows for the current query, keeping the selected
+  /// action selected (by command) when it is still listed.
+  private func refresh() {
+    let selected = table.selectedRow >= 0 && table.selectedRow < visible.count ? visible[table.selectedRow].command : nil
+    filter()
+    if let selected, let row = visible.firstIndex(where: { $0.command == selected }) {
+      table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+      table.scrollRowToVisible(row)
+    }
+  }
+
+  /// The rows as listed now, for the view tests.
+  var shownRows: [PaletteAction] { visible }
+
+  /// The background of the first key badge on `row`, for the view tests.
+  func badgeColor(atRow row: Int) -> CGColor? {
+    guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true),
+      let keys = cell.subviews.first(where: { $0 is NSStackView }) as? NSStackView
+    else { return nil }
+    return keys.arrangedSubviews.first(where: { $0 is NSTextField })?.layer?.backgroundColor
+  }
+
+  /// The panel height that shows every row with the gap under the last
+  /// row equal to the gap between the divider and the first one (the
+  /// table's own top inset plus `dividerGap`), whatever the row count;
+  /// capped to fit the parent window, past which the list scrolls.
+  var fittedHeight: CGFloat {
+    let rows = table.numberOfRows
+    let topInset = rows > 0 ? table.rect(ofRow: 0).minY : 0
+    let rowsBottom = rows > 0 ? table.rect(ofRow: rows - 1).maxY : 0
+    let natural = Self.listTop + rowsBottom + Self.dividerGap + topInset
+    return min(natural, (parent?.frame.height ?? .greatestFiniteMagnitude) - 40, Self.maxHeight)
+  }
+
+  /// Resizes the panel to `fittedHeight`, keeping its top edge in place.
+  private func fit() {
+    var frame = panel.frame
+    let height = fittedHeight
+    guard abs(frame.height - height) > 0.5 else { return }
+    frame.origin.y = frame.maxY - height
+    frame.size.height = height
+    panel.setFrame(frame, display: panel.isVisible)
+  }
+
+  /// The gaps above the first row (from the divider) and below the last
+  /// row (to the panel's bottom edge), in points; for the view tests.
+  var listGaps: (top: CGFloat, bottom: CGFloat)? {
+    let rows = table.numberOfRows
+    guard rows > 0, let content = panel.contentView else { return nil }
+    let first = content.convert(table.rect(ofRow: 0), from: table)
+    let last = content.convert(table.rect(ofRow: rows - 1), from: table)
+    let dividerBottom = content.bounds.height - Self.listTop + Self.dividerGap
+    // The content view is not flipped: larger y is higher.
+    return (dividerBottom - first.maxY, last.minY)
   }
 
   private func runSelected() {
@@ -207,12 +289,25 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
       badge.textColor = .secondaryLabelColor
       badge.alignment = .center
       badge.wantsLayer = true
-      badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
+      // A layer colour is fixed when set: resolve it in the palette's
+      // own appearance (forced light or dark, or the system's).
+      tableView.effectiveAppearance.performAsCurrentDrawingAppearance {
+        badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
+      }
       badge.layer?.cornerRadius = 5
       badge.translatesAutoresizingMaskIntoConstraints = false
       badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
       badge.heightAnchor.constraint(equalToConstant: 22).isActive = true
       keys.addArrangedSubview(badge)
+    }
+
+    if action.checked {
+      let check = NSImageView()
+      check.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Current")
+      check.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+      check.contentTintColor = Markdown.accent
+      check.setAccessibilityLabel("Current")
+      keys.addArrangedSubview(check)
     }
 
     cell.addSubview(icon)
@@ -234,5 +329,15 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     let view = NSTableRowView()
     view.isEmphasized = true
     return view
+  }
+}
+
+/// The palette's background, which reports appearance changes.
+final class PaletteRootView: NSVisualEffectView {
+  var onAppearanceChange: (() -> Void)?
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    onAppearanceChange?()
   }
 }
