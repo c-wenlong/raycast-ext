@@ -29,8 +29,9 @@ final class SlashMenu: NSView, NSTableViewDataSource, NSTableViewDelegate {
     Entry(id: "bullet", title: "Bulleted list", hint: "-", symbol: "list.bullet", format: .prefix(.bullet), aliases: ["ul", "unordered"]),
     Entry(id: "ordered", title: "Numbered list", hint: "1.", symbol: "list.number", format: .prefix(.ordered), aliases: ["ol", "ordered"]),
     Entry(id: "task", title: "To-do list", hint: "[]", symbol: "checklist", format: .prefix(.task), aliases: ["todo", "checkbox", "task", "check"]),
-    Entry(id: "quote", title: "Quote", hint: ">", symbol: "text.quote", format: .prefix(.quote), aliases: ["blockquote"]),
-    Entry(id: "callout", title: "Callout", hint: ">>", symbol: "rectangle.on.rectangle", format: .prefix(.callout), aliases: ["box", "note", "highlight"]),
+    Entry(id: "quote", title: "Quote", hint: "|", symbol: "text.quote", format: .prefix(.quote), aliases: ["blockquote"]),
+    Entry(id: "toggle", title: "Toggle", hint: ">", symbol: "chevron.right", format: .prefix(.toggle), aliases: ["collapse", "fold", "details", "disclosure"]),
+    Entry(id: "callout", title: "Callout", hint: "!>", symbol: "rectangle.on.rectangle", format: .prefix(.callout), aliases: ["box", "note", "highlight"]),
     Entry(id: "code-block", title: "Code block", hint: "```", symbol: "curlybraces", format: .codeBlock, aliases: ["code", "fence"]),
   ]
 

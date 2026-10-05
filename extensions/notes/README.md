@@ -29,7 +29,7 @@ Inside the window:
 | Keys | Action |
 |---|---|
 | `⌘K` | action palette (New Note, Open Today's Note, Duplicate, Browse, zoom…): type to filter, `↑` `↓` to move, `↩` to run |
-| `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
+| `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, toggle, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
 | `⌘N` | new note (its first line, markdown stripped, becomes the title and filename) |
 | `⌘D` | duplicate note |
@@ -45,8 +45,11 @@ Inside the window:
 | `⌘L` | link the selection, caret between the `()` |
 | hover or right-click a link | hovering an `http(s)` link shows a bubble with the address, Open, Edit and Copy; right-clicking any link gives Copy, Open and Edit, and for a `[text](url)` link Remove Link too. Edit opens a small form for text and address |
 | `⌥⌘1` to `⌥⌘4` | heading 1 to 4; again to remove |
-| `⇧⌘B` | quote the line; `↩` continues the quote, `↩` on an empty quote line ends it |
-| `>> ` or `/callout` | callout: the lines sit in an outlined box; `↩` continues it, `↩` on an empty line ends it (a nested quote to other markdown viewers) |
+| `\| ` or `⇧⌘B` | quote the line (`\| text` in the file); `↩` continues the quote, `↩` on an empty quote line ends it |
+| `> ` | toggle (`> text`): a chevron left of the title collapses or expands the lines indented under it; `↩` at the end of the title opens a child line (on a collapsed toggle, a new toggle after the hidden children), `↩` on an empty title or empty child steps out |
+| `/callout` | callout (`!> text`): the lines sit in an outlined box; `↩` continues it, `↩` on an empty line ends it |
+| `#`, `>` or `\|` then `Space` on a marked line | markers stack at the start of the text: `## ` on a heading changes its level, `> ` and `# ` combine into a heading toggle, a quote can hold a heading or a toggle, and `\| ` turns a heading or toggle into a plain quote. In the file they are always `\| `, `> `, `# ` in that order |
+| `⌫` at the start of a marked line | take off one marker, innermost first (heading, toggle, quote), keeping the text; on a toggle's child, step out one level |
 | `⇧⌘7` / `⇧⌘8` / `⇧⌘9` | numbered / bullet / task item |
 | `⌥⌘C` | wrap the lines in a code block, or unwrap the block the caret is in |
 | `[]` then `Space` | start a task, `- [ ] ` |
@@ -59,9 +62,13 @@ Inside the window:
 | `⌘Z` / `⇧⌘Z` | undo / redo; each typing rule and formatting key is one step |
 
 The file stays raw markdown, but the window never shows the markers:
-headings, bold, italic, strike, code, quotes, links, list markers and task
-boxes are styled in place and the `#`, `>`, `**`, `_`, backticks and `- ` are
-collapsed (a quote shows as a bar down its left, spanning its lines). The caret skips over them, Backspace and Delete look through
+headings, bold, italic, strike, code, quotes, toggles, callouts, links, list
+markers and task boxes are styled in place and the `#`, `|`, `>`, `!>`, `**`,
+`_`, backticks and `- ` are collapsed (a quote shows as a bar down its left,
+spanning its lines). A marker forms only with the space after it: `|text`,
+`>text` or a lone `#` stay plain text. A toggle's collapsed state lives only
+in the window, per note, until the helper quits; the file never changes. The
+caret skips over markers and hidden children, Backspace and Delete look through
 them to the styled text, and a pair left empty disappears, so styled text
 is removed by removing the text. Edits save 0.4s after you stop typing, and
 the window reloads a note that another program changes.

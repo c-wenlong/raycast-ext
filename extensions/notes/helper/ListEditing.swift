@@ -204,40 +204,432 @@ enum ListEditing {
 
   // MARK: Public operations
 
-  private static let quoteLine = try! NSRegularExpression(pattern: #"^(>>?)(?!>)(?:[ \t]|$)(.*)$"#)
+  // MARK: Block markers
+  //
+  // A line can start with block markers, after any indent and always in
+  // this order: "| " (quote), "> " (toggle), "#" to "#### " (heading).
+  // A callout, "!> ", stands alone. Every marker needs the whitespace
+  // after it: "|text", ">text" and a bare "#" are plain text. The
+  // renderer (Markdown.apply) reads lines with the same parser, so a
+  // marker the rules can remove is exactly a marker that is hidden.
 
-  /// Enter on a quote (">") or callout (">>") line: the block continues
-  /// on the next line, or ends when the line is empty. Nil when the
-  /// cursor is not in one.
-  static func quoteNewline(in text: String, cursor: Int) -> Edit? {
-    guard !insideFence(text, cursor: cursor) else { return nil }
-    let ns = text as NSString
-    var lineStart = 0
-    var contentsEnd = 0
-    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
-    let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
-    guard let match = quoteLine.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else { return nil }
-    let content = (line as NSString).substring(with: match.range(at: 2))
-    if content.trimmingCharacters(in: .whitespaces).isEmpty {
-      return Edit(range: NSRange(location: lineStart, length: contentsEnd - lineStart), replacement: "", cursor: lineStart)
-    }
-    let inserted = lineBreak(in: text) + (line as NSString).substring(with: match.range(at: 1)) + " "
-    return Edit(range: NSRange(location: cursor, length: 0), replacement: inserted, cursor: cursor + (inserted as NSString).length)
+  enum MarkerKind: Equatable { case quote, toggle, heading, callout }
+
+  struct MarkerUnit: Equatable {
+    let kind: MarkerKind
+    /// The symbol(s) and the whitespace after them, in the line (UTF-16).
+    let range: NSRange
   }
 
-  /// Removes the current line's block prefix (heading, quote, list
-  /// marker), turning it into plain text. Nil when there is none.
-  static func clearLinePrefix(in text: String, cursor: Int) -> Edit? {
+  struct BlockPrefix: Equatable {
+    /// Length of the leading whitespace (UTF-16).
+    var indent = 0
+    /// The markers in the order they appear.
+    var units: [MarkerUnit] = []
+    var headingLevel = 0
+
+    var contentStart: Int { units.last.map { NSMaxRange($0.range) } ?? indent }
+    var hasMarkers: Bool { !units.isEmpty }
+    func unit(_ kind: MarkerKind) -> MarkerUnit? { units.first { $0.kind == kind } }
+    var quote: Bool { unit(.quote) != nil }
+    var toggle: Bool { unit(.toggle) != nil }
+    var callout: Bool { unit(.callout) != nil }
+  }
+
+  /// The block markers at the start of `line` (no line break).
+  static func blockPrefix(of line: String) -> BlockPrefix {
+    let u = Array(line.utf16)
+    func at(_ index: Int) -> UInt16? { index < u.count ? u[index] : nil }
+    func isBlank(_ c: UInt16?) -> Bool { c == 0x20 || c == 0x09 }
+    var prefix = BlockPrefix()
+    var i = 0
+    while isBlank(at(i)) { i += 1 }
+    prefix.indent = i
+    if at(i) == 0x21, at(i + 1) == 0x3E, at(i + 2) == 0x20 {  // "!> "
+      prefix.units = [MarkerUnit(kind: .callout, range: NSRange(location: i, length: 3))]
+      return prefix
+    }
+    if at(i) == 0x7C, at(i + 1) == 0x20 {  // "| "
+      prefix.units.append(MarkerUnit(kind: .quote, range: NSRange(location: i, length: 2)))
+      i += 2
+    }
+    if at(i) == 0x3E, at(i + 1) == 0x20 {  // "> "
+      prefix.units.append(MarkerUnit(kind: .toggle, range: NSRange(location: i, length: 2)))
+      i += 2
+    }
+    var hashes = 0
+    while at(i + hashes) == 0x23 { hashes += 1 }
+    if (1...4).contains(hashes), isBlank(at(i + hashes)) {
+      var end = i + hashes
+      while isBlank(at(end)) { end += 1 }
+      prefix.units.append(MarkerUnit(kind: .heading, range: NSRange(location: i, length: end - i)))
+      prefix.headingLevel = hashes
+    }
+    return prefix
+  }
+
+  /// The canonical marker text for a stack: "| ", "> ", "#… " in order.
+  static func markerText(quote: Bool, toggle: Bool, heading: Int) -> String {
+    (quote ? "| " : "") + (toggle ? "> " : "") + (heading > 0 ? String(repeating: "#", count: heading) + " " : "")
+  }
+
+  /// The line holding `cursor`: its start, the end of its contents, and
+  /// its text without the line break.
+  private static func line(at cursor: Int, in text: String) -> (start: Int, end: Int, text: String) {
     let ns = text as NSString
     var lineStart = 0
     var contentsEnd = 0
-    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
-    let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
-    guard let match = anyPrefix.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else { return nil }
-    let prefix = match.range(at: 2)
+    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: min(cursor, ns.length), length: 0))
+    return (lineStart, contentsEnd, ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart)))
+  }
+
+  // MARK: Toggles
+
+  /// A toggle line ("> ") and its children: the lines right after it
+  /// indented deeper than it is. A line at the same or a shallower indent
+  /// (an empty line included) ends it. A fenced block whose opening fence
+  /// is a child is a child to its closing fence.
+  struct Toggle: Equatable {
+    /// The title line, without its line break.
+    let title: NSRange
+    /// Indent of the title line, in columns (a tab counts four).
+    let indent: Int
+    /// From the first child's start to the start of the line after the
+    /// last child (or the end of the text); empty when it has none.
+    let children: NSRange
+    /// Line starts of the children.
+    let childLines: [Int]
+  }
+
+  private static func columns(_ line: String) -> Int {
+    var count = 0
+    for c in line {
+      if c == " " { count += 1 } else if c == "\t" { count += 4 } else { break }
+    }
+    return count
+  }
+
+  /// Line index ranges of the closed fenced blocks, fence lines included.
+  private static func fenceSpans(_ lines: [Line]) -> [ClosedRange<Int>] {
+    var spans: [ClosedRange<Int>] = []
+    var open: (marker: String, index: Int)? = nil
+    for (index, line) in lines.enumerated() {
+      guard let match = fenceLine.firstMatch(in: line.text, range: NSRange(location: 0, length: (line.text as NSString).length))
+      else { continue }
+      let marker = (line.text as NSString).substring(with: match.range(at: 1))
+      if let current = open {
+        if marker.first == current.marker.first, marker.count >= current.marker.count, match.range(at: 2).length == 0 {
+          spans.append(current.index...index)
+          open = nil
+        }
+      } else {
+        open = (marker, index)
+      }
+    }
+    return spans
+  }
+
+  /// Every toggle in `text`, in order, and how many toggles each child
+  /// line sits inside (keyed by line start; lines outside any are absent).
+  static func toggleLayout(in text: String) -> (toggles: [Toggle], depth: [Int: Int]) {
+    let all = lines(of: text)
+    let spans = fenceSpans(all)
+    var spanAt: [Int: ClosedRange<Int>] = [:]
+    var inFence = Set<Int>()
+    for span in spans {
+      spanAt[span.lowerBound] = span
+      for index in span { inFence.insert(index) }
+    }
+    var toggles: [Toggle] = []
+    var depth: [Int: Int] = [:]
+    for index in all.indices where !inFence.contains(index) {
+      let text = all[index].text
+      guard blockPrefix(of: text).toggle else { continue }
+      let indent = columns(text)
+      var next = index + 1
+      while next < all.count, columns(all[next].text) > indent {
+        next = (spanAt[next]?.upperBound ?? next) + 1
+      }
+      let childIndexes = Array((index + 1)..<max(index + 1, min(next, all.count)))
+      var children = NSRange(location: NSMaxRange(all[index].range), length: 0)
+      if let first = childIndexes.first, let last = childIndexes.last {
+        let start = all[first].range.location
+        let end = last + 1 < all.count ? all[last + 1].range.location : NSMaxRange(all[last].range)
+        children = NSRange(location: start, length: end - start)
+      }
+      let starts = childIndexes.map { all[$0].range.location }
+      for start in starts { depth[start, default: 0] += 1 }
+      toggles.append(Toggle(title: all[index].range, indent: indent, children: children, childLines: starts))
+    }
+    return (toggles, depth)
+  }
+
+  /// True when the line starting at `lineStart` is a toggle's child.
+  private static func isToggleChild(_ text: String, lineStart: Int) -> Bool {
+    (toggleLayout(in: text).depth[lineStart] ?? 0) > 0
+  }
+
+  /// The indent with one level taken off its end: a tab, or up to two spaces.
+  private static func outdented(_ indent: String) -> String {
+    if indent.hasSuffix("\t") { return String(indent.dropLast()) }
+    var result = indent
+    var removed = 0
+    while removed < 2, result.hasSuffix(" ") { result.removeLast(); removed += 1 }
+    return result
+  }
+
+  // MARK: Marker stacking
+
+  /// A space typed right after "|", ">" or "#"…"####" at the content start
+  /// of a line (the very start, or just past its hidden markers) rewrites
+  /// the line's markers in canonical order, consuming what was typed:
+  /// headings replace headings, a toggle adds to a heading and the other
+  /// way round, a quote can take a heading or a toggle but typing "| "
+  /// on a heading or toggle line makes it a plain quote. Called with the
+  /// text before the space, `cursor` where the space goes; the edit ends
+  /// at the cursor. Nil when nothing needs rewriting.
+  static func stackMarkers(in text: String, cursor: Int) -> Edit? {
+    let (lineStart, _, line) = line(at: cursor, in: text)
+    guard !insideFence(text, cursor: lineStart) else { return nil }
+    let u = Array(line.utf16)
     let column = cursor - lineStart
-    let newColumn = column <= NSMaxRange(prefix) ? prefix.location : column - prefix.length
-    return Edit(range: NSRange(location: lineStart + prefix.location, length: prefix.length), replacement: "", cursor: lineStart + newColumn)
+    guard column > 0, column <= u.count else { return nil }
+    enum Typed { case quote, toggle, heading(Int) }
+    var symbolStart = column - 1
+    let typed: Typed
+    switch u[column - 1] {
+    case 0x7C: typed = .quote
+    case 0x3E: typed = .toggle
+    case 0x23:
+      while symbolStart > 0, u[symbolStart - 1] == 0x23 { symbolStart -= 1 }
+      guard column - symbolStart <= 4 else { return nil }
+      typed = .heading(column - symbolStart)
+    default: return nil
+    }
+    let lineNS = line as NSString
+    let original = lineNS.replacingCharacters(in: NSRange(location: symbolStart, length: column - symbolStart), with: "")
+    let prefix = blockPrefix(of: original)
+    guard symbolStart == prefix.contentStart, !prefix.callout else { return nil }
+    var quote = prefix.quote
+    var toggle = prefix.toggle
+    var heading = prefix.headingLevel
+    switch typed {
+    case .heading(let level): heading = level
+    case .toggle: toggle = true
+    case .quote:
+      if !quote {
+        quote = true
+        toggle = false
+        heading = 0
+      }
+    }
+    let replacement = lineNS.substring(to: prefix.indent) + markerText(quote: quote, toggle: toggle, heading: heading)
+    return Edit(
+      range: NSRange(location: lineStart, length: column), replacement: replacement,
+      cursor: lineStart + (replacement as NSString).length)
+  }
+
+  /// Backspace at the content start of a line with markers takes off one
+  /// marker, the innermost (heading, then toggle, then quote; a callout
+  /// on its own), keeping the text. On a toggle's child with no markers
+  /// left it takes off one level of indent. Nil otherwise (plain
+  /// Backspace: join with the line before).
+  static func peelMarker(in text: String, cursor: Int) -> Edit? {
+    let (lineStart, _, line) = line(at: cursor, in: text)
+    guard !insideFence(text, cursor: lineStart) else { return nil }
+    let prefix = blockPrefix(of: line)
+    let column = cursor - lineStart
+    guard prefix.contentStart > 0, column <= prefix.contentStart else { return nil }
+    if let unit = prefix.units.last {
+      return Edit(
+        range: NSRange(location: lineStart + unit.range.location, length: unit.range.length), replacement: "",
+        cursor: lineStart + unit.range.location)
+    }
+    guard parse(line: line) == nil, isToggleChild(text, lineStart: lineStart) else { return nil }
+    let indent = (line as NSString).substring(to: prefix.indent)
+    let shorter = outdented(indent)
+    return Edit(
+      range: NSRange(location: lineStart, length: prefix.indent), replacement: shorter,
+      cursor: lineStart + (shorter as NSString).length)
+  }
+
+  // MARK: Enter on blocks
+
+  /// Enter on a toggle line. An empty title loses its toggle marker. On
+  /// an open toggle the text after the caret moves to a new first child,
+  /// one level deeper (a quoted toggle's child stays quoted); on a
+  /// collapsed one (`collapsed`) it moves to a new sibling toggle after
+  /// the hidden children. A caret at the title's start counts as its end.
+  static func toggleNewline(in text: String, cursor: Int, collapsed: Bool) -> Edit? {
+    let (lineStart, contentsEnd, line) = line(at: cursor, in: text)
+    guard !insideFence(text, cursor: lineStart) else { return nil }
+    let prefix = blockPrefix(of: line)
+    guard let toggleUnit = prefix.unit(.toggle) else { return nil }
+    let lineNS = line as NSString
+    let content = lineNS.substring(from: prefix.contentStart)
+    if content.trimmingCharacters(in: .whitespaces).isEmpty {
+      return Edit(
+        range: NSRange(location: lineStart + toggleUnit.range.location, length: toggleUnit.range.length), replacement: "",
+        cursor: lineStart + prefix.contentStart - toggleUnit.range.length)
+    }
+    let eol = lineBreak(in: text)
+    let ns = text as NSString
+    let split = cursor - lineStart <= prefix.contentStart ? contentsEnd : cursor
+    let tail = ns.substring(with: NSRange(location: split, length: contentsEnd - split))
+      .replacingOccurrences(of: #"^[ \t]+"#, with: "", options: .regularExpression)
+    let indent = lineNS.substring(to: prefix.indent)
+    if !collapsed {
+      let inserted = eol + indent + "  " + (prefix.quote ? "| " : "")
+      return Edit(
+        range: NSRange(location: split, length: contentsEnd - split), replacement: inserted + tail,
+        cursor: split + (inserted as NSString).length)
+    }
+    var lastEnd = contentsEnd
+    if let children = toggleLayout(in: text).toggles.first(where: { $0.title.location == lineStart })?.children,
+      children.length > 0
+    {
+      // The end of the last child's text, before its line break.
+      let childText = ns.substring(with: children)
+      lastEnd = NSMaxRange(children) - (trailingBreak(childText) as NSString).length
+    }
+    let hidden = ns.substring(with: NSRange(location: contentsEnd, length: lastEnd - contentsEnd))
+    let inserted = hidden + eol + indent + markerText(quote: prefix.quote, toggle: true, heading: prefix.headingLevel)
+    return Edit(
+      range: NSRange(location: split, length: lastEnd - split), replacement: inserted + tail,
+      cursor: split + (inserted as NSString).length)
+  }
+
+  /// Enter on a quote ("| ") or callout ("!> ") line: the block continues
+  /// on the next line, or its markers go when the line is empty. Nil when
+  /// the cursor is not in one. (Toggle lines go to toggleNewline first.)
+  static func quoteNewline(in text: String, cursor: Int) -> Edit? {
+    let (lineStart, contentsEnd, line) = line(at: cursor, in: text)
+    guard !insideFence(text, cursor: lineStart) else { return nil }
+    let prefix = blockPrefix(of: line)
+    guard prefix.quote || prefix.callout else { return nil }
+    let lineNS = line as NSString
+    if lineNS.substring(from: prefix.contentStart).trimmingCharacters(in: .whitespaces).isEmpty {
+      return Edit(
+        range: NSRange(location: lineStart + prefix.indent, length: contentsEnd - lineStart - prefix.indent),
+        replacement: "", cursor: lineStart + prefix.indent)
+    }
+    let at = max(cursor, lineStart + prefix.contentStart)
+    let inserted = lineBreak(in: text) + lineNS.substring(to: prefix.indent) + (prefix.callout ? "!> " : "| ")
+    return Edit(range: NSRange(location: at, length: 0), replacement: inserted, cursor: at + (inserted as NSString).length)
+  }
+
+  /// Enter on a toggle's child (not a list item, quote or toggle): the
+  /// next line is a child at the same indent; an empty child steps out
+  /// one level instead. Nil when the line is not a child.
+  static func childNewline(in text: String, cursor: Int) -> Edit? {
+    let (lineStart, contentsEnd, line) = line(at: cursor, in: text)
+    guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
+    let prefix = blockPrefix(of: line)
+    guard !prefix.quote, !prefix.toggle, !prefix.callout, prefix.indent > 0,
+      isToggleChild(text, lineStart: lineStart)
+    else { return nil }
+    let lineNS = line as NSString
+    let indent = lineNS.substring(to: prefix.indent)
+    if lineNS.substring(from: prefix.contentStart).trimmingCharacters(in: .whitespaces).isEmpty {
+      let shorter = outdented(indent)
+      return Edit(
+        range: NSRange(location: lineStart, length: contentsEnd - lineStart), replacement: shorter,
+        cursor: lineStart + (shorter as NSString).length)
+    }
+    let at = max(cursor, lineStart + prefix.contentStart)
+    let inserted = lineBreak(in: text) + indent
+    let tail = (text as NSString).substring(with: NSRange(location: at, length: contentsEnd - at))
+    return Edit(
+      range: NSRange(location: at, length: contentsEnd - at), replacement: inserted + tail,
+      cursor: at + (inserted as NSString).length)
+  }
+
+  /// Moves the text of the line starting at `lineStart` onto the end of
+  /// an earlier line (`target`, the end of that line's text), dropping
+  /// the line break before it. Backspace at the start of the line after
+  /// a collapsed toggle, and Delete at the end of its title, join the
+  /// title and that line this way rather than editing hidden children.
+  /// Only the line's text moves: its indent and markers (block markers or
+  /// a list marker) are dropped, so none lands mid-line as raw text.
+  static func joinLine(in text: String, lineStart: Int, onto target: Int) -> Edit? {
+    let ns = text as NSString
+    guard target < lineStart, lineStart <= ns.length else { return nil }
+    let whole = line(at: lineStart, in: text).text
+    let wholeNS = whole as NSString
+    let lineLength = wholeNS.length
+    var textStart = blockPrefix(of: whole).contentStart
+    if textStart == blockPrefix(of: whole).indent,
+      let list = listPrefix.firstMatch(in: whole, range: NSRange(location: 0, length: lineLength))
+    {
+      textStart = NSMaxRange(list.range)
+    }
+    let moved = wholeNS.substring(from: textStart)
+    let between = ns.substring(with: NSRange(location: target, length: lineStart - target))
+    let kept = (between as NSString).substring(to: (between as NSString).length - (trailingBreak(between) as NSString).length)
+    return Edit(
+      range: NSRange(location: target, length: lineStart + lineLength - target),
+      replacement: moved + kept, cursor: target)
+  }
+
+  // MARK: Deleting a range
+
+  /// The range a deletion of `range` really removes, so that no marker
+  /// is left half there or stranded mid-line as raw text: an end inside
+  /// a line's markers grows to take that marker whole, and when the
+  /// deletion joins two lines the markers left at the start of the second
+  /// go too. A range reaching into a collapsed toggle's children
+  /// (`folded`) takes all of them.
+  static func deletionRange(in text: String, range: NSRange, folded: [NSRange] = []) -> NSRange {
+    guard range.length > 0 else { return range }
+    let ns = text as NSString
+    var start = range.location
+    var end = NSMaxRange(range)
+    for fold in folded {
+      if start >= fold.location, start < NSMaxRange(fold) { start = fold.location }
+      if end > fold.location, end < NSMaxRange(fold) { end = NSMaxRange(fold) }
+    }
+    let depth = toggleLayout(in: text).depth
+    // Where a deletion may start or end inside a line's hidden prefix,
+    // and where its text begins; nil for a line with nothing hidden.
+    func boundaries(at location: Int) -> (lineStart: Int, stops: [Int], contentStart: Int)? {
+      let (lineStart, _, line) = line(at: location, in: text)
+      guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
+      let prefix = blockPrefix(of: line)
+      let child = (depth[lineStart] ?? 0) > 0
+      guard prefix.hasMarkers || (child && prefix.indent > 0) else { return nil }
+      return (lineStart, [0, prefix.indent] + prefix.units.map { NSMaxRange($0.range) }, prefix.contentStart)
+    }
+    if let b = boundaries(at: start), start - b.lineStart < b.contentStart {
+      let column = start - b.lineStart
+      start = b.lineStart + (b.stops.filter { $0 <= column }.max() ?? 0)
+    }
+    if let b = boundaries(at: end), end - b.lineStart < b.contentStart {
+      let column = end - b.lineStart
+      end = b.lineStart + (b.stops.filter { $0 >= column }.min() ?? b.contentStart)
+      let startLine = ns.lineRange(for: NSRange(location: start, length: 0)).location
+      if startLine != b.lineStart, start != startLine {
+        end = b.lineStart + b.contentStart
+      }
+    }
+    return NSRange(location: start, length: max(0, end - start))
+  }
+
+  /// Removes the current line's block prefix (its whole marker stack, or
+  /// its list marker), turning it into plain text. Nil when there is none.
+  static func clearLinePrefix(in text: String, cursor: Int) -> Edit? {
+    let (lineStart, _, line) = line(at: cursor, in: text)
+    let prefix = blockPrefix(of: line)
+    let removed: NSRange
+    if prefix.hasMarkers {
+      removed = NSRange(location: prefix.indent, length: prefix.contentStart - prefix.indent)
+    } else if let match = listPrefix.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+      removed = match.range(at: 2)
+    } else {
+      return nil
+    }
+    let column = cursor - lineStart
+    let newColumn = column <= NSMaxRange(removed) ? removed.location : column - removed.length
+    return Edit(range: NSRange(location: lineStart + removed.location, length: removed.length), replacement: "", cursor: lineStart + newColumn)
   }
 
   /// Enter on a list item: continues the list, or ends it when the item
@@ -426,13 +818,15 @@ enum ListEditing {
   }
 
   /// The rules a typed space sets off ("[] " becomes a task, "``` " opens
-  /// a code block), checked after the space is in the text so the first
+  /// a code block, "> " on a heading stacks the markers), checked after the space is in the text so the first
   /// undo steps back to exactly what was typed. The edit covers the space.
   static func afterSpace(in text: String, cursor: Int) -> Edit? {
     let ns = text as NSString
     guard cursor > 0, cursor <= ns.length, ns.character(at: cursor - 1) == 0x20 else { return nil }
     let before = ns.replacingCharacters(in: NSRange(location: cursor - 1, length: 1), with: "")
-    guard let edit = taskShortcut(in: before, cursor: cursor - 1) ?? codeFence(in: before, cursor: cursor - 1)
+    guard
+      let edit = taskShortcut(in: before, cursor: cursor - 1) ?? codeFence(in: before, cursor: cursor - 1)
+        ?? stackMarkers(in: before, cursor: cursor - 1)
     else { return nil }
     // Both rules end their range at the cursor, which is where the space sits.
     let range = NSRange(location: edit.range.location, length: edit.range.length + 1)
@@ -701,13 +1095,14 @@ enum ListEditing {
   }
 
   enum LinePrefix: Equatable {
-    case heading(Int), quote, callout, bullet, ordered, task
+    case heading(Int), quote, toggle, callout, bullet, ordered, task
 
     var text: String {
       switch self {
       case .heading(let level): return String(repeating: "#", count: level) + " "
-      case .quote: return "> "
-      case .callout: return ">> "
+      case .quote: return "| "
+      case .toggle: return "> "
+      case .callout: return "!> "
       case .bullet: return "- "
       case .ordered: return "1. "
       case .task: return "- [ ] "
@@ -715,37 +1110,49 @@ enum ListEditing {
     }
   }
 
-  private static let anyPrefix = try! NSRegularExpression(
-    pattern: #"^([ \t]*)(#{1,6} |>> |> |[-*+] \[[ xX]\] |[-*+] |\d+\. )"#)
+  private static let listPrefix = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+] \[[ xX]\] |[-*+] |\d+\. )"#)
 
   /// Sets or clears a block prefix on the current line (⌥⌘1/2/3, ⇧⌘B,
-  /// ⇧⌘7/8/9). Choosing the prefix the line already has removes it.
+  /// ⇧⌘7/8/9, the slash menu). Choosing the prefix the line already has
+  /// removes it. Headings and toggles stack on each other and inside a
+  /// quote, as typing them does; a quote replaces a heading or toggle; a
+  /// callout or list marker replaces the whole stack.
   static func setLinePrefix(in text: String, cursor: Int, prefix: LinePrefix) -> Edit {
-    let ns = text as NSString
-    var lineStart = 0
-    var contentsEnd = 0
-    ns.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: cursor, length: 0))
-    let line = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
+    let (lineStart, contentsEnd, line) = line(at: cursor, in: text)
     let lineNS = line as NSString
-    var indent = ""
-    var rest = line
+    let block = blockPrefix(of: line)
+    let indent = lineNS.substring(to: block.indent)
     var existing = ""
-    if let match = anyPrefix.firstMatch(in: line, range: NSRange(location: 0, length: lineNS.length)) {
-      indent = lineNS.substring(with: match.range(at: 1))
+    if block.hasMarkers {
+      existing = lineNS.substring(with: NSRange(location: block.indent, length: block.contentStart - block.indent))
+    } else if let match = listPrefix.firstMatch(in: line, range: NSRange(location: 0, length: lineNS.length)) {
       existing = lineNS.substring(with: match.range(at: 2))
-      rest = lineNS.substring(from: match.range.location + match.range.length)
     }
-    let same: Bool
+    let rest = lineNS.substring(from: block.indent + (existing as NSString).length)
+    let stack = block.hasMarkers && !block.callout
+    let markers: String
     switch prefix {
-    case .ordered: same = existing.range(of: #"^\d+\. $"#, options: .regularExpression) != nil
-    case .bullet: same = existing.range(of: #"^[-*+] $"#, options: .regularExpression) != nil
-    case .task: same = existing.range(of: #"^[-*+] \[[ xX]\] $"#, options: .regularExpression) != nil
-    default: same = existing == prefix.text
+    case .heading(let level):
+      markers = stack
+        ? markerText(quote: block.quote, toggle: block.toggle, heading: block.headingLevel == level ? 0 : level)
+        : prefix.text
+    case .toggle:
+      markers = stack ? markerText(quote: block.quote, toggle: !block.toggle, heading: block.headingLevel) : prefix.text
+    case .quote:
+      markers = block.quote ? markerText(quote: false, toggle: block.toggle, heading: block.headingLevel) : prefix.text
+    case .callout:
+      markers = block.callout ? "" : prefix.text
+    case .ordered:
+      markers = existing.range(of: #"^\d+\. $"#, options: .regularExpression) != nil ? "" : prefix.text
+    case .bullet:
+      markers = existing.range(of: #"^[-*+] $"#, options: .regularExpression) != nil ? "" : prefix.text
+    case .task:
+      markers = existing.range(of: #"^[-*+] \[[ xX]\] $"#, options: .regularExpression) != nil ? "" : prefix.text
     }
-    let replacement = same ? indent + rest : indent + prefix.text + rest
+    let replacement = indent + markers + rest
     let column = cursor - lineStart
     let oldPrefix = (indent + existing as NSString).length
-    let newPrefix = same ? (indent as NSString).length : (indent + prefix.text as NSString).length
+    let newPrefix = (indent + markers as NSString).length
     let newColumn = column <= oldPrefix ? newPrefix : column - oldPrefix + newPrefix
     return Edit(range: NSRange(location: lineStart, length: contentsEnd - lineStart), replacement: replacement, cursor: lineStart + newColumn)
   }

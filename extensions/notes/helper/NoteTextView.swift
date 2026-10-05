@@ -27,6 +27,9 @@ final class NoteTextView: NSTextView {
   /// Set while a note loads: the caret may still be redirected off a fence,
   /// but nothing is edited to make room for it.
   var suppressFenceEdits = false
+  /// Set while `apply` places the caret an editing rule chose, so the
+  /// caret rules (hidden runs, line markers, folds) leave it alone.
+  private var suppressCaretRules = false
 
   private func codeBlock(containing location: Int) -> Markdown.CodeBlock? {
     Markdown.codeBlocks(in: string).first { NSLocationInRange(location, $0.range) || location == NSMaxRange($0.range) && $0.closingLine != nil }
@@ -198,12 +201,12 @@ final class NoteTextView: NSTextView {
     // Every way out of here (including a caret relocated off a marker or
     // fence line) tells the slash menu where the caret ended up.
     defer { if slashMenuIsOpen, !stillSelecting { syncSlashMenu(caretMoved: true) } }
-    if !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0,
-      let run = hiddenRun(strictlyContaining: range.location) {
-      let forward = range.location >= lastCaret
-      let target = forward ? NSMaxRange(run) : run.location
-      super.setSelectedRanges([NSValue(range: NSRange(location: target, length: 0))], affinity: affinity, stillSelecting: stillSelecting)
-      return
+    if !suppressCaretRules, !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0 {
+      let target = caretTarget(range.location, forward: range.location >= lastCaret)
+      if target != range.location {
+        super.setSelectedRanges([NSValue(range: NSRange(location: target, length: 0))], affinity: affinity, stillSelecting: stillSelecting)
+        return
+      }
     }
     if !suppressFenceRelocation, !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0,
       let hit = fenceLine(at: range.location) {
@@ -229,6 +232,186 @@ final class NoteTextView: NSTextView {
       return
     }
     super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+  }
+
+  /// Where a caret put at `location` really goes: never inside a hidden
+  /// run (it snaps to the edge it was moving towards), never before a
+  /// line's hidden block markers (it goes to their end, where the text
+  /// starts, unless it was stepping left out of there, when it goes on to
+  /// the line before), and never in a collapsed toggle's children (it
+  /// goes past them, or back to the end of the title).
+  private func caretTarget(_ location: Int, forward: Bool) -> Int {
+    var target = location
+    for _ in 0..<4 {
+      let before = target
+      if let run = hiddenRun(strictlyContaining: target) {
+        target = forward ? NSMaxRange(run) : run.location
+      }
+      if let run = lineStartRun(at: target) {
+        target = !forward && lastCaret == NSMaxRange(run) && target > 0 ? target - 1 : NSMaxRange(run)
+      }
+      if let fold = foldedRange(containingCaret: target) {
+        let length = (string as NSString).length
+        let after = NSMaxRange(fold)
+        let visibleAfter = after < length || (length > 0 && [0x0A, 0x0D].contains((string as NSString).character(at: length - 1)))
+        target = forward && visibleAfter ? after : max(0, fold.location - 1)
+      }
+      if target == before { break }
+    }
+    return target
+  }
+
+  /// The hidden block-marker run (indent, "| ", "> ", "# "...) that starts
+  /// the line beginning at `location`, if any.
+  private func lineStartRun(at location: Int) -> NSRange? {
+    let ns = string as NSString
+    guard location < ns.length, ns.lineRange(for: NSRange(location: location, length: 0)).location == location,
+      let run = hiddenRun(startingAt: location), run.role == .line
+    else { return nil }
+    return run.range
+  }
+
+  /// The collapsed children a caret at `location` would sit in, if any.
+  private func foldedRange(containingCaret location: Int) -> NSRange? {
+    guard let storage = textStorage else { return nil }
+    let ns = string as NSString
+    var index = location
+    if location == ns.length {
+      // The very end: hidden when the last line is a folded child.
+      guard location > 0, ![0x0A, 0x0D].contains(ns.character(at: location - 1)) else { return nil }
+      index = location - 1
+    }
+    guard index >= 0, index < storage.length else { return nil }
+    var fold = NSRange(location: NSNotFound, length: 0)
+    guard storage.attribute(Markdown.folded, at: index, longestEffectiveRange: &fold, in: NSRange(location: 0, length: storage.length)) != nil
+    else { return nil }
+    return fold
+  }
+
+  /// Every run of collapsed children, in order.
+  private var foldedRanges: [NSRange] {
+    guard let storage = textStorage, storage.length > 0 else { return [] }
+    var ranges: [NSRange] = []
+    storage.enumerateAttribute(Markdown.folded, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+      if value != nil { ranges.append(range) }
+    }
+    return ranges
+  }
+
+  /// The range deleting `selection` should remove: whole marker pairs,
+  /// whole block markers, whole collapsed children (ListEditing.deletionRange).
+  private func deletionRange(for selection: NSRange) -> NSRange {
+    ListEditing.deletionRange(in: string, range: selectionCoveringPairs(selection), folded: foldedRanges)
+  }
+
+  // MARK: Toggles
+
+  /// Runs the note's restyle (PanelController's, which also keeps the
+  /// caret and the code block controls in step); Markdown.apply without one.
+  var onRestyle: (() -> Void)?
+
+  /// True when the toggle on the line holding `location` is collapsed.
+  func isCollapsedToggle(at location: Int) -> Bool {
+    guard let storage = textStorage, storage.length > 0 else { return false }
+    let line = (string as NSString).lineRange(for: NSRange(location: min(location, storage.length), length: 0))
+    var found = false
+    storage.enumerateAttribute(Markdown.toggleCollapsed, in: line) { value, _, stop in
+      if value != nil {
+        found = true
+        stop.pointee = true
+      }
+    }
+    return found
+  }
+
+  /// Text set wholesale (loading a note) takes the old first character's
+  /// attributes, a collapsed ">" included; a new text starts with every
+  /// toggle open.
+  override var string: String {
+    get { super.string }
+    set {
+      super.string = newValue
+      if let storage = textStorage, storage.length > 0 {
+        storage.removeAttribute(Markdown.toggleCollapsed, range: NSRange(location: 0, length: storage.length))
+      }
+    }
+  }
+
+  /// Collapses or expands the toggle whose ">" is at `marker`. Nothing in
+  /// the file changes: the state is an attribute on the ">" (kept while
+  /// the window shows the note) and the children are only laid out away.
+  func toggleCollapse(atMarker marker: Int) {
+    guard let storage = textStorage, marker < storage.length,
+      storage.attribute(Markdown.toggleChevron, at: marker, effectiveRange: nil) != nil
+    else { return }
+    let range = NSRange(location: marker, length: 1)
+    if storage.attribute(Markdown.toggleCollapsed, at: marker, effectiveRange: nil) != nil {
+      storage.removeAttribute(Markdown.toggleCollapsed, range: range)
+    } else {
+      storage.addAttribute(Markdown.toggleCollapsed, value: true, range: range)
+    }
+    if let onRestyle { onRestyle() } else { Markdown.apply(to: storage) }
+    // A caret inside children that just folded goes to the end of the title.
+    let caret = selectedRange()
+    if caret.length == 0, let fold = foldedRange(containingCaret: caret.location) {
+      setSelectedRange(NSRange(location: max(0, fold.location - 1), length: 0))
+    } else if caret.length > 0, foldedRanges.contains(where: { NSIntersectionRange($0, caret).length > 0 }) {
+      let title = (string as NSString).lineRange(for: NSRange(location: marker, length: 0))
+      var end = 0
+      (string as NSString).getLineStart(nil, end: nil, contentsEnd: &end, for: title)
+      setSelectedRange(NSRange(location: end, length: 0))
+    }
+    needsDisplay = true
+  }
+
+  /// A key for each collapsed toggle, to collapse it again when the note
+  /// is shown again: its title line's text and which toggle with that
+  /// text it is (first, second...). Lines added or removed elsewhere, or
+  /// toggles moved around, do not move a fold to another toggle; a toggle
+  /// whose title changed loses its fold.
+  func collapsedToggleKeys() -> Set<String> {
+    guard let storage = textStorage, storage.length > 0 else { return [] }
+    var keys = Set<String>()
+    for (key, marker) in toggleKeys() where storage.attribute(Markdown.toggleCollapsed, at: marker, effectiveRange: nil) != nil {
+      keys.insert(key)
+    }
+    return keys
+  }
+
+  /// Collapses the toggles these keys (from collapsedToggleKeys) name;
+  /// keys that match no toggle are dropped. Restyle after.
+  func restoreCollapsedToggles(_ keys: Set<String>) {
+    guard let storage = textStorage, storage.length > 0 else { return }
+    // Text set wholesale takes the old first character's attributes, a
+    // collapsed ">" included; start from nothing collapsed.
+    storage.removeAttribute(Markdown.toggleCollapsed, range: NSRange(location: 0, length: storage.length))
+    for (key, marker) in toggleKeys() where keys.contains(key) {
+      storage.addAttribute(Markdown.toggleCollapsed, value: true, range: NSRange(location: marker, length: 1))
+    }
+  }
+
+  /// Every toggle's key and the location of its ">".
+  private func toggleKeys() -> [(String, Int)] {
+    let ns = string as NSString
+    var seen: [String: Int] = [:]
+    return ListEditing.toggleLayout(in: string).toggles.compactMap { toggle in
+      let title = ns.substring(with: toggle.title)
+      guard let unit = ListEditing.blockPrefix(of: title).unit(.toggle) else { return nil }
+      let occurrence = seen[title, default: 0]
+      seen[title] = occurrence + 1
+      return ("\(occurrence)\u{1}\(title)", toggle.title.location + unit.range.location)
+    }
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    if event.clickCount == 1, event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
+      let marker = (layoutManager as? TaskBoxLayoutManager)?.toggleMarker(at: point, origin: textContainerOrigin)
+    {
+      toggleCollapse(atMarker: marker)
+      return
+    }
+    super.mouseDown(with: event)
   }
 
   /// End of the block's last body line (before its newline).
@@ -308,8 +491,12 @@ final class NoteTextView: NSTextView {
       return  // the newline before the closing fence belongs to the block
     }
     if selection.length > 0 {
-      setSelectedRange(selectionCoveringPairs(selection))
+      if !hasMarkedText() { setSelectedRange(deletionRange(for: selection)) }
       super.deleteForward(sender)
+      return
+    }
+    if !hasMarkedText(), let edit = forwardJoin(at: selection.location) {
+      apply(edit)
       return
     }
     if let run = hiddenRun(startingAt: selection.location) {
@@ -326,6 +513,95 @@ final class NoteTextView: NSTextView {
       return
     }
     super.deleteForward(sender)
+  }
+
+  /// Delete at the end of a line, when plain deletion of the line break
+  /// would go wrong: at the end of a collapsed toggle's title it joins the
+  /// line after the hidden children (or does nothing at the end of the
+  /// note); before a line with hidden markers the markers go with the
+  /// break, so they never land mid-line as raw text. Nil otherwise.
+  private func forwardJoin(at location: Int) -> ListEditing.Edit? {
+    let ns = string as NSString
+    guard location < ns.length, [0x0A, 0x0D].contains(ns.character(at: location)) else { return nil }
+    let lineBreak = ns.rangeOfComposedCharacterSequence(at: location)
+    if isCollapsedToggle(at: location), let fold = foldedRange(containingCaret: NSMaxRange(lineBreak)),
+      fold.location == NSMaxRange(lineBreak)
+    {
+      let after = NSMaxRange(fold)
+      guard after < ns.length else { return ListEditing.Edit(range: NSRange(location: location, length: 0), replacement: "", cursor: location) }
+      return ListEditing.joinLine(in: string, lineStart: after, onto: location)
+    }
+    let range = deletionRange(for: lineBreak)
+    guard range != lineBreak else { return nil }
+    return ListEditing.Edit(range: range, replacement: "", cursor: location)
+  }
+
+  /// Backspace at the start of the line after a collapsed toggle joins
+  /// that line onto the title, not onto the hidden last child.
+  private func backwardJoin(at location: Int) -> ListEditing.Edit? {
+    let ns = string as NSString
+    guard location > 0, location <= ns.length, [0x0A, 0x0D].contains(ns.character(at: location - 1)),
+      let fold = foldedRange(containingCaret: location - 1), NSMaxRange(fold) == location, fold.location > 0
+    else { return nil }
+    var titleEnd = 0
+    ns.getLineStart(nil, end: nil, contentsEnd: &titleEnd, for: NSRange(location: fold.location - 1, length: 0))
+    return ListEditing.joinLine(in: string, lineStart: location, onto: titleEnd)
+  }
+
+  /// A word or line deletion: from the caret to where `extend` takes the
+  /// selection's far end, keeping markers whole. With a selection, marked
+  /// text, or nothing that way, `plain` runs instead.
+  private func deleteExtended(extend: () -> Void, plain: () -> Void) {
+    let selection = selectedRange()
+    guard selection.length == 0, !hasMarkedText() else {
+      plain()
+      return
+    }
+    extend()
+    let extended = selectedRange()
+    guard extended.length > 0 else {
+      setSelectedRange(selection)
+      plain()
+      return
+    }
+    let range = deletionRange(for: extended)
+    apply(ListEditing.Edit(range: range, replacement: "", cursor: range.location))
+  }
+
+  override func deleteWordBackward(_ sender: Any?) {
+    deleteExtended(extend: { super.moveWordBackwardAndModifySelection(sender) }, plain: { deleteBackward(sender) })
+  }
+
+  override func deleteWordForward(_ sender: Any?) {
+    deleteExtended(extend: { super.moveWordForwardAndModifySelection(sender) }, plain: { deleteForward(sender) })
+  }
+
+  override func deleteToBeginningOfLine(_ sender: Any?) {
+    deleteExtended(extend: { super.moveToBeginningOfLineAndModifySelection(sender) }, plain: { deleteBackward(sender) })
+  }
+
+  override func deleteToEndOfLine(_ sender: Any?) {
+    deleteExtended(extend: { super.moveToEndOfLineAndModifySelection(sender) }, plain: { deleteForward(sender) })
+  }
+
+  override func deleteToBeginningOfParagraph(_ sender: Any?) {
+    deleteExtended(extend: { super.moveToBeginningOfParagraphAndModifySelection(sender) }, plain: { deleteBackward(sender) })
+  }
+
+  override func deleteToEndOfParagraph(_ sender: Any?) {
+    deleteExtended(extend: { super.moveToEndOfParagraphAndModifySelection(sender) }, plain: { deleteForward(sender) })
+  }
+
+  override func cut(_ sender: Any?) {
+    let selection = selectedRange()
+    if selection.length > 0, !hasMarkedText() { setSelectedRange(deletionRange(for: selection)) }
+    super.cut(sender)
+  }
+
+  override func delete(_ sender: Any?) {
+    let selection = selectedRange()
+    if selection.length > 0, !hasMarkedText() { setSelectedRange(deletionRange(for: selection)) }
+    super.delete(sender)
   }
 
   /// Backspace at the start of an empty code block removes the block.
@@ -725,8 +1001,10 @@ final class NoteTextView: NSTextView {
     if selection.length == 0, !hasMarkedText() {
       let text = string
       let edit = ListEditing.codeFence(in: text, cursor: selection.location)
+        ?? ListEditing.toggleNewline(in: text, cursor: selection.location, collapsed: isCollapsedToggle(at: selection.location))
         ?? ListEditing.quoteNewline(in: text, cursor: selection.location)
         ?? ListEditing.newline(in: text, cursor: selection.location)
+        ?? ListEditing.childNewline(in: text, cursor: selection.location)
       if apply(edit) { return }
     }
     super.insertNewline(sender)
@@ -776,6 +1054,9 @@ final class NoteTextView: NSTextView {
         return  // keep the opening fence; the block is one component
       }
       if apply(ListEditing.backspace(in: string, cursor: selection.location)) { return }
+      // Block markers come off one at a time, innermost first.
+      if apply(ListEditing.peelMarker(in: string, cursor: selection.location)) { return }
+      if apply(backwardJoin(at: selection.location)) { return }
       // Deleting the only character of a pair from inside it (`k` in
       // `` `k` ``) takes the markers too, as deleting from after it does.
       if selection.location > 0, hiddenRun(endingAt: selection.location - 1)?.role == .open,
@@ -813,7 +1094,7 @@ final class NoteTextView: NSTextView {
         return
       }
     } else if selection.length > 0, !hasMarkedText() {
-      setSelectedRange(selectionCoveringPairs(selection))
+      setSelectedRange(deletionRange(for: selection))
     }
     super.deleteBackward(sender)
   }
@@ -824,7 +1105,7 @@ final class NoteTextView: NSTextView {
   override func insertText(_ string: Any, replacementRange: NSRange) {
     // Typing over a selection: the selection takes whole marker pairs with it.
     if replacementRange.location == NSNotFound, selectedRange().length > 0, !hasMarkedText() {
-      setSelectedRange(selectionCoveringPairs(selectedRange()))
+      setSelectedRange(deletionRange(for: selectedRange()))
     }
     let typed = (string as? String) ?? (string as? NSAttributedString)?.string
     // A "/" at a line start or after a space opens the block menu. It is
@@ -864,6 +1145,7 @@ final class NoteTextView: NSTextView {
         return
       }
     }
+    if selection.length > 0, !hasMarkedText() { setSelectedRange(deletionRange(for: selection)) }
     super.paste(sender)
   }
 
@@ -905,11 +1187,19 @@ final class NoteTextView: NSTextView {
     breakUndoCoalescing()
     guard shouldChangeText(in: edit.range, replacementString: edit.replacement) else { return true }
     storage.replaceCharacters(in: edit.range, with: edit.replacement)
-    // Select before didChangeText so the restyle it triggers keeps this caret.
+    // Select before didChangeText so the restyle it triggers keeps this
+    // caret. The rule placed it; the caret rules (which read the styling,
+    // stale until the restyle) must not move it.
+    suppressCaretRules = true
     setSelectedRange(selection)
+    suppressCaretRules = false
     didChangeText()
     breakUndoCoalescing()
-    if selectedRange() != selection { setSelectedRange(selection) }
+    if selectedRange() != selection {
+      suppressCaretRules = true
+      setSelectedRange(selection)
+      suppressCaretRules = false
+    }
     scrollRangeToVisible(selection)
     return true
   }

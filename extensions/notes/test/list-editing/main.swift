@@ -320,7 +320,7 @@ do {
 }
 do {
   let (text, cursor) = applied("x", ListEditing.setLinePrefix(in: "x", cursor: 1, prefix: .quote))!
-  check("quote prefix and cursor", text == "> x" && cursor == 3, "\(text) \(cursor)")
+  check("quote prefix and cursor", text == "| x" && cursor == 3, "\(text) \(cursor)")
 }
 do {
   let edit = ListEditing.toggleCodeBlock(in: "a\nb\nc", selection: NSRange(location: 2, length: 1))
@@ -466,24 +466,28 @@ do {
 // Quotes: Enter continues, Enter on an empty quote ends it
 
 do {
-  let (text, cursor) = applied("> one", ListEditing.quoteNewline(in: "> one", cursor: 5))!
-  check("Enter on a quote line continues the quote", text == "> one\n> " && cursor == 8, "\(text.debugDescription) \(cursor)")
-  let (mid, midCursor) = applied("> one two", ListEditing.quoteNewline(in: "> one two", cursor: 5))!
-  check("Enter mid-quote carries the rest to the next quote line", mid == "> one\n>  two" && midCursor == 8, mid.debugDescription)
-  let (ended, endCursor) = applied("> ", ListEditing.quoteNewline(in: "> ", cursor: 2))!
+  let (text, cursor) = applied("| one", ListEditing.quoteNewline(in: "| one", cursor: 5))!
+  check("Enter on a quote line continues the quote", text == "| one\n| " && cursor == 8, "\(text.debugDescription) \(cursor)")
+  let (mid, midCursor) = applied("| one two", ListEditing.quoteNewline(in: "| one two", cursor: 5))!
+  check("Enter mid-quote carries the rest to the next quote line", mid == "| one\n|  two" && midCursor == 8, mid.debugDescription)
+  let (ended, endCursor) = applied("| ", ListEditing.quoteNewline(in: "| ", cursor: 2))!
   check("Enter on an empty quote ends it", ended == "" && endCursor == 0, ended.debugDescription)
-  let (callout, calloutCursor) = applied(">> box", ListEditing.quoteNewline(in: ">> box", cursor: 6))!
-  check("Enter on a callout line continues the callout", callout == ">> box\n>> " && calloutCursor == 10, callout.debugDescription)
-  let (endedCallout, _) = applied(">> ", ListEditing.quoteNewline(in: ">> ", cursor: 3))!
+  let (heading, _) = applied("| # Big", ListEditing.quoteNewline(in: "| # Big", cursor: 7))!
+  check("Enter on a quote heading continues as a plain quote line", heading == "| # Big\n| ", heading.debugDescription)
+  let (callout, calloutCursor) = applied("!> box", ListEditing.quoteNewline(in: "!> box", cursor: 6))!
+  check("Enter on a callout line continues the callout", callout == "!> box\n!> " && calloutCursor == 10, callout.debugDescription)
+  let (endedCallout, _) = applied("!> ", ListEditing.quoteNewline(in: "!> ", cursor: 3))!
   check("Enter on an empty callout ends it", endedCallout == "", endedCallout.debugDescription)
   let (asCallout, _) = applied("text", ListEditing.setLinePrefix(in: "text", cursor: 4, prefix: .callout))!
-  check("setLinePrefix makes a callout", asCallout == ">> text", asCallout)
-  let (fromQuote, _) = applied("> q", ListEditing.setLinePrefix(in: "> q", cursor: 3, prefix: .callout))!
-  check("a quote becomes a callout, not a nested quote", fromQuote == ">> q", fromQuote)
-  let (cleared, _) = applied(">> q", ListEditing.clearLinePrefix(in: ">> q", cursor: 4))!
+  check("setLinePrefix makes a callout", asCallout == "!> text", asCallout)
+  let (fromQuote, _) = applied("| q", ListEditing.setLinePrefix(in: "| q", cursor: 3, prefix: .callout))!
+  check("a quote becomes a callout, not a nested quote", fromQuote == "!> q", fromQuote)
+  let (cleared, _) = applied("!> q", ListEditing.clearLinePrefix(in: "!> q", cursor: 4))!
   check("clearLinePrefix drops a callout marker whole", cleared == "q", cleared)
   check("Enter off a quote line is not a quote newline", ListEditing.quoteNewline(in: "plain", cursor: 5) == nil)
-  check("Enter inside a fence is not a quote newline", ListEditing.quoteNewline(in: "```\n> x\n```", cursor: 7) == nil)
+  check("Enter inside a fence is not a quote newline", ListEditing.quoteNewline(in: "```\n| x\n```", cursor: 7) == nil)
+  check("> is a toggle now, not a quote", ListEditing.quoteNewline(in: "> one", cursor: 5) == nil)
+  check(">> is no longer a callout", ListEditing.quoteNewline(in: ">> one", cursor: 6) == nil)
 }
 
 // Plain text: the block prefix goes
@@ -494,8 +498,197 @@ do {
   let (task, taskCursor) = applied("  - [ ] do", ListEditing.clearLinePrefix(in: "  - [ ] do", cursor: 4))!
   check("clearLinePrefix keeps the indent and puts a caret inside the prefix at the text", task == "  do" && taskCursor == 2, "\(task) \(taskCursor)")
   check("clearLinePrefix is nil on plain text", ListEditing.clearLinePrefix(in: "plain", cursor: 2) == nil)
-  let (quote, _) = applied("> q", ListEditing.clearLinePrefix(in: "> q", cursor: 3))!
+  let (quote, _) = applied("| q", ListEditing.clearLinePrefix(in: "| q", cursor: 3))!
   check("clearLinePrefix drops a quote marker", quote == "q", quote)
+  let (stack, _) = applied("| > # q", ListEditing.clearLinePrefix(in: "| > # q", cursor: 7))!
+  check("clearLinePrefix drops a whole marker stack", stack == "q", stack)
+}
+
+// Block marker parsing: each marker needs its space
+
+do {
+  func kinds(_ line: String) -> [ListEditing.MarkerKind] { ListEditing.blockPrefix(of: line).units.map(\.kind) }
+  check("| is a quote", kinds("| q") == [.quote])
+  check("> is a toggle", kinds("> t") == [.toggle])
+  check("!> is a callout", kinds("!> c") == [.callout])
+  check("the canonical stack parses in order", kinds("| > ## x") == [.quote, .toggle, .heading] && ListEditing.blockPrefix(of: "| > ## x").contentStart == 7)
+  check("|text is plain", kinds("|text").isEmpty)
+  check(">text is plain", kinds(">text").isEmpty)
+  check("a bare > is plain", kinds(">").isEmpty)
+  check("a bare | is plain", kinds("|").isEmpty)
+  check("a bare # is plain", kinds("#").isEmpty)
+  check("##### is not a heading", kinds("##### x").isEmpty)
+  check("markers out of order stop at the first one out of place", kinds("# > x") == [.heading] && kinds("> | x") == [.toggle])
+  check("a callout takes nothing after it", kinds("!> # x") == [.callout])
+  check("an indented toggle keeps its indent", ListEditing.blockPrefix(of: "  > c").indent == 2 && kinds("  > c") == [.toggle])
+  check("an empty toggle has an empty title", ListEditing.blockPrefix(of: "> ").contentStart == 2)
+}
+
+// Stacking: Space after a marker typed at a line's content start
+
+func spaced(_ before: String, _ cursor: Int) -> (String, Int)? {
+  // The text as it is once the space is in: `before` with a space at `cursor`.
+  let ns = before as NSString
+  let text = ns.replacingCharacters(in: NSRange(location: cursor, length: 0), with: " ")
+  return applied(text, ListEditing.afterSpace(in: text, cursor: cursor + 1))
+}
+do {
+  // "## " on an H1: the caret was at the content start (2), "##" typed.
+  let r = spaced("# ##Title", 4)
+  check("## on an H1 makes an H2", r?.0 == "## Title" && r?.1 == 3, "\(String(describing: r))")
+  let r2 = spaced("## #Title", 4)
+  check("# on an H2 makes an H1", r2?.0 == "# Title" && r2?.1 == 2, "\(String(describing: r2))")
+  let toggle = spaced("# >Title", 3)
+  check("> on an H1 makes a heading toggle", toggle?.0 == "> # Title" && toggle?.1 == 4, "\(String(describing: toggle))")
+  let heading = spaced("> #Title", 3)
+  check("# on a toggle is already canonical (no rewrite)", heading == nil, "\(String(describing: heading))")
+  let deeper = spaced("> # ##Title", 6)
+  check("## on a heading toggle replaces its level", deeper?.0 == "> ## Title" && deeper?.1 == 5, "\(String(describing: deeper))")
+  let toggleOnToggle = spaced("> >Title", 3)
+  check("> on a toggle just consumes what was typed", toggleOnToggle?.0 == "> Title" && toggleOnToggle?.1 == 2, "\(String(describing: toggleOnToggle))")
+  let quoteOnQuote = spaced("| |q", 3)
+  check("| on a quote just consumes what was typed", quoteOnQuote?.0 == "| q" && quoteOnQuote?.1 == 2, "\(String(describing: quoteOnQuote))")
+  let quoteHeading = spaced("| #q", 3)
+  check("# in a quote is already canonical", quoteHeading == nil)
+  let quoteToggle = spaced("| # >q", 5)
+  check("> on a quote heading goes between them", quoteToggle?.0 == "| > # q" && quoteToggle?.1 == 6, "\(String(describing: quoteToggle))")
+  let quoteOverHeading = spaced("# |Title", 3)
+  check("| on a heading replaces it with a plain quote", quoteOverHeading?.0 == "| Title" && quoteOverHeading?.1 == 2, "\(String(describing: quoteOverHeading))")
+  let quoteOverToggle = spaced("> # |Title", 5)
+  check("| on a heading toggle replaces both", quoteOverToggle?.0 == "| Title" && quoteOverToggle?.1 == 2, "\(String(describing: quoteOverToggle))")
+  let quoteOnQuoteToggle = spaced("| > |x", 5)
+  check("| on a toggle inside a quote is a no-op", quoteOnQuoteToggle?.0 == "| > x", "\(String(describing: quoteOnQuoteToggle))")
+  let indented = spaced("  # >x", 5)
+  check("an indented line keeps its indent", indented?.0 == "  > # x", "\(String(describing: indented))")
+  check("> typed mid-text does nothing", spaced("# Title >", 9) == nil)
+  check("> typed after a list marker does nothing", spaced("- >x", 3) == nil)
+  check("> typed on a callout does nothing", spaced("!> >x", 4) == nil)
+  check("a space before any symbol does nothing", spaced("# x", 2) == nil)
+  check("##### is not a heading level", spaced("# #####x", 7) == nil)
+  check("plain > then space is left as typed (it already is a toggle)", spaced(">", 1) == nil)
+  check("stacking stays out of fences", spaced("```\n# >x\n```", 7) == nil)
+  let crlf = spaced("a\r\n# >Title", 6)
+  check("stacking on a CRLF line", crlf?.0 == "a\r\n> # Title", "\(String(describing: crlf))")
+}
+
+// Backspace peels one marker, innermost first
+
+do {
+  func peeled(_ text: String, _ cursor: Int) -> (String, Int)? { applied(text, ListEditing.peelMarker(in: text, cursor: cursor)) }
+  let a = peeled("| > # x", 6)
+  check("backspace takes the heading first", a?.0 == "| > x" && a?.1 == 4, "\(String(describing: a))")
+  let b = peeled("| > x", 4)
+  check("then the toggle", b?.0 == "| x" && b?.1 == 2, "\(String(describing: b))")
+  let c = peeled("| x", 2)
+  check("then the quote", c?.0 == "x" && c?.1 == 0, "\(String(describing: c))")
+  check("then nothing (a plain Backspace joins lines)", peeled("a\nx", 2) == nil)
+  let d = peeled("!> x", 3)
+  check("a callout goes whole", d?.0 == "x", "\(String(describing: d))")
+  let e = peeled("a\n# x", 2)
+  check("a caret at the line start of a marker line peels too", e?.0 == "a\nx" && e?.1 == 2, "\(String(describing: e))")
+  check("backspace inside the text does not peel", peeled("# xy", 3) == nil)
+  let f = peeled("> t\n  child", 6)
+  check("on a toggle's child it outdents one level", f?.0 == "> t\nchild" && f?.1 == 4, "\(String(describing: f))")
+  let g = peeled("> t\n  > u\n    deep", 14)
+  check("a nested child outdents to its parent's level", g?.0 == "> t\n  > u\n  deep", "\(String(describing: g))")
+  check("indented plain text that is no child is left to Backspace", peeled("a\n  x", 4) == nil)
+  check("peeling stays out of fences", peeled("```\n# x\n```", 6) == nil)
+}
+
+// Toggles: children, Enter
+
+do {
+  let layout = ListEditing.toggleLayout(in: "> t\n  a\n  b\nafter\n> e")
+  check("children are the deeper lines after a toggle", layout.toggles.count == 2 && layout.toggles[0].childLines == [4, 8], "\(layout.toggles)")
+  check("the children range runs to the next line", layout.toggles[0].children == NSRange(location: 4, length: 8), "\(layout.toggles[0].children)")
+  check("a toggle with nothing under it has no children", layout.toggles[1].children.length == 0)
+  check("children are one level deep", layout.depth[4] == 1 && layout.depth[12] == nil)
+  let nested = ListEditing.toggleLayout(in: "> a\n  > b\n    c\n  d")
+  check("nested toggles count depth", nested.depth[10] == 2 && nested.depth[16] == 1 && nested.toggles[1].childLines == [10], "\(nested.depth)")
+  let blank = ListEditing.toggleLayout(in: "> a\n\n  b")
+  check("an empty line ends a toggle", blank.toggles[0].childLines.isEmpty)
+  let fenced = ListEditing.toggleLayout(in: "> a\n  ```\nx\n  ```\nb")
+  check("a fenced block opened as a child is a child to its closing fence", fenced.toggles[0].childLines.count == 3, "\(fenced.toggles)")
+  check("a > inside a fence is no toggle", ListEditing.toggleLayout(in: "```\n> x\n  y\n```").toggles.isEmpty)
+
+  let open = applied("> Title", ListEditing.toggleNewline(in: "> Title", cursor: 7, collapsed: false))!
+  check("Enter on an open toggle opens a first child", open.0 == "> Title\n  " && open.1 == 10, "\(open)")
+  let withKids = applied("> T\n  old", ListEditing.toggleNewline(in: "> T\n  old", cursor: 3, collapsed: false))!
+  check("the new child goes before the others", withKids.0 == "> T\n  \n  old" && withKids.1 == 6, "\(withKids)")
+  let split = applied("> one two", ListEditing.toggleNewline(in: "> one two", cursor: 5, collapsed: false))!
+  check("Enter mid-title moves the rest into the child", split.0 == "> one\n  two" && split.1 == 8, "\(split)")
+  let atStart = applied("> one", ListEditing.toggleNewline(in: "> one", cursor: 2, collapsed: false))!
+  check("Enter at the title's start works as at its end", atStart.0 == "> one\n  ", "\(atStart)")
+  let quoted = applied("| > q", ListEditing.toggleNewline(in: "| > q", cursor: 5, collapsed: false))!
+  check("a quoted toggle's child stays quoted", quoted.0 == "| > q\n  | ", "\(quoted)")
+  let collapsed = applied("> T\n  a\n  b\nnext", ListEditing.toggleNewline(in: "> T\n  a\n  b\nnext", cursor: 3, collapsed: true))!
+  check("Enter on a collapsed toggle adds a sibling after its children", collapsed.0 == "> T\n  a\n  b\n> \nnext" && collapsed.1 == 14, "\(collapsed)")
+  let collapsedEnd = applied("> # T\n  a", ListEditing.toggleNewline(in: "> # T\n  a", cursor: 5, collapsed: true))!
+  check("a collapsed heading toggle's sibling is a heading toggle, at the end of the note too", collapsedEnd.0 == "> # T\n  a\n> # " && collapsedEnd.1 == 14, "\(collapsedEnd)")
+  let collapsedSplit = applied("> one two\n  a", ListEditing.toggleNewline(in: "> one two\n  a", cursor: 5, collapsed: true))!
+  check("a collapsed split carries the rest to the sibling", collapsedSplit.0 == "> one\n  a\n> two" && collapsedSplit.1 == 12, "\(collapsedSplit)")
+  let empty = applied("> ", ListEditing.toggleNewline(in: "> ", cursor: 2, collapsed: false))!
+  check("Enter on an empty toggle removes the toggle marker", empty.0 == "" && empty.1 == 0, "\(empty)")
+  let emptyHeading = applied("| > # ", ListEditing.toggleNewline(in: "| > # ", cursor: 6, collapsed: false))!
+  check("Enter on an empty quoted heading toggle removes only the toggle", emptyHeading.0 == "| # " && emptyHeading.1 == 4, "\(emptyHeading)")
+  check("Enter off a toggle is not a toggle newline", ListEditing.toggleNewline(in: "x", cursor: 1, collapsed: false) == nil)
+
+  let child = applied("> T\n  a", ListEditing.childNewline(in: "> T\n  a", cursor: 7))!
+  check("Enter on a child continues at its indent", child.0 == "> T\n  a\n  " && child.1 == 10, "\(child)")
+  let out = applied("> T\n  a\n  ", ListEditing.childNewline(in: "> T\n  a\n  ", cursor: 10))!
+  check("Enter on an empty child steps out of the toggle", out.0 == "> T\n  a\n" && out.1 == 8, "\(out)")
+  check("Enter on indented text outside a toggle is plain", ListEditing.childNewline(in: "x\n  a", cursor: 5) == nil)
+  check("a list item inside a toggle goes to the list rules", ListEditing.childNewline(in: "> T\n  - a", cursor: 9) == nil)
+  let listed = applied("> T\n  - a", ListEditing.newline(in: "> T\n  - a", cursor: 9))!
+  check("and the list continues at its indent", listed.0 == "> T\n  - a\n  - ", "\(listed)")
+}
+
+// Joining across a collapsed toggle
+
+do {
+  let joined = applied("> T\n  a\nnext\nz", ListEditing.joinLine(in: "> T\n  a\nnext\nz", lineStart: 8, onto: 3))!
+  check("the line after a collapsed toggle joins its title", joined.0 == "> Tnext\n  a\nz" && joined.1 == 3, "\(joined)")
+  let heading = applied("> T\n  a\n# Head\nz", ListEditing.joinLine(in: "> T\n  a\n# Head\nz", lineStart: 8, onto: 3))!
+  check("a joined heading line leaves its markers behind, not on the title", heading.0 == "> THead\n  a\nz", "\(heading)")
+  let stacked = applied("> T\n  a\n| > # Deep", ListEditing.joinLine(in: "> T\n  a\n| > # Deep", lineStart: 8, onto: 3))!
+  check("a joined marker stack goes whole", stacked.0 == "> TDeep\n  a", "\(stacked)")
+  let listed = applied("> T\n  a\n- item", ListEditing.joinLine(in: "> T\n  a\n- item", lineStart: 8, onto: 3))!
+  check("a joined list item drops its marker too", listed.0 == "> Titem\n  a", "\(listed)")
+}
+
+// Deleting a range keeps markers whole
+
+do {
+  func deleted(_ text: String, _ location: Int, _ length: Int, folded: [NSRange] = []) -> String {
+    let range = ListEditing.deletionRange(in: text, range: NSRange(location: location, length: length), folded: folded)
+    return (text as NSString).replacingCharacters(in: range, with: "")
+  }
+  check("joining onto a heading line drops its markers", deleted("ab\n# T", 2, 1) == "abT", deleted("ab\n# T", 2, 1))
+  check("a deletion ending inside markers takes them", deleted("ab\n| > T", 1, 4) == "aT", deleted("ab\n| > T", 1, 4))
+  check("a deletion across two markers takes both whole", deleted("| > T", 1, 2) == "T", deleted("| > T", 1, 2))
+  check("a deletion starting inside a marker takes it whole", deleted("| > T", 1, 1) == "> T", deleted("| > T", 1, 1))
+  check("a deletion ending inside a marker on the same line takes that marker", deleted("| > # T", 2, 1) == "| # T", deleted("| > # T", 2, 1))
+  check("a whole line from its start leaves the next line's markers", deleted("x\n# T", 0, 2) == "# T", deleted("x\n# T", 0, 2))
+  check("deleting from a quote's text start into a heading drops the heading", deleted("| q\n# T", 2, 2) == "| T", deleted("| q\n# T", 2, 2))
+  check("joining onto a toggle child drops its indent", deleted("> a\n  b", 3, 1) == "> ab", deleted("> a\n  b", 3, 1))
+  check("plain indented lines keep their spaces", deleted("a\n  b", 1, 1) == "a  b", deleted("a\n  b", 1, 1))
+  check("a deletion inside text is untouched", deleted("# Title", 3, 2) == "# Tle")
+  check("a range reaching into folded children takes all of them", deleted("> T\n  a\n  b\nz", 2, 4, folded: [NSRange(location: 4, length: 8)]) == "> z", deleted("> T\n  a\n  b\nz", 2, 4, folded: [NSRange(location: 4, length: 8)]))
+}
+
+// Line prefixes stack like typing
+
+do {
+  func set(_ text: String, _ prefix: ListEditing.LinePrefix) -> String { applied(text, ListEditing.setLinePrefix(in: text, cursor: (text as NSString).length, prefix: prefix))!.0 }
+  check("toggle on a heading adds to it", set("# T", .toggle) == "> # T", set("# T", .toggle))
+  check("toggle on a toggle removes it", set("> # T", .toggle) == "# T", set("> # T", .toggle))
+  check("heading on a toggle adds to it", set("> T", .heading(2)) == "> ## T", set("> T", .heading(2)))
+  check("the same heading removes it, keeping the toggle", set("> ## T", .heading(2)) == "> T", set("> ## T", .heading(2)))
+  check("quote on a heading toggle replaces both", set("> # T", .quote) == "| T", set("> # T", .quote))
+  check("quote on a quote stack removes only the quote", set("| > T", .quote) == "> T", set("| > T", .quote))
+  check("a bullet replaces the whole stack", set("| > T", .bullet) == "- T", set("| > T", .bullet))
+  check("a toggle replaces a list marker", set("- T", .toggle) == "> T", set("- T", .toggle))
+  check("a heading keeps the indent", set("  > T", .heading(1)) == "  > # T", set("  > T", .heading(1)))
 }
 
 print("\(count - failures)/\(count) passed")

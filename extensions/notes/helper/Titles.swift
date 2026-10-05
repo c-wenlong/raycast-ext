@@ -3,14 +3,14 @@ import Foundation
 // MARK: - Note titles
 //
 // A note is named by its first line, whatever that line is: a heading,
-// a list item, a quote or plain text. The markdown is stripped so the
+// a list item, a quote, toggle or callout, or plain text. The markdown is stripped so the
 // title reads as text. Mirrors parseTitleFromContentOrFilename in
 // src/lib/notes.ts.
 
 enum Titles {
   static let maxLength = 80
   private static let blockPrefix = try! NSRegularExpression(
-    pattern: #"^\s*(?:#{1,6}\s+|>+\s*|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)*"#)
+    pattern: #"^\s*(?:#{1,6}\s+|!?>\s+|\|\s+|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)*"#)
   private static let link = try! NSRegularExpression(pattern: #"!?\[([^\]]*)\]\([^)]*\)"#)
   private static let inlineMarkers = try! NSRegularExpression(pattern: #"(\*\*|__|~~|`|(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w))"#)
   private static let fence = try! NSRegularExpression(pattern: #"^\s*(`{3,}|~{3,})"#)

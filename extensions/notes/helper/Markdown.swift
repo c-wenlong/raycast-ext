@@ -14,6 +14,35 @@ import Foundation
 /// It also measures and paints the rounded card behind each fenced code
 /// block (tagged `Markdown.codeBlock`), for NoteTextView to call.
 final class TaskBoxLayoutManager: NSLayoutManager {
+  override init() {
+    super.init()
+    // Its own delegate: collapsed toggle children get no glyphs or height.
+    delegate = self
+  }
+
+  required init?(coder: NSCoder) {
+    super.init(coder: coder)
+    delegate = self
+  }
+
+  /// True when character `index` is a collapsed toggle's child.
+  func isFolded(_ index: Int) -> Bool {
+    guard let storage = textStorage, index >= 0, index < storage.length else { return false }
+    return storage.attribute(Markdown.folded, at: index, effectiveRange: nil) != nil
+  }
+
+  /// `run` less the folded lines at its start and end; nil when all of it
+  /// is folded.
+  private func visiblePart(of run: NSRange) -> NSRange? {
+    guard let storage = textStorage else { return nil }
+    let ns = storage.string as NSString
+    var start = run.location
+    var end = NSMaxRange(run)
+    while start < end, isFolded(start) { start = NSMaxRange(ns.lineRange(for: NSRange(location: start, length: 0))) }
+    while end > start, isFolded(end - 1) { end = ns.lineRange(for: NSRange(location: end - 1, length: 0)).location }
+    return end > start ? NSRange(location: start, length: end - start) : nil
+  }
+
   /// Selection and inline backgrounds hug the text, as in Raycast Notes:
   /// each line's rect spans only its glyphs, at the height of its font
   /// (not the whole line with its spacing), and a selected line break is
@@ -47,6 +76,11 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       let fragment = lineFragmentRect(forGlyphAt: index, effectiveRange: &fragmentGlyphs)
       let onLine = NSIntersectionRange(fragmentGlyphs, glyphs)
       guard onLine.length > 0 else { break }
+      // A collapsed toggle's children take no room and show nothing.
+      if fragment.height == 0 {
+        index = NSMaxRange(fragmentGlyphs)
+        continue
+      }
       let chars = characterRange(forGlyphRange: onLine, actualGlyphRange: nil)
       var ascent = CGFloat(0)
       var descent = CGFloat(0)
@@ -90,7 +124,7 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       NSMaxRange(chars) <= storage.length
     else { return }
     storage.enumerateAttribute(Markdown.taskBox, in: chars) { value, range, _ in
-      guard let done = value as? Bool else { return }
+      guard let done = value as? Bool, !isFolded(range.location) else { return }
       // A redraw can start or stop mid-box; widen to the whole box so the
       // square is never drawn from a partial glyph span.
       let window = NSIntersectionRange(
@@ -101,8 +135,103 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       drawTaskBox(characters: box, done: done, origin: origin)
     }
     storage.enumerateAttribute(Markdown.bulletDot, in: chars) { value, range, _ in
-      guard value != nil else { return }
+      guard value != nil, !isFolded(range.location) else { return }
       drawBulletDot(characters: range, origin: origin)
+    }
+    storage.enumerateAttribute(Markdown.toggleChevron, in: chars) { value, range, _ in
+      guard let collapsed = value as? Bool, !isFolded(range.location) else { return }
+      drawChevron(markerAt: range.location, collapsed: collapsed, origin: origin)
+    }
+  }
+
+  /// The gutter column left of the title of the toggle whose ">" is at
+  /// `index`, as tall as the title's first line, in container coordinates.
+  func chevronRect(forMarkerAt index: Int) -> NSRect? {
+    guard let storage = textStorage, let container = textContainers.first, index < storage.length else { return nil }
+    let glyph = glyphIndexForCharacter(at: index)
+    guard glyph < numberOfGlyphs else { return nil }
+    let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+    guard fragment.height > 0 else { return nil }
+    let style = storage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle
+    let textLeft = fragment.minX + container.lineFragmentPadding + (style?.firstLineHeadIndent ?? 0)
+    return NSRect(x: textLeft - Markdown.listColumn, y: fragment.minY, width: Markdown.listColumn, height: fragment.height)
+  }
+
+  /// The ">" of the toggle whose chevron is under `point` (text view
+  /// coordinates), for a click to collapse or expand it.
+  func toggleMarker(at point: NSPoint, origin: NSPoint) -> Int? {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return nil }
+    let local = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+    let glyph = glyphIndex(for: local, in: container)
+    guard glyph < numberOfGlyphs else { return nil }
+    let ns = storage.string as NSString
+    let line = ns.lineRange(for: NSRange(location: characterIndexForGlyph(at: glyph), length: 0))
+    var found: Int?
+    storage.enumerateAttribute(Markdown.toggleChevron, in: line) { value, range, stop in
+      if value != nil {
+        found = range.location
+        stop.pointee = true
+      }
+    }
+    guard let marker = found, let column = chevronRect(forMarkerAt: marker), column.contains(local) else { return nil }
+    return marker
+  }
+
+  /// A chevron in the accent colour where a bullet's dot would sit:
+  /// pointing right when collapsed, down when open, centred on the
+  /// title's capitals so it follows a heading's size.
+  private func drawChevron(markerAt index: Int, collapsed: Bool, origin: NSPoint) {
+    guard let storage = textStorage, let column = chevronRect(forMarkerAt: index) else { return }
+    let glyph = glyphIndexForCharacter(at: index)
+    let baseline = column.minY + location(forGlyphAt: glyph).y
+    let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont ?? Markdown.baseFont
+    let zoom = Markdown.zoom
+    let center = NSPoint(x: origin.x + column.minX + 7 * zoom, y: origin.y + baseline - font.capHeight / 2)
+    let arm = 3.5 * zoom
+    let path = NSBezierPath()
+    if collapsed {
+      path.move(to: NSPoint(x: center.x - arm / 2, y: center.y - arm))
+      path.line(to: NSPoint(x: center.x + arm / 2, y: center.y))
+      path.line(to: NSPoint(x: center.x - arm / 2, y: center.y + arm))
+    } else {
+      path.move(to: NSPoint(x: center.x - arm, y: center.y - arm / 2))
+      path.line(to: NSPoint(x: center.x, y: center.y + arm / 2))
+      path.line(to: NSPoint(x: center.x + arm, y: center.y - arm / 2))
+    }
+    path.lineWidth = 1.6 * zoom
+    path.lineCapStyle = .round
+    path.lineJoinStyle = .round
+    NSGraphicsContext.saveGraphicsState()
+    Markdown.accent.setStroke()
+    path.stroke()
+    NSGraphicsContext.restoreGraphicsState()
+  }
+
+  /// Draws a grey hint on every line marked with `key` inside `chars`,
+  /// where its text would start: one per line, since neighbouring empty
+  /// lines share one attribute run.
+  private func drawPlaceholders(
+    _ key: NSAttributedString.Key, in chars: NSRange, origin: NSPoint, label: (Any) -> (String, NSFont)
+  ) {
+    guard let storage = textStorage, let container = textContainers.first else { return }
+    let ns = storage.string as NSString
+    storage.enumerateAttribute(key, in: chars) { value, range, _ in
+      guard let value else { return }
+      let (text, font) = label(value)
+      var start = range.location
+      while start < NSMaxRange(range) {
+        let line = ns.lineRange(for: NSRange(location: start, length: 0))
+        start = max(NSMaxRange(line), start + 1)
+        let glyph = glyphIndexForCharacter(at: line.location)
+        guard !isFolded(line.location), glyph < numberOfGlyphs else { continue }
+        let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let baseline = origin.y + fragment.minY + location(forGlyphAt: glyph).y
+        let style = storage.attribute(.paragraphStyle, at: line.location, effectiveRange: nil) as? NSParagraphStyle
+        let point = NSPoint(
+          x: origin.x + fragment.minX + container.lineFragmentPadding + (style?.firstLineHeadIndent ?? 0),
+          y: baseline - font.ascender)
+        (text as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
+      }
     }
   }
 
@@ -121,9 +250,9 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     var drawn = Set<Int>()
     storage.enumerateAttribute(Markdown.quoteBar, in: chars) { value, range, _ in
       guard value != nil else { return }
-      var run = range
-      _ = storage.attribute(Markdown.quoteBar, at: range.location, longestEffectiveRange: &run, in: whole)
-      guard drawn.insert(run.location).inserted else { return }
+      var fullRun = range
+      _ = storage.attribute(Markdown.quoteBar, at: range.location, longestEffectiveRange: &fullRun, in: whole)
+      guard drawn.insert(fullRun.location).inserted, let run = visiblePart(of: fullRun) else { return }
       let runGlyphs = glyphRange(forCharacterRange: run, actualCharacterRange: nil)
       guard runGlyphs.length > 0 else { return }
       // From just above the first line's ascenders to just below the last
@@ -146,17 +275,10 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       NSBezierPath(roundedRect: bar, xRadius: bar.width / 2, yRadius: bar.width / 2).fill()
       NSGraphicsContext.restoreGraphicsState()
     }
-    storage.enumerateAttribute(Markdown.quotePlaceholder, in: chars) { value, range, _ in
-      guard value != nil else { return }
-      let glyph = glyphIndexForCharacter(at: range.location)
-      guard glyph < numberOfGlyphs else { return }
-      let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-      let baseline = origin.y + fragment.minY + location(forGlyphAt: glyph).y
-      let font = Markdown.baseFont
-      let point = NSPoint(
-        x: origin.x + fragment.minX + container.lineFragmentPadding + Markdown.quoteIndent,
-        y: baseline - font.ascender)
-      ("Empty quote" as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
+    drawPlaceholders(Markdown.quotePlaceholder, in: chars, origin: origin) { _ in ("Empty quote", Markdown.baseFont) }
+    drawPlaceholders(Markdown.togglePlaceholder, in: chars, origin: origin) { value in
+      let level = value as? Int ?? 0
+      return ("Toggle", level > 0 ? Markdown.headingFonts[level - 1] : Markdown.baseFont)
     }
   }
 
@@ -179,9 +301,9 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     var drawn = Set<Int>()
     storage.enumerateAttribute(Markdown.calloutBox, in: chars) { value, range, _ in
       guard value != nil else { return }
-      var run = range
-      _ = storage.attribute(Markdown.calloutBox, at: range.location, longestEffectiveRange: &run, in: whole)
-      guard drawn.insert(run.location).inserted else { return }
+      var fullRun = range
+      _ = storage.attribute(Markdown.calloutBox, at: range.location, longestEffectiveRange: &fullRun, in: whole)
+      guard drawn.insert(fullRun.location).inserted, let run = visiblePart(of: fullRun) else { return }
       let runGlyphs = glyphRange(forCharacterRange: run, actualCharacterRange: nil)
       guard runGlyphs.length > 0 else { return }
       let firstGlyph = runGlyphs.location
@@ -202,17 +324,7 @@ final class TaskBoxLayoutManager: NSLayoutManager {
       path.stroke()
       NSGraphicsContext.restoreGraphicsState()
     }
-    storage.enumerateAttribute(Markdown.calloutPlaceholder, in: chars) { value, range, _ in
-      guard value != nil else { return }
-      let glyph = glyphIndexForCharacter(at: range.location)
-      guard glyph < numberOfGlyphs else { return }
-      let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-      let baseline = origin.y + fragment.minY + location(forGlyphAt: glyph).y
-      let point = NSPoint(
-        x: origin.x + fragment.minX + container.lineFragmentPadding + Markdown.calloutPad,
-        y: baseline - font.ascender)
-      ("Empty callout" as NSString).draw(at: point, withAttributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
-    }
+    drawPlaceholders(Markdown.calloutPlaceholder, in: chars, origin: origin) { _ in ("Empty callout", font) }
   }
 
   /// Draws the code cards behind `rect` (text view coordinates), spanning
@@ -230,7 +342,7 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     guard chars.location != NSNotFound, chars.length > 0, NSMaxRange(chars) <= storage.length else { return }
     var drawn = Set<Int>()
     storage.enumerateAttribute(Markdown.codeBlock, in: chars) { value, range, _ in
-      guard let id = value as? Int, drawn.insert(id).inserted else { return }
+      guard let id = value as? Int, drawn.insert(id).inserted, !isFolded(id) else { return }
       // The redraw may cover only part of the block; widen to all of it so
       // the card is always the same shape.
       var block = range
@@ -337,6 +449,63 @@ final class TaskBoxLayoutManager: NSLayoutManager {
   }
 }
 
+extension TaskBoxLayoutManager: NSLayoutManagerDelegate {
+  // Collapsed toggle children (`Markdown.folded`) stay in the text but
+  // get null glyphs (no advance, nothing drawn) and zero-height line
+  // fragments, so they take no room; their line breaks still end lines.
+
+  func layoutManager(
+    _ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+    properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes charIndexes: UnsafePointer<Int>,
+    font aFont: NSFont, forGlyphRange glyphRange: NSRange
+  ) -> Int {
+    guard let storage = textStorage, glyphRange.length > 0 else { return 0 }
+    let first = charIndexes[0]
+    let last = charIndexes[glyphRange.length - 1]
+    guard first >= 0, last < storage.length, last >= first else { return 0 }
+    var any = false
+    storage.enumerateAttribute(
+      Markdown.folded, in: NSRange(location: first, length: last - first + 1), options: .longestEffectiveRangeNotRequired
+    ) { value, _, stop in
+      if value != nil {
+        any = true
+        stop.pointee = true
+      }
+    }
+    guard any else { return 0 }
+    var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
+    for index in 0..<glyphRange.length
+    where !properties[index].contains(.controlCharacter)
+      && storage.attribute(Markdown.folded, at: charIndexes[index], effectiveRange: nil) != nil
+    {
+      properties[index] = .null
+    }
+    layoutManager.setGlyphs(glyphs, properties: properties, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange)
+    return glyphRange.length
+  }
+
+  func layoutManager(
+    _ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
+    forControlCharacterAt charIndex: Int
+  ) -> NSLayoutManager.ControlCharacterAction {
+    // A folded tab takes no room either; line breaks still break.
+    if action.contains(.horizontalTab), isFolded(charIndex) { return .zeroAdvancement }
+    return action
+  }
+
+  func layoutManager(
+    _ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+    lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
+    in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange
+  ) -> Bool {
+    guard glyphRange.length > 0, isFolded(characterIndexForGlyph(at: glyphRange.location)) else { return false }
+    lineFragmentRect.pointee.size.height = 0
+    lineFragmentUsedRect.pointee.size.height = 0
+    baselineOffset.pointee = 0
+    return true
+  }
+}
+
 enum Markdown {
   /// Multiplier applied to every font size (⌘+ / ⌘- zoom).
   static var zoom: CGFloat = 1.0
@@ -387,6 +556,20 @@ enum Markdown {
   /// manager); `calloutPlaceholder` marks one with no text.
   static let calloutBox = NSAttributedString.Key("calloutBox")
   static let calloutPlaceholder = NSAttributedString.Key("calloutPlaceholder")
+  /// On a toggle's (hidden) ">": the layout manager draws a disclosure
+  /// chevron in the gutter left of the title; the value is `true` when
+  /// the toggle is collapsed.
+  static let toggleChevron = NSAttributedString.Key("toggleChevron")
+  /// Marks a collapsed toggle's ">". It is the one attribute `apply`
+  /// keeps (it moves with the text as the note is edited); it is never
+  /// saved, and lives only while the window shows the note.
+  static let toggleCollapsed = NSAttributedString.Key("toggleCollapsed")
+  /// Marks a toggle line with an empty title ("Toggle" is drawn there);
+  /// the value is the heading level (0 for body text).
+  static let togglePlaceholder = NSAttributedString.Key("togglePlaceholder")
+  /// Marks the children of a collapsed toggle: no glyphs, no height, and
+  /// the caret never rests there (TaskBoxLayoutManager, NoteTextView).
+  static let folded = NSAttributedString.Key("folded")
   /// Space between a boxed block's text and its box (callouts and code
   /// blocks), on every side. Boxes span the text column edge to edge, so
   /// every block lines up with the text around it.
@@ -428,18 +611,10 @@ enum Markdown {
       ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.045)
   }
 
-  static let heading = try! NSRegularExpression(pattern: #"^(#{1,4})[ \t]+(.*)$"#, options: .anchorsMatchLines)
   static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
   // Possessive `[ \t]++` so "-  [ ] x" cannot backtrack to one space and
   // pass as a bullet as well as a task.
   static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
-  // A quote is "> " (or a bare ">"), a callout ">> ": the same shapes the
-  // editing rules (ListEditing) recognise, so a marker the rules would
-  // not remove is never drawn as one. A third ">" makes neither.
-  static let quote = try! NSRegularExpression(pattern: #"^(>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
-  /// A callout: ">> " lines, drawn in an outlined box (a nested quote to
-  /// other markdown viewers).
-  static let callout = try! NSRegularExpression(pattern: #"^(>>)(?!>)(?:[ \t]|$)(.*)$"#, options: .anchorsMatchLines)
   // A block needs its closing fence: an opening fence typed on its own
   // stays literal text (the Enter and Space rules add the closing fence)
   // rather than swallowing the rest of the note.
@@ -554,6 +729,20 @@ enum Markdown {
       }
     }
 
+    // Collapsed toggles survive the reset below: the attribute rides on
+    // the toggle's ">" as the text is edited. Only a toggle's own ">"
+    // counts; the attribute anywhere else (inherited by inserted text) is
+    // dropped by the reset.
+    let toggleLayout = ListEditing.toggleLayout(in: text)
+    var collapsedLines = Set<Int>()
+    for toggle in toggleLayout.toggles {
+      let title = (text as NSString).substring(with: toggle.title)
+      guard let unit = ListEditing.blockPrefix(of: title).unit(.toggle) else { continue }
+      if storage.attribute(toggleCollapsed, at: toggle.title.location + unit.range.location, effectiveRange: nil) != nil {
+        collapsedLines.insert(toggle.title.location)
+      }
+    }
+
     storage.beginEditing()
     storage.setAttributes(
       [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: all)
@@ -629,7 +818,8 @@ enum Markdown {
     func layoutList(line: NSRange, indent: NSRange, lead: CGFloat, markerWidth: CGFloat, gap: NSRange, textStart: Int) {
       let prefix = NSRange(location: line.location, length: textStart - line.location)
       guard !ns.substring(with: prefix).contains("\t") else { return }
-      let level = CGFloat(levels[line.location] ?? 0)
+      // Inside a toggle the list starts one column in per enclosing toggle.
+      let level = CGFloat((levels[line.location] ?? 0) + (toggleLayout.depth[line.location] ?? 0))
       for offset in 0..<indent.length {
         let space = NSRange(location: indent.location + offset, length: 1)
         storage.addAttribute(.kern, value: (offset == 0 ? level * listColumn : 0) - spaceWidth, range: space)
@@ -645,18 +835,6 @@ enum Markdown {
       storage.addAttribute(.paragraphStyle, value: style, range: ns.lineRange(for: line))
     }
 
-    for match in heading.matches(in: text, range: all) where !inCode(match.range) {
-      let level = min(match.range(at: 1).length, 4) - 1
-      storage.addAttribute(.font, value: headingFonts[level], range: match.range)
-      // "## " is hidden, as in Raycast Notes; the size says the level.
-      let marker = match.range(at: 1)
-      collapse(NSRange(location: marker.location, length: match.range(at: 2).location - marker.location))
-      let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
-      style.lineHeightMultiple = 1.1
-      style.paragraphSpacingBefore = headingSpaceBefore[level] * zoom
-      style.paragraphSpacing = 6 * zoom
-      storage.addAttribute(.paragraphStyle, value: style, range: ns.lineRange(for: match.range))
-    }
     for match in task.matches(in: text, range: all) where !inCode(match.range) {
       let box = match.range(at: 3)
       let done = (text as NSString).substring(with: box).lowercased() == "[x]"
@@ -696,57 +874,109 @@ enum Markdown {
         gap: NSRange(location: NSMaxRange(marker), length: NSMaxRange(match.range) - NSMaxRange(marker)),
         textStart: NSMaxRange(match.range))
     }
-    // A quote's ">" (and a callout's ">>") is hidden; the layout manager
-    // draws a bar down the left of a quote and a box around a callout,
-    // spanning consecutive lines, and a hint on an empty one. The text
-    // is indented past the bar or into the box.
-    func styleBlock(
-      _ matches: [NSTextCheckingResult], mark: NSAttributedString.Key, placeholder: NSAttributedString.Key,
-      indent: CGFloat, tail: CGFloat, gap: CGFloat
-    ) {
-      let lineStarts = Set(matches.map { ns.lineRange(for: $0.range).location })
-      for match in matches {
-        let body = match.range(at: 2)
-        // The marker keeps the body font (each character kerned away by
-        // its own width) so an empty line is as tall as one with text and
-        // the bar or box lines up the same way on both. A tab cannot be
-        // kerned away (it jumps to a tab stop), so such a marker stays, dimmed.
-        let markerRange = NSRange(location: match.range(at: 1).location, length: body.location - match.range(at: 1).location)
-        if ns.substring(with: markerRange).contains("\t") {
-          storage.addAttribute(.foregroundColor, value: dim, range: markerRange)
+    // Block markers ("| " quote, "> " toggle, "#" heading, "!> " callout)
+    // and the indent of a toggle's children are hidden: each character
+    // keeps its font and is kerned away by its own width, so an empty line
+    // is as tall as one with text. A tab cannot be kerned away (it jumps
+    // to a tab stop), so it stays, dimmed. The layout manager draws a bar
+    // down a quote, a box around a callout and a chevron left of a
+    // toggle, and a hint on an empty one. The text is indented past the
+    // bar, into the box, past the chevron, and one column per enclosing
+    // toggle.
+    struct BlockLine {
+      let line: NSRange  // with its line break
+      let prefix: ListEditing.BlockPrefix
+      let depth: Int
+    }
+    var blockLines: [BlockLine] = []
+    var location = 0
+    while location < ns.length {
+      let line = ns.lineRange(for: NSRange(location: location, length: 0))
+      location = NSMaxRange(line)
+      guard !inCode(line) else { continue }
+      var contentsEnd = 0
+      ns.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: line)
+      let content = ns.substring(with: NSRange(location: line.location, length: contentsEnd - line.location))
+      // List lines lay themselves out (layoutList, which knows the depth).
+      if listLine.firstMatch(in: content, range: fullRange(content)) != nil { continue }
+      let prefix = ListEditing.blockPrefix(of: content)
+      let depth = toggleLayout.depth[line.location] ?? 0
+      guard prefix.hasMarkers || (depth > 0 && prefix.indent > 0) else { continue }
+      blockLines.append(BlockLine(line: line, prefix: prefix, depth: depth))
+    }
+    let quoteStarts = Set(blockLines.filter { $0.prefix.quote }.map(\.line.location))
+    let calloutStarts = Set(blockLines.filter { $0.prefix.callout }.map(\.line.location))
+    let toggleStarts = Set(toggleLayout.toggles.map(\.title.location))
+    for block in blockLines {
+      let line = block.line
+      let prefix = block.prefix
+      var contentEnd = 0
+      ns.getLineStart(nil, end: nil, contentsEnd: &contentEnd, for: line)
+      let content = NSRange(location: line.location + prefix.contentStart, length: max(0, contentEnd - line.location - prefix.contentStart))
+      let font = prefix.headingLevel > 0 ? headingFonts[prefix.headingLevel - 1] : baseFont
+      if prefix.headingLevel > 0, content.length > 0 { storage.addAttribute(.font, value: font, range: content) }
+      for offset in 0..<prefix.contentStart {
+        let character = NSRange(location: line.location + offset, length: 1)
+        let glyph = ns.substring(with: character)
+        if glyph == "\t" {
+          storage.addAttribute(.foregroundColor, value: dim, range: character)
         } else {
-          for offset in 0..<markerRange.length {
-            let character = NSRange(location: markerRange.location + offset, length: 1)
-            let width = (ns.substring(with: character) as NSString).size(withAttributes: [.font: baseFont]).width
-            storage.addAttributes(
-              [.foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
-          }
+          let width = (glyph as NSString).size(withAttributes: [.font: font]).width
+          storage.addAttributes(
+            [.font: font, .foregroundColor: NSColor.clear, .kern: -width, hiddenRun: HiddenRole.line.rawValue], range: character)
         }
-        // Lines within the block sit close; the block as a whole keeps
-        // `gap` above and below.
-        let line = ns.lineRange(for: match.range)
+      }
+      var lead = CGFloat(block.depth) * listColumn
+      let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+      if prefix.headingLevel > 0 {
+        style.lineHeightMultiple = 1.1
+        style.paragraphSpacingBefore = headingSpaceBefore[prefix.headingLevel - 1] * zoom
+        style.paragraphSpacing = 6 * zoom
+      }
+      // Lines within a quote or callout sit close; the block as a whole
+      // keeps its gap above and below.
+      func blockSpacing(_ starts: Set<Int>, gap: CGFloat) {
         let previousInBlock = line.location > 0
-          && lineStarts.contains(ns.lineRange(for: NSRange(location: line.location - 1, length: 0)).location)
-        let nextInBlock = NSMaxRange(line) < ns.length && lineStarts.contains(NSMaxRange(line))
-        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
-        style.firstLineHeadIndent = indent
-        style.headIndent = indent
-        style.tailIndent = -tail
+          && starts.contains(ns.lineRange(for: NSRange(location: line.location - 1, length: 0)).location)
+        let nextInBlock = NSMaxRange(line) < ns.length && starts.contains(NSMaxRange(line))
         style.paragraphSpacingBefore = previousInBlock ? 0 : gap
         style.paragraphSpacing = nextInBlock ? 2 * zoom : gap
-        storage.addAttributes([.paragraphStyle: style, mark: true], range: line)
-        if ns.substring(with: body).trimmingCharacters(in: .whitespaces).isEmpty {
-          storage.addAttribute(placeholder, value: true, range: line)
+      }
+      if prefix.quote {
+        lead += quoteIndent
+        blockSpacing(quoteStarts, gap: quoteGap)
+        storage.addAttribute(quoteBar, value: true, range: line)
+      }
+      if prefix.callout {
+        lead += calloutPad
+        style.tailIndent = -calloutPad
+        blockSpacing(calloutStarts, gap: calloutPad + calloutGap)
+        storage.addAttribute(calloutBox, value: true, range: line)
+      }
+      if let toggle = prefix.unit(.toggle), toggleStarts.contains(line.location) {
+        lead += listColumn
+        let marker = NSRange(location: line.location + toggle.range.location, length: 1)
+        let collapsed = collapsedLines.contains(line.location)
+        storage.addAttribute(toggleChevron, value: collapsed, range: marker)
+        if collapsed { storage.addAttribute(toggleCollapsed, value: true, range: marker) }
+      }
+      style.firstLineHeadIndent = lead
+      style.headIndent = lead
+      storage.addAttribute(.paragraphStyle, value: style, range: line)
+      if ns.substring(with: content).trimmingCharacters(in: .whitespaces).isEmpty {
+        if prefix.toggle {
+          storage.addAttribute(togglePlaceholder, value: prefix.headingLevel, range: line)
+        } else if prefix.quote {
+          storage.addAttribute(quotePlaceholder, value: true, range: line)
+        } else if prefix.callout {
+          storage.addAttribute(calloutPlaceholder, value: true, range: line)
         }
       }
     }
-    styleBlock(
-      quote.matches(in: text, range: all).filter { !inCode($0.range) },
-      mark: quoteBar, placeholder: quotePlaceholder, indent: quoteIndent, tail: 0, gap: quoteGap)
-    styleBlock(
-      callout.matches(in: text, range: all).filter { !inCode($0.range) },
-      mark: calloutBox, placeholder: calloutPlaceholder, indent: calloutPad, tail: calloutPad,
-      gap: calloutPad + calloutGap)
+    // A collapsed toggle's children take no room (TaskBoxLayoutManager).
+    for toggle in toggleLayout.toggles where collapsedLines.contains(toggle.title.location) && toggle.children.length > 0 {
+      storage.addAttribute(folded, value: true, range: toggle.children)
+    }
     for match in rule.matches(in: text, range: all) where !inCode(match.range) {
       storage.addAttribute(.foregroundColor, value: dim, range: match.range)
     }

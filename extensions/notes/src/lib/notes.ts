@@ -94,7 +94,7 @@ function capTitle(title: string): string {
 
 /**
  * The note's title: its first line with any words once the markdown is
- * stripped (heading marks, list and quote markers, inline markers, link
+ * stripped (heading marks, list, quote, toggle and callout markers, inline markers, link
  * targets). Fence lines are skipped. Mirrors Titles.firstLine in
  * helper/Titles.swift.
  */
@@ -105,7 +105,7 @@ export function firstLineTitle(content: string): string | undefined {
     }
     const stripped = line
       .replace(
-        /^\s*(?:#{1,6}\s+|>+\s*|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)*/,
+        /^\s*(?:#{1,6}\s+|!?>\s+|\|\s+|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)*/,
         "",
       )
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")

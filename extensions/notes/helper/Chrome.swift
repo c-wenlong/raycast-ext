@@ -514,6 +514,7 @@ enum FormatOptions {
     Option(id: "code", title: "Code", keys: "⌘E", symbol: "chevron.left.forwardslash.chevron.right", format: .wrap("`")),
     Option(id: "link", title: "Link", keys: "⌘L", symbol: "link", format: .link),
     Option(id: "quote", title: "Quote", keys: "⇧⌘B", symbol: "text.quote", format: .prefix(.quote)),
+    Option(id: "toggle", title: "Toggle", keys: "", symbol: "chevron.right", format: .prefix(.toggle)),
     Option(id: "callout", title: "Callout", keys: "", symbol: "rectangle.on.rectangle", format: .prefix(.callout)),
     Option(id: "ordered", title: "Numbered List", keys: "⇧⌘7", symbol: "list.number", format: .prefix(.ordered)),
     Option(id: "bullet", title: "Bullet List", keys: "⇧⌘8", symbol: "list.bullet", format: .prefix(.bullet)),
