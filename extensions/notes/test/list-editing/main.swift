@@ -752,6 +752,12 @@ do {
   check("no typography in a link address", typo("[a](x--") == nil && typo("see http://x/a...") == nil)
   check("no typography in a fenced block", ListEditing.typography(in: "```\na...\n```", cursor: 8) == nil)
   for (pair, symbol) in [("->", "\u{2192}"), ("=>", "\u{21D2}"), ("<-", "\u{2190}"), ("--", "\u{2013}"), (">=", "\u{2265}"), ("<=", "\u{2264}"), ("...", "\u{2026}")] {
+    let n = (pair as NSString).length
+    check("\(pair) stays literal in a double-backtick span being typed", typo("``a " + pair) == nil && typo("``" + pair) == nil)
+    check("\(pair) stays literal inside a closed double-backtick span",
+      ListEditing.typography(in: "``a" + pair + "b``", cursor: 3 + n) == nil && ListEditing.typography(in: "`a" + pair + "b`", cursor: 2 + n) == nil)
+    check("\(pair) converts in prose after closed spans",
+      typo("``x`` a" + pair) == "``x`` a" + symbol && typo("`x` and `y` a" + pair) == "`x` and `y` a" + symbol, typo("``x`` a" + pair) ?? "nil")
     check("\(pair) right after a URL in parentheses", typo("(https://example.com)" + pair) == "(https://example.com)" + symbol, typo("(https://example.com)" + pair) ?? "nil")
     check("\(pair) stays literal in a bare URL", typo("see https://x.com/a" + pair) == nil)
     check("\(pair) stays literal on a tilde fence line", typo("~~~" + pair) == nil && typo("~~~py " + pair) == nil)
@@ -826,6 +832,7 @@ do {
   check("not inside a closed code span", applied("`a @today b`", Dates.afterTerminator(in: "`a @today b`", cursor: 10, now: now, calendar: utc)) == nil)
   check("after a closed code span", typed("`x` @today ") == "`x` 2026-10-05 ")
   check("not inside a double-backtick span being typed", typed("``@today ") == nil && typed("``a @today ") == nil)
+  check("after a closed double-backtick span", typed("``x`` @today ") == "``x`` 2026-10-05 ", typed("``x`` @today ") ?? "nil")
   check("not inside a closed double-backtick span", Dates.afterTerminator(in: "``a @today b``", cursor: 11, now: now, calendar: utc) == nil)
   check("after two closed spans", typed("`x` and `y` @today ") == "`x` and `y` 2026-10-05 ")
   check("not in a link address", typed("[a](@today)") == nil)
