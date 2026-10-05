@@ -13,12 +13,26 @@ tv.selectedTextAttributes = [.backgroundColor: Markdown.selection]
 tv.backgroundColor = NSColor(white: 0.12, alpha: 1)
 tv.textContainerInset = NSSize(width: 18, height: 16)
 tv.allowsUndo = true
+// As PanelController sets them: no system substitutions on top of the typing rules.
+tv.isAutomaticQuoteSubstitutionEnabled = false
+tv.isAutomaticDashSubstitutionEnabled = false
+tv.isAutomaticTextReplacementEnabled = false
+tv.isAutomaticSpellingCorrectionEnabled = false
 win.contentView = tv
 win.makeFirstResponder(tv)
 var failures = 0
 func check(_ name: String, _ ok: Bool, _ detail: String = "") { print((ok ? "ok   " : "FAIL ") + name + (ok ? "" : "  " + detail)); if !ok { failures += 1 } }
 func load(_ text: String) { tv.undoManager?.removeAllActions(); tv.string = text; Markdown.apply(to: tv.textStorage!); tv.layoutManager?.ensureLayout(for: tv.textContainer!) }
 func caret() -> Int { tv.selectedRange().location }
+/// Runs the run loop until everything already queued on the main queue
+/// has run (a marker block queued now runs after it), however loaded the
+/// machine is; gives up after `timeout`.
+func drainMain(timeout: TimeInterval = 10) {
+  var done = false
+  DispatchQueue.main.async { done = true }
+  let deadline = Date().addingTimeInterval(timeout)
+  while !done && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+}
 
 // 1. clicking the header lands in the body
 load("a\n```python\nx = 1\n```\nb\n")
@@ -64,7 +78,7 @@ check("delete forward keeps closing fence", tv.string == "```\nx\n```\n", tv.str
 // 6b. an empty closed block gets a body line when entered
 load("a\n```\n```\nb\n")
 tv.setSelectedRange(NSRange(location: 3, length: 0))
-RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+drainMain()
 check("entering an empty block adds a body line", tv.string == "a\n```\n\n```\nb\n" && caret() == 6, "\(tv.string.debugDescription) \(caret())")
 
 // 6c. arrow up between body lines stays inside the block
@@ -95,7 +109,7 @@ tv.suppressFenceRelocation = false
 tv.suppressFenceEdits = true
 tv.setSelectedRange(NSRange(location: 7, length: 0))
 tv.suppressFenceEdits = false
-RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+drainMain()
 check("placing the caret while loading leaves the file alone", tv.string == "```\n```", tv.string.debugDescription)
 
 // 6g. loading a note that ends with a closing fence lands in the body
@@ -136,7 +150,7 @@ check("backspace after a heading marker removes it", tv.string == "Title" && car
 load("a ****b")
 check("an empty pair is hidden", tv.textStorage!.attribute(Markdown.hiddenRun, at: 3, effectiveRange: nil) != nil)
 load("****")
-check("a rule line is not treated as an empty pair", tv.textStorage!.attribute(Markdown.hiddenRun, at: 1, effectiveRange: nil) == nil)
+check("a rule line is not treated as an empty pair", tv.textStorage!.attribute(Markdown.hiddenRun, at: 1, effectiveRange: nil) as? String == Markdown.HiddenRole.line.rawValue)
 
 // 9. formatting with no selection, then typing
 load("a ")
@@ -798,6 +812,176 @@ check("a > after a bullet's space stays a >", tv.string == "- >", tv.string.debu
 load("")
 type("->")
 check("-> at a line start is an arrow", tv.string == "\u{2192}", tv.string.debugDescription)
+
+// 21. typography: the same rule machinery for dashes, comparisons, ellipses
+load("")
+type("a--")
+check("-- mid-line makes an en dash", tv.string == "a\u{2013}", tv.string.debugDescription)
+tv.undoManager?.undo()
+check("one undo gives back the typed --", tv.string == "a--" && tv.selectedRange() == NSRange(location: 3, length: 0), "\(tv.string.debugDescription) \(tv.selectedRange())")
+load("")
+type("wait...")
+check("... makes an ellipsis", tv.string == "wait\u{2026}" && caret() == 5, "\(tv.string.debugDescription) \(caret())")
+tv.undoManager?.undo()
+check("one undo gives back the typed ...", tv.string == "wait..." && caret() == 7, "\(tv.string.debugDescription) \(caret())")
+load("")
+type("x<=y>=z<-")
+check("<=, >= and <- make ≤ ≥ ←", tv.string == "x\u{2264}y\u{2265}z\u{2190}", tv.string.debugDescription)
+tv.deleteBackward(nil)
+check("backspace takes ← as one character", tv.string == "x\u{2264}y\u{2265}z", tv.string.debugDescription)
+load("")
+type("a-->b<->c<=>")
+check("--> gives →, <-> gives ↔, <=> gives ⇔", tv.string == "a\u{2192}b\u{2194}c\u{21D4}", tv.string.debugDescription)
+load("")
+type("`a... b--")
+check("no typography in a code span being typed", tv.string == "`a... b--", tv.string.debugDescription)
+load("a-")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+arrowBoard.clearContents()
+arrowBoard.setString("-", forType: .string)
+_ = tv.readSelection(from: arrowBoard, type: .string)
+check("pasting - after - leaves it alone", tv.string == "a--", tv.string.debugDescription)
+load("")
+type("---")
+Markdown.apply(to: tv.textStorage!)
+check("--- at a line start still types a divider", tv.string == "---" && tv.textStorage!.attribute(Markdown.divider, at: 0, effectiveRange: nil) != nil, tv.string.debugDescription)
+load("---")
+tv.setSelectedRange(NSRange(location: 3, length: 0))
+type(">")
+check("a divider's hidden dash never starts an arrow", tv.string == "--->", tv.string.debugDescription)
+
+// 21b. a symbol finishing the next one: one ⌘Z gives back everything typed
+for (typedText, symbol) in [("<->", "\u{2194}"), ("-->", "\u{2192}"), ("<=>", "\u{21D4}"), ("<-->", "\u{2194}")] {
+  load("")
+  type("a" + typedText)
+  check("a\(typedText) makes \(symbol)", tv.string == "a" + symbol && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+  tv.undoManager?.undo()
+  let back = "a" + typedText
+  check("one undo after a\(typedText) gives back what was typed", tv.string == back && tv.selectedRange() == NSRange(location: (back as NSString).length, length: 0), "\(tv.string.debugDescription) \(tv.selectedRange())")
+  tv.undoManager?.redo()
+  check("redo after a\(typedText) brings \(symbol) back", tv.string == "a" + symbol, tv.string.debugDescription)
+}
+load("")
+type("a<->")
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+tv.undoManager?.undo()
+tv.undoManager?.undo()
+check("a second undo steps back through the typing, never leaving a symbol", !tv.string.contains("\u{2190}") && "a<->".hasPrefix(tv.string), tv.string.debugDescription)
+load("a\u{2190}")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+type(">")
+check("a pasted ← then > makes ↔", tv.string == "a\u{2194}", tv.string.debugDescription)
+RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+tv.undoManager?.undo()
+check("and undo gives back the ← and the typed >", tv.string == "a\u{2190}>", tv.string.debugDescription)
+
+// 21c. the same through real key events: keyDown → interpretKeyEvents →
+// insertText, with the run loop closing each event's undo group (the
+// window's undo manager groups by event), and ⌘Z through
+// performKeyEquivalent, the window's own path (the harness has no menu).
+func settle(timeout: TimeInterval = 5) {
+  let deadline = Date().addingTimeInterval(timeout)
+  repeat {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+  } while (tv.undoManager?.groupingLevel ?? 0) > 0 && Date() < deadline
+}
+func keyEvent(_ characters: String, keyCode: UInt16, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+  NSEvent.keyEvent(
+    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+    windowNumber: win.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+    isARepeat: false, keyCode: keyCode)!
+}
+let keyCodes: [Character: (UInt16, NSEvent.ModifierFlags)] = [
+  "a": (0, []), "-": (27, []), "=": (24, []), "<": (43, .shift), ">": (47, .shift), ".": (47, []),
+]
+func press(_ text: String) {
+  for ch in text {
+    let (code, flags) = keyCodes[ch]!
+    tv.keyDown(with: keyEvent(String(ch), keyCode: code, flags: flags))
+    settle()
+  }
+}
+func commandZ() -> Bool {
+  let handled = tv.performKeyEquivalent(with: keyEvent("z", keyCode: 6, flags: .command))
+  settle()
+  return handled
+}
+check("the note view is first responder for key events", win.firstResponder === tv)
+for (typedText, symbol) in [("->", "\u{2192}"), ("<->", "\u{2194}"), ("-->", "\u{2192}"), ("<=>", "\u{21D4}"), ("<-->", "\u{2194}"), ("...", "\u{2026}")] {
+  load("")
+  settle()
+  press("a" + typedText)
+  check("keys a\(typedText) make \(symbol)", tv.string == "a" + symbol && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+  let handled = commandZ()
+  let back = "a" + typedText
+  check("one ⌘Z after keys a\(typedText) gives back what was typed", handled && tv.string == back && tv.selectedRange() == NSRange(location: (back as NSString).length, length: 0), "\(handled) \(tv.string.debugDescription) \(tv.selectedRange())")
+  _ = commandZ()
+  check("a second ⌘Z after keys a\(typedText) leaves no symbol", !tv.string.unicodeScalars.contains { $0.value > 0x7F } && back.hasPrefix(tv.string), tv.string.debugDescription)
+}
+
+// 22. dividers: a drawn hairline, dashes hidden, removed whole
+let dividerText = "a\n---\nb"
+load(dividerText)
+let dts = tv.textStorage!
+check("a divider's dashes are hidden", (2...4).allSatisfy { dts.attribute(Markdown.hiddenRun, at: $0, effectiveRange: nil) != nil })
+check("a divider line is marked for the hairline", dts.attribute(Markdown.divider, at: 2, effectiveRange: nil) != nil && dts.attribute(Markdown.divider, at: 0, effectiveRange: nil) == nil)
+tv.setSelectedRange(NSRange(location: 3, length: 0))
+check("the caret never rests inside the dashes", caret() == 5 || caret() == 2, "\(caret())")
+tv.setSelectedRange(NSRange(location: 5, length: 0))
+tv.deleteBackward(nil)
+check("backspace on a divider removes it in one keystroke", tv.string == "a\n\nb" && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+tv.undoManager?.undo()
+check("undo brings the divider back", tv.string == dividerText, tv.string.debugDescription)
+load(dividerText)
+tv.setSelectedRange(NSRange(location: 6, length: 0))
+tv.deleteBackward(nil)
+check("backspace after a divider removes its line, no raw dashes", tv.string == "a\nb" && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+load(dividerText)
+tv.setSelectedRange(NSRange(location: 1, length: 0))
+tv.deleteForward(nil)
+check("delete before a divider takes it whole", tv.string == "a\nb", tv.string.debugDescription)
+load(dividerText)
+tv.setSelectedRange(NSRange(location: 5, length: 0))
+tv.deleteForward(nil)
+check("delete on a divider removes it", tv.string == "a\n\nb", tv.string.debugDescription)
+load(dividerText)
+tv.setSelectedRange(NSRange(location: 0, length: 3))
+tv.deleteBackward(nil)
+check("deleting a selection into a divider takes it whole", tv.string == "\nb", tv.string.debugDescription)
+load("```\n---\n```")
+check("--- in a code block is not a divider", tv.textStorage!.attribute(Markdown.divider, at: 4, effectiveRange: nil) == nil)
+let infoFence = "``` hello world\n---\n```"
+load(infoFence)
+check("--- under a multi-word info string is code, not a divider", tv.textStorage!.attribute(Markdown.divider, at: 16, effectiveRange: nil) == nil)
+tv.setSelectedRange(NSRange(location: 19, length: 0))
+tv.deleteBackward(nil)
+check("backspace there deletes one dash", tv.string == "``` hello world\n--\n```", tv.string.debugDescription)
+load(infoFence)
+tv.setSelectedRange(NSRange(location: 16, length: 0))
+tv.deleteForward(nil)
+check("delete there deletes one dash", tv.string == "``` hello world\n--\n```", tv.string.debugDescription)
+load(dividerText)
+tv.setSelectedRange(NSRange(location: 0, length: 0))
+tv.needsDisplay = true
+let drep = tv.bitmapImageRepForCachingDisplay(in: tv.bounds)!
+tv.cacheDisplay(in: tv.bounds, to: drep)
+let dscale = Int(drep.pixelsWide) / Int(tv.bounds.width)
+let dlm = tv.layoutManager!
+let dline = dlm.lineFragmentRect(forGlyphAt: dlm.glyphIndexForCharacter(at: 2), effectiveRange: nil).offsetBy(dx: tv.textContainerOrigin.x, dy: tv.textContainerOrigin.y)
+var hairRows = 0
+var brightGlyphs = 0
+for y in Int(dline.minY) * dscale..<Int(dline.maxY) * dscale {
+  var lit = 0
+  for x in stride(from: 30 * dscale, to: 390 * dscale, by: 2) {
+    let c = drep.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!
+    if c.redComponent > 0.18 { lit += 1 }
+    if c.redComponent > 0.5 { brightGlyphs += 1 }
+  }
+  if lit > 170 * dscale * 9 / 10 { hairRows += 1 }
+}
+check("a divider draws one hairline across the column", hairRows >= 1 && hairRows <= dscale, "\(hairRows) rows in \(dline)")
+check("and no dash shows", brightGlyphs == 0, "\(brightGlyphs)")
 
 // 7. render a selection over task lines
 load("- [ ] one\n- [x] two\n- three\n")

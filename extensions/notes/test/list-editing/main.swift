@@ -691,25 +691,26 @@ do {
   check("a heading keeps the indent", set("  > T", .heading(1)) == "  > # T", set("  > T", .heading(1)))
 }
 
-// Typed arrows
+// Typed arrows and typography
 
 do {
-  func arrow(_ text: String) -> String? { applied(text, ListEditing.arrow(in: text, cursor: (text as NSString).length))?.0 }
-  let edit = ListEditing.arrow(in: "a->", cursor: 3)
+  func arrow(_ text: String) -> String? { applied(text, ListEditing.typography(in: text, cursor: (text as NSString).length))?.0 }
+  let edit = ListEditing.typography(in: "a->", cursor: 3)
   check("-> becomes an arrow", arrow("a->") == "a\u{2192}", arrow("a->") ?? "nil")
   check("the caret lands after the arrow", edit?.cursor == 2 && edit?.range == NSRange(location: 1, length: 2), "\(String(describing: edit))")
   check("=> becomes a double arrow", arrow("a=>") == "a\u{21D2}", arrow("a=>") ?? "nil")
   check("-> at a line start converts", arrow("x\n->") == "x\n\u{2192}", arrow("x\n->") ?? "nil")
-  check("--> keeps the first dash", arrow("-->") == "-\u{2192}", arrow("-->") ?? "nil")
+  check("--> at a line start keeps the first dash (its -- stayed literal)", arrow("-->") == "-\u{2192}", arrow("-->") ?? "nil")
+  check("–> (a --> mid-line) becomes an arrow", arrow("a\u{2013}>") == "a\u{2192}", arrow("a\u{2013}>") ?? "nil")
   check("==> keeps the first equals", arrow("==>") == "=\u{21D2}", arrow("==>") ?? "nil")
   check("a lone > is nil", arrow(">") == nil)
   check("> after other text is nil", arrow("a>") == nil)
   check("> after a bullet's space is nil", arrow("- >") == nil)
-  check("the caret must follow the >", ListEditing.arrow(in: "a->b", cursor: 4) == nil)
+  check("the caret must follow the >", ListEditing.typography(in: "a->b", cursor: 4) == nil)
   check("no arrow in a code span being typed", arrow("`a->") == nil)
-  check("no arrow inside a closed code span", ListEditing.arrow(in: "`a->b`", cursor: 4) == nil)
+  check("no arrow inside a closed code span", ListEditing.typography(in: "`a->b`", cursor: 4) == nil)
   check("an arrow after a closed code span", arrow("`x` a->") == "`x` a\u{2192}", arrow("`x` a->") ?? "nil")
-  check("no arrow in a fenced block", ListEditing.arrow(in: "```\na->\n```", cursor: 7) == nil)
+  check("no arrow in a fenced block", ListEditing.typography(in: "```\na->\n```", cursor: 7) == nil)
   check("no arrow on a fence line", arrow("```->") == nil)
   check("no arrow on a tilde fence line being typed", arrow("~~~->") == nil && arrow("~~~py ->") == nil)
   check("no arrow on an indented fence line", arrow("   ```x=>") == nil)
@@ -717,13 +718,67 @@ do {
   check("an arrow after a fenced block", arrow("```\nx\n```\na->") == "```\nx\n```\na\u{2192}", arrow("```\nx\n```\na->") ?? "nil")
   check("no arrow in a link address being typed", arrow("[a](http://x->") == nil)
   check("no arrow at the start of a link address", arrow("[a](->") == nil)
-  check("no arrow inside a closed link address", ListEditing.arrow(in: "[a](x->y)", cursor: 7) == nil)
+  check("no arrow inside a closed link address", ListEditing.typography(in: "[a](x->y)", cursor: 7) == nil)
   check("no arrow in a bare URL", arrow("see https://x.com/a->") == nil)
   check("no arrow in an upper-case URL", arrow("see HTTPS://x.com/a->") == nil && arrow("see Http://x.com/a=>") == nil)
   check("an arrow right after a URL in parentheses", arrow("(https://example.com)->") == "(https://example.com)\u{2192}", arrow("(https://example.com)->") ?? "nil")
   check("an arrow right after a URL in brackets", arrow("[https://x.com]=>") == "[https://x.com]\u{21D2}", arrow("[https://x.com]=>") ?? "nil")
   check("an arrow after a link", arrow("[a](u) b->") == "[a](u) b\u{2192}", arrow("[a](u) b->") ?? "nil")
   check("an arrow in link text", arrow("[a->") == "[a\u{2192}", arrow("[a->") ?? "nil")
+}
+
+do {
+  func typo(_ text: String) -> String? { applied(text, ListEditing.typography(in: text, cursor: (text as NSString).length))?.0 }
+  check("<- becomes a left arrow", typo("a<-") == "a\u{2190}", typo("a<-") ?? "nil")
+  check("-- becomes an en dash", typo("a--") == "a\u{2013}", typo("a--") ?? "nil")
+  check("-- at a line start stays literal, for a divider", typo("--") == nil && typo("x\n--") == nil)
+  check("-- after only an indent stays literal", typo("  --") == nil)
+  check("--- and ---- at a line start stay literal", typo("---") == nil && typo("----") == nil && typo("  ---") == nil)
+  check("-- after a bullet becomes an en dash", typo("- --") == "- \u{2013}", typo("- --") ?? "nil")
+  check(">= becomes ≥", typo("a>=") == "a\u{2265}", typo("a>=") ?? "nil")
+  check("<= becomes ≤", typo("a<=") == "a\u{2264}", typo("a<=") ?? "nil")
+  check(">= at a line start becomes ≥", typo(">=") == "\u{2265}", typo(">=") ?? "nil")
+  check("a toggle's > then = is not a pair", typo("> =") == nil)
+  check("... becomes an ellipsis", typo("a...") == "a\u{2026}", typo("a...") ?? "nil")
+  check("the caret lands after the ellipsis", ListEditing.typography(in: "a...", cursor: 4)?.cursor == 2)
+  check(".. alone is nil", typo("a..") == nil)
+  check(".... gives ….", typo("a\u{2026}.") == nil)
+  check("<-> becomes ↔", typo("a\u{2190}>") == "a\u{2194}", typo("a\u{2190}>") ?? "nil")
+  check("<=> becomes ⇔", typo("a\u{2264}>") == "a\u{21D4}", typo("a\u{2264}>") ?? "nil")
+  check("<--> becomes ↔", typo("a\u{2190}->") == "a\u{2194}", typo("a\u{2190}->") ?? "nil")
+  check("<-- gives ←-", typo("a\u{2190}-") == nil)
+  check("--- mid-line gives –-", typo("a\u{2013}-") == nil)
+  check("no typography in a code span", typo("`a--") == nil && typo("`a...") == nil && typo("`a<=") == nil)
+  check("no typography in a link address", typo("[a](x--") == nil && typo("see http://x/a...") == nil)
+  check("no typography in a fenced block", ListEditing.typography(in: "```\na...\n```", cursor: 8) == nil)
+  for (pair, symbol) in [("->", "\u{2192}"), ("=>", "\u{21D2}"), ("<-", "\u{2190}"), ("--", "\u{2013}"), (">=", "\u{2265}"), ("<=", "\u{2264}"), ("...", "\u{2026}")] {
+    check("\(pair) right after a URL in parentheses", typo("(https://example.com)" + pair) == "(https://example.com)" + symbol, typo("(https://example.com)" + pair) ?? "nil")
+    check("\(pair) stays literal in a bare URL", typo("see https://x.com/a" + pair) == nil)
+    check("\(pair) stays literal on a tilde fence line", typo("~~~" + pair) == nil && typo("~~~py " + pair) == nil)
+    check("\(pair) stays literal on a backtick fence line", typo("```" + pair) == nil && typo("   ```x " + pair) == nil)
+  }
+}
+
+// Dividers: removed whole, never left as raw dashes
+
+do {
+  func back(_ text: String, _ cursor: Int) -> (String, Int)? { applied(text, ListEditing.dividerBackspace(in: text, cursor: cursor)) }
+  func del(_ text: String, _ cursor: Int) -> (String, Int)? { applied(text, ListEditing.dividerDelete(in: text, cursor: cursor)) }
+  let t = "a\n---\nb"
+  check("backspace on a divider empties its line", back(t, 5).map { $0 == ("a\n\nb", 2) } == true, "\(String(describing: back(t, 5)))")
+  check("backspace after a divider removes its line", back(t, 6).map { $0 == ("a\nb", 2) } == true, "\(String(describing: back(t, 6)))")
+  check("backspace on *** and ___ dividers", back("***", 3)?.0 == "" && back("x\n___  ", 7)?.0 == "x\n")
+  check("backspace on plain lines is nil", back("a\nb", 2) == nil && back("a\n--", 4) == nil)
+  check("a --- in a code block is not a divider", back("```\n---\n```", 7) == nil && back("```\n---\nx\n```", 8) == nil)
+  let info = "``` hello world\n---\n```"
+  check("a --- under a multi-word info string is code", back(info, 19) == nil && back(info + "\nb", 24) == nil && del(info, 16) == nil, "\(String(describing: back(info, 19)))")
+  check("joining onto a --- in code is a plain join", ListEditing.deletionRange(in: "``` a b\nx\n---\n```", range: NSRange(location: 9, length: 1)) == NSRange(location: 9, length: 1))
+  check("no typography in a block with a multi-word info string", ListEditing.typography(in: "``` hello world\na->\n```", cursor: 19) == nil)
+  check("delete on a divider empties its line", del(t, 5).map { $0 == ("a\n\nb", 2) } == true, "\(String(describing: del(t, 5)))")
+  check("delete off a divider is nil", del(t, 1) == nil)
+  check("joining onto a divider takes it whole", ListEditing.deletionRange(in: t, range: NSRange(location: 1, length: 1)) == NSRange(location: 1, length: 4))
+  check("a selection ending in the dashes takes them all", ListEditing.deletionRange(in: t, range: NSRange(location: 0, length: 3)) == NSRange(location: 0, length: 5))
+  check("a selection starting in the dashes starts at the line", ListEditing.deletionRange(in: t, range: NSRange(location: 3, length: 4)) == NSRange(location: 2, length: 5))
 }
 
 print("\(count - failures)/\(count) passed")

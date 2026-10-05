@@ -495,6 +495,7 @@ final class NoteTextView: NSTextView {
       super.deleteForward(sender)
       return
     }
+    if !hasMarkedText(), apply(ListEditing.dividerDelete(in: string, cursor: selection.location)) { return }
     if !hasMarkedText(), let edit = forwardJoin(at: selection.location) {
       apply(edit)
       return
@@ -629,6 +630,7 @@ final class NoteTextView: NSTextView {
     (layoutManager as? TaskBoxLayoutManager)?.drawCodeCards(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawQuoteBars(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawCalloutBoxes(in: rect, origin: textContainerOrigin)
+    (layoutManager as? TaskBoxLayoutManager)?.drawDividers(in: rect, origin: textContainerOrigin)
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -1053,6 +1055,7 @@ final class NoteTextView: NSTextView {
       if let block = codeBlock(containing: selection.location), selection.location == block.body.location {
         return  // keep the opening fence; the block is one component
       }
+      if apply(ListEditing.dividerBackspace(in: string, cursor: selection.location)) { return }
       if apply(ListEditing.backspace(in: string, cursor: selection.location)) { return }
       // Block markers come off one at a time, innermost first.
       if apply(ListEditing.peelMarker(in: string, cursor: selection.location)) { return }
@@ -1101,7 +1104,7 @@ final class NoteTextView: NSTextView {
 
   /// The space goes in first as ordinary typing, then "[] " or "``` " is
   /// rewritten as a separate undo step, so ⌘Z gives back the literal text.
-  /// A typed ">" after "-" or "=" becomes an arrow the same way.
+  /// Typographic pairs ("->", "--", "...") become one symbol the same way.
   /// `apply` edits the text storage directly, so this never re-enters.
   override func insertText(_ string: Any, replacementRange: NSRange) {
     // Typing over a selection: the selection takes whole marker pairs with it.
@@ -1121,10 +1124,12 @@ final class NoteTextView: NSTextView {
       opensMenu = (previous == 0x20 || previous == 0x09) && !ListEditing.insideFence(self.string, cursor: pre.location)
       if opensMenu { breakUndoCoalescing() }
     }
-    // A `-` or `=` that belongs to a hidden marker never makes an arrow.
-    // Decided before the insert, while the styling still matches the text.
+    // A character that belongs to a hidden marker (a divider's dashes)
+    // never starts a typographic pair. Decided before the insert, while
+    // the styling still matches the text.
     let caretBefore = selectedRange().location
-    let markerBefore = typed == ">" && caretBefore > 0 && hiddenRun(at: caretBefore - 1) != nil
+    let markerBefore = typed.map(ListEditing.typographyTriggers.contains) == true
+      && (1...2).contains { caretBefore - $0 >= 0 && hiddenRun(at: caretBefore - $0) != nil }
     super.insertText(string, replacementRange: replacementRange)
     if opensMenu {
       openSlashMenu(at: selectedRange().location - 1)
@@ -1134,24 +1139,86 @@ final class NoteTextView: NSTextView {
     guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
-    // "->" and "=>" become "→" and "⇒" as their own undo step. Typing only:
-    // a paste never comes through here as a lone ">".
-    if typed == ">" {
-      guard !markerBefore, !slashMenuIsOpen, let edit = ListEditing.arrow(in: self.string, cursor: selection.location)
+    // "->", "--", "...", and the rest become one symbol as their own undo
+    // step. Typing only: a paste never comes through here a character at a time.
+    if let typed, ListEditing.typographyTriggers.contains(typed) {
+      guard !markerBefore, !slashMenuIsOpen, var edit = ListEditing.typography(in: self.string, cursor: selection.location)
       else { return }
-      // Undo alone would select the restored "->", and the next key would
-      // type over it: the group also puts the caret back after the ">".
+      var typedEnd = selection.location
+      var typedText = (self.string as NSString).substring(with: edit.range)
+      if let composite = rewindTypography(for: edit, typedEnd: typedEnd) {
+        (edit, typedEnd, typedText) = composite
+      }
+      if let undoManager, undoManager.groupingLevel == 1 {
+        // This event's group may hold the typed key (or the keys put back
+        // by the rewind); close it so ⌘Z takes back the symbol alone.
+        undoManager.endUndoGrouping()
+        undoManager.beginUndoGrouping()
+      }
+      // Undo alone would select the restored pair, and the next key would
+      // type over it: the group also puts the caret back after it.
       // Registered first, so it runs last on undo.
-      let typedEnd = selection.location
       breakUndoCoalescing()
       undoManager?.beginUndoGrouping()
-      undoManager?.registerUndo(withTarget: self) { $0.setSelectedRange(NSRange(location: typedEnd, length: 0)) }
+      let caretAfterUndo = typedEnd
+      undoManager?.registerUndo(withTarget: self) { $0.setSelectedRange(NSRange(location: caretAfterUndo, length: 0)) }
       apply(edit)
       undoManager?.endUndoGrouping()
+      lastTypography = (edit.range.location, edit.replacement, typedText)
       return
     }
     guard typed == " " else { return }
     apply(ListEditing.afterSpace(in: self.string, cursor: selection.location))
+  }
+
+  /// The last typographic symbol made, where, and what was typed for it.
+  private var lastTypography: (location: Int, symbol: String, typed: String)?
+
+  /// A symbol finishing the next one (`<-` made ←, then `>` makes ↔):
+  /// takes the earlier symbol and the keys since back off the undo stack,
+  /// puts back what was typed as one step, and returns the composite edit
+  /// over the typed text, so one ⌘Z after it restores exactly what was
+  /// typed (`<->`). Nil, with the history untouched, when the earlier
+  /// symbol was not just made here (pasted, or edited since).
+  private func rewindTypography(for edit: ListEditing.Edit, typedEnd: Int)
+    -> (edit: ListEditing.Edit, typedEnd: Int, typed: String)?
+  {
+    guard let prior = lastTypography, let undoManager, let storage = textStorage else { return nil }
+    let ns = string as NSString
+    let start = edit.range.location
+    guard prior.location == start, edit.range.length >= 2, NSMaxRange(edit.range) == typedEnd,
+      ns.substring(with: NSRange(location: start, length: 1)) == prior.symbol
+    else { return nil }
+    let since = ns.substring(with: NSRange(location: start + 1, length: typedEnd - start - 1))
+    let expected = ns.replacingCharacters(in: NSRange(location: start, length: typedEnd - start), with: prior.typed)
+    // The keys since the symbol (a typing group or two), then the symbol
+    // itself; a few more steps for empty event groups along the way.
+    var steps = 0
+    while string != expected, undoManager.canUndo, steps < 6 {
+      undoManager.undo()
+      steps += 1
+    }
+    guard string == expected else {
+      while steps > 0, undoManager.canRedo {
+        undoManager.redo()
+        steps -= 1
+      }
+      return nil
+    }
+    let insertAt = start + (prior.typed as NSString).length
+    let insertion = NSRange(location: insertAt, length: 0)
+    breakUndoCoalescing()
+    undoManager.beginUndoGrouping()
+    if shouldChangeText(in: insertion, replacementString: since) {
+      storage.replaceCharacters(in: insertion, with: since)
+      setSelectedRange(NSRange(location: insertAt + (since as NSString).length, length: 0))
+      didChangeText()
+    }
+    undoManager.endUndoGrouping()
+    let typed = prior.typed + since
+    let length = (typed as NSString).length
+    let composite = ListEditing.Edit(range: NSRange(location: start, length: length), replacement: edit.replacement, cursor: start + 1)
+    return (composite, start + length, typed)
   }
 
   /// Pasting a lone http(s) URL over selected text links the text.

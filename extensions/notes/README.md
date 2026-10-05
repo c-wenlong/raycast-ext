@@ -53,7 +53,8 @@ Inside the window:
 | `⇧⌘7` / `⇧⌘8` / `⇧⌘9` | numbered / bullet / task item |
 | `⌥⌘C` | wrap the lines in a code block, or unwrap the block the caret is in |
 | `[]` then `Space` | start a task, `- [ ] ` |
-| `->` / `=>` | typed, they become `→` / `⇒`, one character in the file; `⌘Z` right after gives back what you typed. Only the two characters before the caret count (`-->` gives `-→`); code spans, code blocks, link addresses and pastes are left alone |
+| `->` `=>` `<-` `--` `>=` `<=` `...` | typed, they become `→` `⇒` `←` `–` `≥` `≤` `…`, one character in the file; `⌘Z` right after gives back what you typed. A symbol can finish the next one: `-->` gives `→`, `<->` `↔`, `<=>` `⇔`. Dashes at a line start stay dashes so `---` makes a divider; code spans, code blocks, link addresses and pastes are left alone |
+| `---`, `***` or `___` on its own line | a divider: a thin line across the window, the characters hidden; `⌫` or `Delete` on it, or `⌫` at the start of the line after it, removes it in one keystroke |
 | `1. ` | start a numbered list; `↩` and `⇥` renumber it as you go |
 | `↩` in a list | continue the list; on an empty item, end it (a nested one steps out first) |
 | `⇥` / `⇧⇥` in a list | nest / unnest the item with everything under it |
@@ -64,7 +65,7 @@ Inside the window:
 
 The file stays raw markdown, but the window never shows the markers:
 headings, bold, italic, strike, code, quotes, toggles, callouts, links, list
-markers and task boxes are styled in place and the `#`, `|`, `>`, `!>`, `**`,
+markers, task boxes and dividers are styled in place and the `#`, `|`, `>`, `!>`, `**`,
 `_`, backticks and `- ` are collapsed (a quote shows as a bar down its left,
 spanning its lines). A marker forms only with the space after it: `|text`,
 `>text` or a lone `#` stay plain text. A toggle's collapsed state lives only

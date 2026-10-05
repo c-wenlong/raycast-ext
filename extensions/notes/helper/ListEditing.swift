@@ -592,7 +592,13 @@ enum ListEditing {
     // Where a deletion may start or end inside a line's hidden prefix,
     // and where its text begins; nil for a line with nothing hidden.
     func boundaries(at location: Int) -> (lineStart: Int, stops: [Int], contentStart: Int)? {
-      let (lineStart, _, line) = line(at: location, in: text)
+      let current = line(at: location, in: text)
+      let (lineStart, _, line) = current
+      // A divider is hidden whole: kept whole or removed whole.
+      if isDivider(current, in: text) {
+        let length = (line as NSString).length
+        return (lineStart, [0, length], length)
+      }
       guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
       let prefix = blockPrefix(of: line)
       let child = (depth[lineStart] ?? 0) > 0
@@ -834,9 +840,7 @@ enum ListEditing {
     return Edit(range: range, replacement: edit.replacement, cursor: edit.cursor, selectionLength: edit.selectionLength)
   }
 
-  // MARK: Task shortcut and backspace
-
-  // MARK: Arrows
+  // MARK: Typography
 
   /// A bare http(s) address, as the styler links it (Markdown.bareURL):
   /// not right after `(` or a word character, and ending at whitespace,
@@ -851,32 +855,111 @@ enum ListEditing {
   /// caret: the pair would be fence text or the info string.
   private static let fencePrefix = try! NSRegularExpression(pattern: #"^ {0,3}(?:`{3,}|~{3,})"#)
 
-  /// A typed `>` right after `-` or `=` turns the pair into `→` or `⇒`,
-  /// checked after the `>` is in the text (like `afterSpace`) so the
-  /// first undo gives back the typed `->`. Only the two characters before
-  /// the caret count, so `-->` gives `-→`. Code stays literal: inside a
-  /// fenced block, or an inline code span (an odd number of backticks
-  /// before the `-` on its line, which also covers a span still being
-  /// typed), or on a fence line (``` or ~~~, closed or still being
+  /// The typed characters that can finish a typographic pair.
+  static let typographyTriggers: Set<String> = [">", "-", "=", "."]
+
+  /// A typed character that finishes a pair turns it into one symbol:
+  /// `->` →, `=>` ⇒, `<-` ←, `--` – (en dash), `>=` ≥, `<=` ≤, `...` ….
+  /// Checked after the character is in the text (like `afterSpace`) so the
+  /// first undo gives back what was typed. Only the characters right
+  /// before the caret count, so a symbol already made can finish the next
+  /// one: `-->` gives → (its `--` became –), `<->` ↔, `<=>` ⇔, `<-->` ↔.
+  /// `<--` gives ←- and `....` gives …. (nothing further).
+  /// `--` with only whitespace and dashes before it on its line stays
+  /// literal, so `---` (and `----`) still types a divider. Code stays
+  /// literal: inside a fenced block (as the styler draws it), an inline code span (an odd number of
+  /// backticks before the pair on its line, which also covers a span still
+  /// being typed), or on a fence line (``` or ~~~, closed or still being
   /// typed). So do link addresses: after `](` with no `)` yet, or inside
   /// an `http(s)://` address as the styler bounds it.
-  static func arrow(in text: String, cursor: Int) -> Edit? {
+  static func typography(in text: String, cursor: Int) -> Edit? {
     let ns = text as NSString
-    guard cursor >= 2, cursor <= ns.length, ns.character(at: cursor - 1) == 0x3E else { return nil }
-    let arrow: String
-    switch ns.character(at: cursor - 2) {
-    case 0x2D: arrow = "\u{2192}"  // ->
-    case 0x3D: arrow = "\u{21D2}"  // =>
+    guard cursor >= 2, cursor <= ns.length else { return nil }
+    func at(_ index: Int) -> unichar? { index >= 0 ? ns.character(at: index) : nil }
+    var length = 2
+    let symbol: String
+    switch (ns.character(at: cursor - 2), ns.character(at: cursor - 1)) {
+    case (0x2D, 0x3E):  // ->, or <--> after its <- became ←
+      if at(cursor - 3) == 0x2190 {
+        length = 3
+        symbol = "\u{2194}"
+      } else {
+        symbol = "\u{2192}"
+      }
+    case (0x2013, 0x3E): symbol = "\u{2192}"  // -->, its -- already an en dash
+    case (0x2190, 0x3E): symbol = "\u{2194}"  // <->
+    case (0x3D, 0x3E): symbol = "\u{21D2}"  // =>
+    case (0x2264, 0x3E): symbol = "\u{21D4}"  // <=>
+    case (0x3C, 0x2D): symbol = "\u{2190}"  // <-
+    case (0x2D, 0x2D): symbol = "\u{2013}"  // --
+    case (0x3E, 0x3D): symbol = "\u{2265}"  // >=
+    case (0x3C, 0x3D): symbol = "\u{2264}"  // <=
+    case (0x2E, 0x2E) where at(cursor - 3) == 0x2E:  // ...
+      length = 3
+      symbol = "\u{2026}"
     default: return nil
     }
-    let lineStart = ns.lineRange(for: NSRange(location: cursor - 2, length: 0)).location
-    let before = ns.substring(with: NSRange(location: lineStart, length: cursor - 2 - lineStart))
+    let start = cursor - length
+    let lineStart = ns.lineRange(for: NSRange(location: start, length: 0)).location
+    let before = ns.substring(with: NSRange(location: lineStart, length: start - lineStart))
+    // Dashes that start a line stay dashes: "---" types a divider.
+    if symbol == "\u{2013}", before.drop(while: { $0 == " " || $0 == "\t" }).allSatisfy({ $0 == "-" }) { return nil }
     guard before.utf16.filter({ $0 == 0x60 }).count % 2 == 0,
       urlBeforeCaret.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
       fencePrefix.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
-      !insideFence(text, cursor: cursor)
+      !inCodeBlock(text, NSRange(location: start, length: length))
     else { return nil }
-    return Edit(range: NSRange(location: cursor - 2, length: 2), replacement: arrow, cursor: cursor - 1)
+    return Edit(range: NSRange(location: start, length: length), replacement: symbol, cursor: start + 1)
+  }
+
+  // MARK: Dividers
+
+  /// A horizontal rule line, shared with the styler (Markdown.rule), which
+  /// draws it as a hairline with the characters hidden.
+  static let rulePattern = try! NSRegularExpression(pattern: #"^(?:-{3,}|_{3,}|\*{3,})[ \t]*$"#, options: .anchorsMatchLines)
+
+  /// A fenced code block as the styler draws it (Markdown.fence): an
+  /// opening fence line (any info string) through its closing fence. An
+  /// opening fence with no closing fence is literal text.
+  static let fencePattern = try! NSRegularExpression(
+    pattern: #"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n[\s\S]*?^ {0,3}(?:\1`*|\2~*)[ \t]*$"#, options: .anchorsMatchLines)
+
+  /// True when `range` touches a fenced code block, exactly as the styler
+  /// decides what is code (its `inCode`).
+  static func inCodeBlock(_ text: String, _ range: NSRange) -> Bool {
+    fencePattern.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
+      .contains { NSIntersectionRange($0.range, range).length > 0 }
+  }
+
+  /// True when `line` (no line break) is a divider: a rule the styler
+  /// draws, so not in a code block.
+  private static func isDivider(_ line: (start: Int, end: Int, text: String), in text: String) -> Bool {
+    let length = (line.text as NSString).length
+    return rulePattern.firstMatch(in: line.text, range: NSRange(location: 0, length: length)) != nil
+      && !inCodeBlock(text, NSRange(location: line.start, length: length))
+  }
+
+  /// Backspace on a divider line takes the divider off, leaving the line
+  /// empty; at the start of the line after one, it removes the divider's
+  /// whole line. Either way the dashes never show as text.
+  static func dividerBackspace(in text: String, cursor: Int) -> Edit? {
+    let current = line(at: cursor, in: text)
+    if current.end > current.start, isDivider(current, in: text) {
+      return Edit(range: NSRange(location: current.start, length: current.end - current.start), replacement: "", cursor: current.start)
+    }
+    guard cursor == current.start, cursor > 0 else { return nil }
+    let previous = line(at: cursor - 1, in: text)
+    guard isDivider(previous, in: text) else { return nil }
+    return Edit(range: NSRange(location: previous.start, length: cursor - previous.start), replacement: "", cursor: previous.start)
+  }
+
+  /// Delete on a divider line takes the divider off, leaving the line
+  /// empty. (Delete at the end of the line before one goes through
+  /// `deletionRange`, which keeps the divider whole.)
+  static func dividerDelete(in text: String, cursor: Int) -> Edit? {
+    let current = line(at: cursor, in: text)
+    guard current.end > current.start, isDivider(current, in: text) else { return nil }
+    return Edit(range: NSRange(location: current.start, length: current.end - current.start), replacement: "", cursor: current.start)
   }
 
   // MARK: Task shortcut and backspace
