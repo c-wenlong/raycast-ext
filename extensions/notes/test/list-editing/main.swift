@@ -691,5 +691,34 @@ do {
   check("a heading keeps the indent", set("  > T", .heading(1)) == "  > # T", set("  > T", .heading(1)))
 }
 
+// Typed arrows
+
+do {
+  func arrow(_ text: String) -> String? { applied(text, ListEditing.arrow(in: text, cursor: (text as NSString).length))?.0 }
+  let edit = ListEditing.arrow(in: "a->", cursor: 3)
+  check("-> becomes an arrow", arrow("a->") == "a\u{2192}", arrow("a->") ?? "nil")
+  check("the caret lands after the arrow", edit?.cursor == 2 && edit?.range == NSRange(location: 1, length: 2), "\(String(describing: edit))")
+  check("=> becomes a double arrow", arrow("a=>") == "a\u{21D2}", arrow("a=>") ?? "nil")
+  check("-> at a line start converts", arrow("x\n->") == "x\n\u{2192}", arrow("x\n->") ?? "nil")
+  check("--> keeps the first dash", arrow("-->") == "-\u{2192}", arrow("-->") ?? "nil")
+  check("==> keeps the first equals", arrow("==>") == "=\u{21D2}", arrow("==>") ?? "nil")
+  check("a lone > is nil", arrow(">") == nil)
+  check("> after other text is nil", arrow("a>") == nil)
+  check("> after a bullet's space is nil", arrow("- >") == nil)
+  check("the caret must follow the >", ListEditing.arrow(in: "a->b", cursor: 4) == nil)
+  check("no arrow in a code span being typed", arrow("`a->") == nil)
+  check("no arrow inside a closed code span", ListEditing.arrow(in: "`a->b`", cursor: 4) == nil)
+  check("an arrow after a closed code span", arrow("`x` a->") == "`x` a\u{2192}", arrow("`x` a->") ?? "nil")
+  check("no arrow in a fenced block", ListEditing.arrow(in: "```\na->\n```", cursor: 7) == nil)
+  check("no arrow on a fence line", arrow("```->") == nil)
+  check("an arrow after a fenced block", arrow("```\nx\n```\na->") == "```\nx\n```\na\u{2192}", arrow("```\nx\n```\na->") ?? "nil")
+  check("no arrow in a link address being typed", arrow("[a](http://x->") == nil)
+  check("no arrow at the start of a link address", arrow("[a](->") == nil)
+  check("no arrow inside a closed link address", ListEditing.arrow(in: "[a](x->y)", cursor: 7) == nil)
+  check("no arrow in a bare URL", arrow("see https://x.com/a->") == nil)
+  check("an arrow after a link", arrow("[a](u) b->") == "[a](u) b\u{2192}", arrow("[a](u) b->") ?? "nil")
+  check("an arrow in link text", arrow("[a->") == "[a\u{2192}", arrow("[a->") ?? "nil")
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

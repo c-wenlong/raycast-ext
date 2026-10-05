@@ -67,3 +67,4 @@ Notes:
 - Toggles: collapsed state is in memory only, per note, default open. `↩` on an open title opens a first child; on a collapsed one it adds a sibling toggle after the hidden children; on an empty title it removes the toggle marker.
 - An opening fence with no closing fence is literal text; the Enter and Space rules add the closing fence.
 - The `/` menu opens at a line start or after a space; a pick removes the query and formats the line as one undo step.
+- Typed `->` and `=>` become `→` and `⇒` (the file stores the character), one undo step that leaves the caret after the typed `>`. Only the two characters before the caret count (`-->` gives `-→`). Never inside fenced blocks, inline code (an odd number of backticks before it on the line) or link addresses, and never on paste.

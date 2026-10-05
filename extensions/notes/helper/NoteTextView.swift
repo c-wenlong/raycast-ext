@@ -1101,6 +1101,7 @@ final class NoteTextView: NSTextView {
 
   /// The space goes in first as ordinary typing, then "[] " or "``` " is
   /// rewritten as a separate undo step, so ⌘Z gives back the literal text.
+  /// A typed ">" after "-" or "=" becomes an arrow the same way.
   /// `apply` edits the text storage directly, so this never re-enters.
   override func insertText(_ string: Any, replacementRange: NSRange) {
     // Typing over a selection: the selection takes whole marker pairs with it.
@@ -1120,6 +1121,10 @@ final class NoteTextView: NSTextView {
       opensMenu = (previous == 0x20 || previous == 0x09) && !ListEditing.insideFence(self.string, cursor: pre.location)
       if opensMenu { breakUndoCoalescing() }
     }
+    // A `-` or `=` that belongs to a hidden marker never makes an arrow.
+    // Decided before the insert, while the styling still matches the text.
+    let caretBefore = selectedRange().location
+    let markerBefore = typed == ">" && caretBefore > 0 && hiddenRun(at: caretBefore - 1) != nil
     super.insertText(string, replacementRange: replacementRange)
     if opensMenu {
       openSlashMenu(at: selectedRange().location - 1)
@@ -1129,6 +1134,22 @@ final class NoteTextView: NSTextView {
     guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
+    // "->" and "=>" become "→" and "⇒" as their own undo step. Typing only:
+    // a paste never comes through here as a lone ">".
+    if typed == ">" {
+      guard !markerBefore, !slashMenuIsOpen, let edit = ListEditing.arrow(in: self.string, cursor: selection.location)
+      else { return }
+      // Undo alone would select the restored "->", and the next key would
+      // type over it: the group also puts the caret back after the ">".
+      // Registered first, so it runs last on undo.
+      let typedEnd = selection.location
+      breakUndoCoalescing()
+      undoManager?.beginUndoGrouping()
+      undoManager?.registerUndo(withTarget: self) { $0.setSelectedRange(NSRange(location: typedEnd, length: 0)) }
+      apply(edit)
+      undoManager?.endUndoGrouping()
+      return
+    }
     guard typed == " " else { return }
     apply(ListEditing.afterSpace(in: self.string, cursor: selection.location))
   }

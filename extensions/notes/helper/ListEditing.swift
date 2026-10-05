@@ -836,6 +836,39 @@ enum ListEditing {
 
   // MARK: Task shortcut and backspace
 
+  // MARK: Arrows
+
+  private static let urlBeforeCaret = try! NSRegularExpression(
+    pattern: #"(?:\]\([^)\s]*|https?://\S*)$"#, options: .caseInsensitive)
+
+  /// A typed `>` right after `-` or `=` turns the pair into `→` or `⇒`,
+  /// checked after the `>` is in the text (like `afterSpace`) so the
+  /// first undo gives back the typed `->`. Only the two characters before
+  /// the caret count, so `-->` gives `-→`. Code stays literal: inside a
+  /// fenced block, or an inline code span (an odd number of backticks
+  /// before the `-` on its line, which also covers a span still being
+  /// typed). So do link addresses: after `](` with no `)` yet, or inside
+  /// an `http(s)://` address.
+  static func arrow(in text: String, cursor: Int) -> Edit? {
+    let ns = text as NSString
+    guard cursor >= 2, cursor <= ns.length, ns.character(at: cursor - 1) == 0x3E else { return nil }
+    let arrow: String
+    switch ns.character(at: cursor - 2) {
+    case 0x2D: arrow = "\u{2192}"  // ->
+    case 0x3D: arrow = "\u{21D2}"  // =>
+    default: return nil
+    }
+    let lineStart = ns.lineRange(for: NSRange(location: cursor - 2, length: 0)).location
+    let before = ns.substring(with: NSRange(location: lineStart, length: cursor - 2 - lineStart))
+    guard before.utf16.filter({ $0 == 0x60 }).count % 2 == 0,
+      urlBeforeCaret.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) == nil,
+      !insideFence(text, cursor: cursor)
+    else { return nil }
+    return Edit(range: NSRange(location: cursor - 2, length: 2), replacement: arrow, cursor: cursor - 1)
+  }
+
+  // MARK: Task shortcut and backspace
+
   /// Typing a space right after "[]", "[ ]" or "[x]" at the start of a
   /// line turns it into a task item. Returns the edit for the line, or nil.
   private static let boxPattern = try! NSRegularExpression(pattern: #"^([ \t]*)(?:([-*+])[ \t]+)?\[( ?|[xX])\]$"#)
