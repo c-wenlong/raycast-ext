@@ -360,6 +360,67 @@ final class TaskBoxLayoutManager: NSLayoutManager {
     }
   }
 
+  /// Draws a rounded accent-tinted chip behind every date (tagged
+  /// `Markdown.dateChip`) crossing `rect` (text view coordinates), one per
+  /// line fragment if a date wraps. NoteTextView calls it from
+  /// drawBackground, so the selection and the text draw over it.
+  func drawDateChips(in rect: NSRect, origin: NSPoint) {
+    guard let storage = textStorage, storage.length > 0, let container = textContainers.first else { return }
+    let pad = Markdown.dateChipPad
+    let band = NSRect(x: 0, y: rect.minY - origin.y - pad, width: container.size.width, height: rect.height + pad * 2)
+    let glyphs = glyphRange(forBoundingRect: band, in: container)
+    guard glyphs.location != NSNotFound, glyphs.length > 0 else { return }
+    let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+    guard chars.location != NSNotFound, chars.length > 0, NSMaxRange(chars) <= storage.length else { return }
+    storage.enumerateAttribute(Markdown.dateChip, in: chars) { value, range, _ in
+      guard value != nil, !isFolded(range.location) else { return }
+      for chip in chipRects(forCharacterRange: range) {
+        NSGraphicsContext.saveGraphicsState()
+        Markdown.dateChipColor.setFill()
+        let radius = Markdown.dateChipRadius
+        NSBezierPath(roundedRect: chip.offsetBy(dx: origin.x, dy: origin.y), xRadius: radius, yRadius: radius).fill()
+        NSGraphicsContext.restoreGraphicsState()
+      }
+    }
+  }
+
+  /// The chip behind the date spanning `characters`, in container
+  /// coordinates: one rect per line fragment, from the first glyph to the
+  /// last, padded by `dateChipPad` on the sides, and from a little above the
+  /// digits (cap height) to a little below the baseline.
+  func chipRects(forCharacterRange characters: NSRange) -> [NSRect] {
+    guard let storage = textStorage, characters.length > 0,
+      NSMaxRange(characters) <= storage.length
+    else { return [] }
+    let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+    guard glyphs.location != NSNotFound, glyphs.length > 0 else { return [] }
+    var rects: [NSRect] = []
+    var index = glyphs.location
+    while index < NSMaxRange(glyphs) {
+      var fragmentGlyphs = NSRange()
+      let fragment = lineFragmentRect(forGlyphAt: index, effectiveRange: &fragmentGlyphs)
+      let onLine = NSIntersectionRange(fragmentGlyphs, glyphs)
+      guard onLine.length > 0 else { break }
+      index = NSMaxRange(fragmentGlyphs)
+      guard fragment.height > 0 else { continue }
+      // From the first glyph's origin to the last glyph's own advance:
+      // the kern Markdown.apply puts after the date (room for the pad) is
+      // left out.
+      let lastGlyph = NSMaxRange(onLine) - 1
+      let lastChar = characterIndexForGlyph(at: lastGlyph)
+      let font = storage.attribute(.font, at: lastChar, effectiveRange: nil) as? NSFont ?? Markdown.baseFont
+      let left = fragment.minX + location(forGlyphAt: onLine.location).x
+      let right = fragment.minX + location(forGlyphAt: lastGlyph).x + font.advancement(forCGGlyph: cgGlyph(at: lastGlyph)).width
+      let baseline = fragment.minY + location(forGlyphAt: onLine.location).y
+      let scale = font.pointSize / 15
+      let top = baseline - font.capHeight - 4 * scale
+      let bottom = baseline + 3.5 * scale
+      let pad = Markdown.dateChipPad
+      rects.append(NSRect(x: left - pad, y: top, width: right - left + pad * 2, height: bottom - top))
+    }
+    return rects
+  }
+
   /// Draws the code cards behind `rect` (text view coordinates), spanning
   /// the text column like a callout box. NoteTextView calls it
   /// from `drawBackground(in:)`, which (unlike this class's own background
@@ -635,6 +696,16 @@ enum Markdown {
   static let listLine = try! NSRegularExpression(pattern: #"^([ \t]*)(?:[-*+]|\d+\.)[ \t]+"#)
   static let taskScheme = "notes-task"
 
+  /// Marks a standalone ISO date ("2026-10-05", see Dates.chipRanges);
+  /// TaskBoxLayoutManager draws a chip behind it. The text is unchanged.
+  static let dateChip = NSAttributedString.Key("dateChip")
+  static var dateChipPad: CGFloat { 4 * zoom }
+  static var dateChipRadius: CGFloat { 5 * zoom }
+  /// A faint wash of the accent, lighter than the selection.
+  static let dateChipColor = NSColor(name: nil) { appearance in
+    accent.withAlphaComponent(appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.2 : 0.14)
+  }
+
   /// Marks every character of a fenced code block, opening fence line
   /// through closing fence line; the value is the block's start offset
   /// (an Int), so neighbouring blocks stay distinct.
@@ -854,6 +925,9 @@ enum Markdown {
     // Wrapped lines line up with the text. Tabs keep their tab stops (a
     // kern cannot cancel one), so such a line keeps the plain layout.
     let levels = listLevels(in: text)
+    // Where each marked line's text starts (after its list or block
+    // markers), keyed by line start, for the date chips' spacing.
+    var textStarts: [Int: Int] = [:]
     let spaceWidth = (" " as NSString).size(withAttributes: [.font: baseFont]).width
     func layoutList(line: NSRange, indent: NSRange, lead: CGFloat, markerWidth: CGFloat, gap: NSRange, textStart: Int) {
       let prefix = NSRange(location: line.location, length: textStart - line.location)
@@ -895,11 +969,13 @@ enum Markdown {
         storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: body)
       }
       let textStart = body.location != NSNotFound ? body.location : NSMaxRange(match.range)
+      textStarts[match.range.location] = textStart
       layoutList(
         line: match.range, indent: match.range(at: 1), lead: 0, markerWidth: taskBoxSide,
         gap: NSRange(location: NSMaxRange(box), length: textStart - NSMaxRange(box)), textStart: textStart)
     }
     for match in bullet.matches(in: text, range: all) where !inCode(match.range) {
+      textStarts[match.range.location] = NSMaxRange(match.range)
       let marker = match.range(at: 2)
       if marker.length == 1, ns.character(at: marker.location) < 0x30 {
         // "-", "*" or "+": the character stays (clear, one monospace glyph
@@ -953,6 +1029,7 @@ enum Markdown {
       var contentEnd = 0
       ns.getLineStart(nil, end: nil, contentsEnd: &contentEnd, for: line)
       let content = NSRange(location: line.location + prefix.contentStart, length: max(0, contentEnd - line.location - prefix.contentStart))
+      textStarts[line.location] = content.location
       let font = prefix.headingLevel > 0 ? headingFonts[prefix.headingLevel - 1] : baseFont
       if prefix.headingLevel > 0, content.length > 0 { storage.addAttribute(.font, value: font, range: content) }
       for offset in 0..<prefix.contentStart {
@@ -1112,6 +1189,20 @@ enum Markdown {
       storage.removeAttribute(.strikethroughStyle, range: marks)
       storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance, hiddenRun: HiddenRole.line.rawValue], range: marks)
       storage.addAttribute(divider, value: true, range: match.range)
+    }
+    // Room for each chip's padding, so it never covers its neighbours: a
+    // kern after the date, and one before it unless the date starts the
+    // line's text (there the chip reaches into the margin or marker gap,
+    // and the text keeps its column).
+    func widen(_ index: Int) {
+      let kern = (storage.attribute(.kern, at: index, effectiveRange: nil) as? NSNumber)?.doubleValue ?? 0
+      storage.addAttribute(.kern, value: CGFloat(kern) + dateChipPad, range: NSRange(location: index, length: 1))
+    }
+    for range in Dates.chipRanges(in: text, excluding: codeRanges) {
+      storage.addAttribute(dateChip, value: true, range: range)
+      widen(NSMaxRange(range) - 1)
+      let lineStart = ns.lineRange(for: NSRange(location: range.location, length: 0)).location
+      if range.location > (textStarts[lineStart] ?? lineStart) { widen(range.location - 1) }
     }
     storage.endEditing()
 

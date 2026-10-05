@@ -631,6 +631,7 @@ final class NoteTextView: NSTextView {
     (layoutManager as? TaskBoxLayoutManager)?.drawQuoteBars(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawCalloutBoxes(in: rect, origin: textContainerOrigin)
     (layoutManager as? TaskBoxLayoutManager)?.drawDividers(in: rect, origin: textContainerOrigin)
+    (layoutManager as? TaskBoxLayoutManager)?.drawDateChips(in: rect, origin: textContainerOrigin)
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -999,6 +1000,12 @@ final class NoteTextView: NSTextView {
   // MARK: Typing rules
 
   override func insertNewline(_ sender: Any?) {
+    let pending = pendingDateKeyword()
+    newlineRules(sender)
+    scheduleDateConversion(pending)
+  }
+
+  private func newlineRules(_ sender: Any?) {
     let selection = selectedRange()
     if selection.length == 0, !hasMarkedText() {
       let text = string
@@ -1013,8 +1020,78 @@ final class NoteTextView: NSTextView {
   }
 
   override func insertTab(_ sender: Any?) {
-    if indentListItem(by: 1) { return }
-    super.insertTab(sender)
+    let pending = pendingDateKeyword()
+    if !indentListItem(by: 1) { super.insertTab(sender) }
+    scheduleDateConversion(pending)
+  }
+
+  // MARK: Date keywords
+  //
+  // "@today", "@tomorrow" and "@yesterday" become the ISO date when a
+  // terminator is typed after them (Dates.afterTerminator). The terminator
+  // goes in first, by its own rules (a list continues, an item nests), and
+  // the date follows on the next pass of the run loop: the undo manager
+  // groups a key's edits by event, so only then is the date an undo step
+  // of its own, and ⌘Z right after gives back the keyword. Paste never
+  // converts.
+
+  /// Set while pasted or dropped text goes in.
+  private var pasting = false
+
+  override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+    pasting = true
+    defer { pasting = false }
+    return super.readSelection(from: pboard, type: type)
+  }
+
+  /// Before Enter or Tab: the keyword ending at the caret (its range and
+  /// date), with the text as it was, for `convertDateKeyword` after.
+  private func pendingDateKeyword() -> (edit: ListEditing.Edit, text: String)? {
+    let selection = selectedRange()
+    guard selection.length == 0, !hasMarkedText(), !pasting,
+      let edit = Dates.keyword(endingAt: selection.location, in: string)
+    else { return nil }
+    return (edit, string)
+  }
+
+  /// Turns the keyword into its date on the next pass of the run loop.
+  private func scheduleDateConversion(_ pending: (edit: ListEditing.Edit, text: String)?) {
+    guard let pending else { return }
+    DispatchQueue.main.async { [weak self] in self?.convertDateKeyword(pending) }
+  }
+
+  /// Turns the keyword `pending` found in its text into the date where it
+  /// sits now, after the terminator's own edit (and any typing since). It
+  /// is found by comparing the texts: the keyword must lie wholly before
+  /// or wholly after what changed, and still read the same; otherwise
+  /// nothing happens.
+  private func convertDateKeyword(_ pending: (edit: ListEditing.Edit, text: String)) {
+    guard !hasMarkedText() else { return }
+    let (edit, old) = pending
+    let before = old as NSString
+    let after = string as NSString
+    let shortest = min(before.length, after.length)
+    var prefix = 0
+    while prefix < shortest, before.character(at: prefix) == after.character(at: prefix) { prefix += 1 }
+    var suffix = 0
+    while suffix < shortest - prefix,
+      before.character(at: before.length - 1 - suffix) == after.character(at: after.length - 1 - suffix)
+    {
+      suffix += 1
+    }
+    var range = edit.range
+    if NSMaxRange(range) <= prefix {
+      // Before the change: where it was.
+    } else if range.location >= before.length - suffix {
+      range.location += after.length - before.length
+    } else {
+      return
+    }
+    guard NSMaxRange(range) <= after.length, after.substring(with: range) == before.substring(with: edit.range) else { return }
+    let selection = selectedRange()
+    let delta = (edit.replacement as NSString).length - range.length
+    let caret = selection.location >= NSMaxRange(range) ? selection.location + delta : selection.location
+    apply(ListEditing.Edit(range: range, replacement: edit.replacement, cursor: caret))
   }
 
   override func insertBacktab(_ sender: Any?) {
@@ -1139,6 +1216,14 @@ final class NoteTextView: NSTextView {
     guard replacementRange.location == NSNotFound || replacementRange.length == 0, !hasMarkedText() else { return }
     let selection = selectedRange()
     guard selection.length == 0 else { return }
+    // "@today" and friends: the date follows on the next pass (Date keywords).
+    // A date terminator never completes a typographic pair after a keyword.
+    if !pasting, let single = typed, (single as NSString).length == 1,
+      let edit = Dates.afterTerminator(in: self.string, cursor: selection.location)
+    {
+      scheduleDateConversion((edit, self.string))
+      return
+    }
     // "->", "--", "...", and the rest become one symbol as their own undo
     // step. Typing only: a paste never comes through here a character at a time.
     if let typed, ListEditing.typographyTriggers.contains(typed) {

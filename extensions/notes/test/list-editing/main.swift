@@ -781,5 +781,87 @@ do {
   check("a selection starting in the dashes starts at the line", ListEditing.deletionRange(in: t, range: NSRange(location: 3, length: 4)) == NSRange(location: 2, length: 5))
 }
 
+// Date keywords: "@today" and friends become the ISO date on a terminator
+
+do {
+  var utc = Calendar(identifier: .gregorian)
+  utc.timeZone = TimeZone(identifier: "Asia/Singapore")!
+  // 2026-10-05 23:30 in Singapore (15:30 UTC): still the 5th locally.
+  let now = Date(timeIntervalSince1970: 1_791_214_200)
+  func typed(_ text: String) -> String? {
+    applied(text, Dates.afterTerminator(in: text, cursor: (text as NSString).length, now: now, calendar: utc))?.0
+  }
+  func cursor(_ text: String) -> Int? {
+    Dates.afterTerminator(in: text, cursor: (text as NSString).length, now: now, calendar: utc)?.cursor
+  }
+  check("the clock fixture is the 5th in Singapore", Dates.iso(now, calendar: utc) == "2026-10-05", Dates.iso(now, calendar: utc))
+  check("@today then space", typed("@today ") == "2026-10-05 ", typed("@today ") ?? "nil")
+  check("@tomorrow then space", typed("@tomorrow ") == "2026-10-06 ", typed("@tomorrow ") ?? "nil")
+  check("@yesterday then space", typed("@yesterday ") == "2026-10-04 ", typed("@yesterday ") ?? "nil")
+  check("the cursor stays after the terminator", cursor("due @today ") == 15, "\(cursor("due @today ") ?? -1)")
+  check("@tomorrow crosses a month end", applied("@tomorrow ", Dates.afterTerminator(
+    in: "@tomorrow ", cursor: 10, now: Date(timeIntervalSince1970: 1_793_455_200), calendar: utc))?.0 == "2026-11-01 ")
+  check("@yesterday crosses a year start", applied("@yesterday ", Dates.afterTerminator(
+    in: "@yesterday ", cursor: 11, now: Date(timeIntervalSince1970: 1_798_732_800), calendar: utc))?.0 == "2026-12-31 ")
+  check("any case: @Today", typed("@Today ") == "2026-10-05 ", typed("@Today ") ?? "nil")
+  check("any case: @TOMORROW", typed("@TOMORROW ") == "2026-10-06 ", typed("@TOMORROW ") ?? "nil")
+  for terminator in ["\t", "\n", ".", ",", ";", ":", "!", "?", ")", "]", "\"", "*", "~", "…"] {
+    let text = "ship @today" + terminator
+    check("terminator \(terminator.debugDescription)", typed(text) == "ship 2026-10-05" + terminator, typed(text) ?? "nil")
+  }
+  for other in ["s", "_", "'", "-", "/", "1", "@", "("] {
+    check("no terminator \(other.debugDescription)", typed("@today" + other) == nil, typed("@today" + other) ?? "nil")
+  }
+  check("in the middle of a line", typed("call @today") == nil)
+  check("in the middle, then a space", applied("a @today b", Dates.afterTerminator(in: "a @today b", cursor: 9, now: now, calendar: utc))?.0 == "a 2026-10-05 b")
+  check("after an opening bracket", typed("(@today)") == "(2026-10-05)", typed("(@today)") ?? "nil")
+  check("inside bold", typed("**@today*") == "**2026-10-05*", typed("**@today*") ?? "nil")
+  check("in a task", typed("- [ ] pay @tomorrow ") == "- [ ] pay 2026-10-06 ")
+  check("in a heading", typed("# @today ") == "# 2026-10-05 ")
+  check("not part of an email", typed("kai@today.") == nil && typed("kai@today ") == nil)
+  check("not after a word and an opener", typed("a(@today)") == nil && typed("x_@today ") == nil)
+  check("not a longer word", typed("@todays ") == nil && typed("@xtoday ") == nil && typed("@yesterdays ") == nil)
+  check("not a bare @", typed("@ ") == nil && typed("today ") == nil)
+  check("not inside a code span being typed", typed("`@today ") == nil)
+  check("not inside a closed code span", applied("`a @today b`", Dates.afterTerminator(in: "`a @today b`", cursor: 10, now: now, calendar: utc)) == nil)
+  check("after a closed code span", typed("`x` @today ") == "`x` 2026-10-05 ")
+  check("not in a link address", typed("[a](@today)") == nil)
+  check("in link text", typed("[@today]") == "[2026-10-05]")
+  check("not in a URL", typed("https://x.com/@today ") == nil)
+  check("an unclosed fence is plain text, so it converts", typed("```\n@today ") == "```\n2026-10-05 ")
+  let fenced = "```\n@today \n```"
+  check("not inside a closed fence", Dates.afterTerminator(in: fenced, cursor: 11, now: now, calendar: utc) == nil)
+  let after = "```\nx\n```\n@today "
+  check("after a closed fence", typed(after) == "```\nx\n```\n2026-10-05 ", typed(after) ?? "nil")
+  check("keyword(endingAt:) finds it before the caret", Dates.keyword(endingAt: 6, in: "@today", now: now, calendar: utc)?.replacement == "2026-10-05")
+}
+
+// Date chips: standalone ISO dates in prose
+
+do {
+  func chips(_ text: String, excluding: [NSRange] = []) -> [String] {
+    Dates.chipRanges(in: text, excluding: excluding).map { (text as NSString).substring(with: $0) }
+  }
+  check("a date alone", chips("2026-10-05") == ["2026-10-05"])
+  check("dates in prose", chips("from 2026-10-05 to 2026-10-07.") == ["2026-10-05", "2026-10-07"], "\(chips("from 2026-10-05 to 2026-10-07."))")
+  check("in brackets and bold", chips("(2026-10-05) **2026-10-06** _2026-10-07_") == ["2026-10-05", "2026-10-06", "2026-10-07"])
+  check("before a colon", chips("2026-10-05: standup") == ["2026-10-05"])
+  check("in a task", chips("- [ ] pay 2026-10-06") == ["2026-10-06"])
+  check("not a generated filename", chips("2026-10-05 1008 - x.md").isEmpty, "\(chips("2026-10-05 1008 - x.md"))")
+  check("not a wiki-linked filename", chips("[[2026-10-05 1008 - x]]").isEmpty)
+  check("not a timestamp", chips("2026-10-05 9:30 call").isEmpty && chips("2026-10-05T09:30").isEmpty)
+  check("not a file extension", chips("2026-10-05.md").isEmpty)
+  check("not glued to a word", chips("x-2026-10-05 2026-10-05x note_2026-10-05").isEmpty)
+  check("not in a path", chips("/notes/2026-10-05/ a/2026-10-05").isEmpty)
+  check("not a longer number", chips("12026-10-05 2026-10-055").isEmpty)
+  check("not an impossible date", chips("2026-02-30 2026-13-01 2026-00-10 2026-10-00").isEmpty)
+  check("a leap day", chips("2028-02-29") == ["2028-02-29"] && chips("2026-02-29").isEmpty)
+  check("not in inline code", chips("`2026-10-05` and 2026-10-06") == ["2026-10-06"])
+  check("not in a link address", chips("[due](https://x.com/2026-10-05) [2026-10-06](x)") == ["2026-10-06"], "\(chips("[due](https://x.com/2026-10-05) [2026-10-06](x)"))")
+  check("not in a bare URL", chips("https://x.com/?d=2026-10-05 https://x.com/ 2026-10-06") == ["2026-10-06"])
+  let fenced = "```\n2026-10-05\n```\n2026-10-06"
+  check("not in excluded (fenced) ranges", chips(fenced, excluding: [NSRange(location: 0, length: 18)]) == ["2026-10-06"])
+}
+
 print("\(count - failures)/\(count) passed")
 exit(failures == 0 ? 0 : 1)

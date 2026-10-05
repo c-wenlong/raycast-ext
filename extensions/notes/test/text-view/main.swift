@@ -1063,5 +1063,114 @@ let foldedUsed = stv.layoutManager!.usedRect(for: stv.textContainer!).height
 check("collapsing it leaves only the title and the line after in the used height", foldedUsed < openUsed / 10, "\(foldedUsed) vs \(openUsed)")
 check("and the note is short again, no overscroll", stv.frame.height <= 400.5, "\(stv.frame.height)")
 
+// Date keywords and chips. The clock is pinned: 2026-10-05 in Singapore.
+Dates.now = { Date(timeIntervalSince1970: 1_791_214_200) }
+Dates.calendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Asia/Singapore")!; return c }
+let none = NSRange(location: NSNotFound, length: 0)
+/// One pass of the run loop, as after each key event: closes the event's
+/// undo group and runs the date conversion queued for after it (`type`
+/// above makes one per key).
+func pass() { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
+load("")
+type("@today ")
+check("typing @today then space gives the date", tv.string == "2026-10-05 " && caret() == 11, "\(tv.string.debugDescription) \(caret())")
+tv.undoManager?.undo()
+// As everywhere in NSTextView, the undone text comes back selected.
+check("one undo gives back @today and the space", tv.string == "@today " && tv.selectedRange() == NSRange(location: 0, length: 6), "\(tv.string.debugDescription) \(tv.selectedRange())")
+load("")
+type("@today")
+tv.insertText(" ", replacementRange: none)
+tv.insertText("x", replacementRange: none)
+pass()
+check("a key typed before the conversion runs is kept", tv.string == "2026-10-05 x" && caret() == 12, "\(tv.string.debugDescription) \(caret())")
+load("")
+type("@today...")
+check("@today then ... gives the date and an ellipsis", tv.string == "2026-10-05\u{2026}" && caret() == 11, "\(tv.string.debugDescription) \(caret())")
+tv.undoManager?.undo()
+check("undo takes back the ellipsis alone", tv.string == "2026-10-05...", tv.string.debugDescription)
+// How the typed dots group depends on the run loop; the date's own step
+// still comes back before the keyword's typing goes.
+var undoStates: [String] = []
+while tv.undoManager?.canUndo == true, undoStates.count < 6 { tv.undoManager?.undo(); undoStates.append(tv.string) }
+check("further undos give back @today before removing it", undoStates.contains { $0.hasPrefix("@today") }, "\(undoStates)")
+load("")
+type("@today --> ")
+check("a date then an arrow both convert", tv.string == "2026-10-05 \u{2192} ", tv.string.debugDescription)
+load("")
+type("see @Tomorrow.")
+check("a period ends the keyword and stays", tv.string == "see 2026-10-06." && caret() == 15, "\(tv.string.debugDescription) \(caret())")
+load("")
+type("- buy @yesterday")
+tv.insertNewline(nil)
+pass()
+check("enter converts and continues the list", tv.string == "- buy 2026-10-04\n- " && caret() == 19, "\(tv.string.debugDescription) \(caret())")
+tv.undoManager?.undo()
+check("one undo after enter gives back the keyword, keeping the new item", tv.string == "- buy @yesterday\n- ", tv.string.debugDescription)
+load("- a\n- b @today")
+tv.setSelectedRange(NSRange(location: 14, length: 0))
+tv.insertTab(nil)
+pass()
+check("tab nests the item and converts", tv.string == "- a\n  - b 2026-10-05" && caret() == 20, "\(tv.string.debugDescription) \(caret())")
+tv.undoManager?.undo()
+check("one undo after tab gives back the keyword, still nested", tv.string == "- a\n  - b @today", tv.string.debugDescription)
+load("x @today")
+tv.setSelectedRange(NSRange(location: 8, length: 0))
+tv.insertTab(nil)
+pass()
+check("tab on plain text keeps the tab", tv.string == "x 2026-10-05\t" && caret() == 13, "\(tv.string.debugDescription) \(caret())")
+load("")
+type("mail kai@today ")
+check("an email is left alone", tv.string == "mail kai@today ", tv.string.debugDescription)
+load("")
+type("`@today ")
+check("a code span being typed is left alone", tv.string == "`@today ", tv.string.debugDescription)
+load("```\n\n```")
+tv.setSelectedRange(NSRange(location: 4, length: 0))
+type("@today ")
+check("a code block is left alone", tv.string == "```\n@today \n```", tv.string.debugDescription)
+let board = NSPasteboard(name: NSPasteboard.Name("notes-dates-test"))
+board.clearContents()
+board.setString("@today ", forType: .string)
+load("")
+_ = tv.readSelection(from: board, type: .string)
+pass()
+check("pasting @today and a space does not convert", tv.string == "@today ", tv.string.debugDescription)
+board.clearContents()
+board.setString(" ", forType: .string)
+load("@today")
+tv.setSelectedRange(NSRange(location: 6, length: 0))
+_ = tv.readSelection(from: board, type: .string)
+pass()
+check("pasting a space after @today does not convert", tv.string == "@today ", tv.string.debugDescription)
+board.releaseGlobally()
+
+let chipText = "Due 2026-10-05, saved 2026-10-05 1008 - x.md, `2026-10-06`, [a](https://x.com/2026-10-07)\n```\n2026-10-08\n```\n| 2026-10-09\n"
+load(chipText)
+func chipAt(_ needle: String, from: Int = 0) -> Bool {
+  let ns = tv.string as NSString
+  let found = ns.range(of: needle, range: NSRange(location: from, length: ns.length - from))
+  return tv.textStorage!.attribute(Markdown.dateChip, at: found.location, effectiveRange: nil) != nil
+}
+check("a standalone date gets a chip", chipAt("2026-10-05"))
+var chipRange = NSRange()
+_ = tv.textStorage!.attribute(Markdown.dateChip, at: 4, longestEffectiveRange: &chipRange, in: NSRange(location: 0, length: 20))
+check("the chip covers just the date", chipRange == NSRange(location: 4, length: 10), "\(chipRange)")
+check("a generated filename's date gets none", !chipAt("2026-10-05 1008"))
+check("inline code gets none", !chipAt("2026-10-06"))
+check("a link address gets none", !chipAt("2026-10-07"))
+check("a code block gets none", !chipAt("2026-10-08"))
+check("a quote's date gets one", chipAt("2026-10-09"))
+check("the text is unchanged", tv.string == chipText)
+let chipRects = (tv.layoutManager as! TaskBoxLayoutManager).chipRects(forCharacterRange: NSRange(location: 4, length: 10))
+let dateBounds = tv.layoutManager!.boundingRect(forGlyphRange: NSRange(location: 4, length: 10), in: tv.textContainer!)
+let kernAfter = (tv.textStorage!.attribute(.kern, at: 13, effectiveRange: nil) as? NSNumber)?.doubleValue ?? 0
+let kernBefore = (tv.textStorage!.attribute(.kern, at: 3, effectiveRange: nil) as? NSNumber)?.doubleValue ?? 0
+check("the date gets room for the chip on both sides", abs(kernAfter - Double(Markdown.dateChipPad)) < 0.01 && abs(kernBefore - Double(Markdown.dateChipPad)) < 0.01, "\(kernBefore) \(kernAfter)")
+load("- 2026-10-05\n2026-10-06")
+check("a date that starts the line's text keeps its column", abs(textX(0, 2) - column) < 0.5, "\(textX(0, 2))")
+load(chipText)
+let natural = ("2026-10-05" as NSString).size(withAttributes: [.font: Markdown.baseFont]).width
+check("one chip rect, the date's width plus its padding", chipRects.count == 1 && abs(chipRects[0].width - (natural + 2 * Markdown.dateChipPad)) < 1 && chipRects[0].minX < dateBounds.minX && chipRects[0].height > 12 && chipRects[0].height < dateBounds.height + 2, "\(chipRects) \(dateBounds) \(natural)")
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
