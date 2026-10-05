@@ -86,4 +86,18 @@ enum NoteLinks {
     let candidates = names.filter { $0 != filename && NoteNames.parse($0)?.id == id }
     return candidates.count == 1 ? candidates[0] : nil
   }
+
+  /// For a link whose file is gone: where the migration's rename log
+  /// (`NoteNames.RenameLog`) says that name went, following a name renamed
+  /// again, when the file `exists`. This is how a link to a name from
+  /// before ids, which has no id to look up, still opens.
+  static func renamedByLog(_ filename: String, renames: [String: String], exists: (String) -> Bool) -> String? {
+    var name = filename
+    var steps = 0
+    while let next = renames[name], steps < 16 {
+      name = next
+      steps += 1
+    }
+    return name != filename && exists(name) ? name : nil
+  }
 }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   appendDailyEntry,
+  clashCandidate,
   createNewNoteFile,
   duplicateNoteFile,
   newNoteId,
@@ -38,6 +39,7 @@ type NameCase = {
   name: string;
   parsed: { stamp: string; id: string | null; slug: string } | null;
   title: string;
+  clash: string;
 };
 const nameCases: NameCase[] = JSON.parse(
   readFileSync(path.join(__dirname, "../test/note-names.json"), "utf8"),
@@ -48,7 +50,16 @@ const cases: Case[] = [
     "generated names parse as the Swift side parses them (shared fixture)",
     async () => {
       for (const c of nameCases) {
-        assert.deepEqual(parseGeneratedFilename(c.name) ?? null, c.parsed, c.name);
+        assert.equal(
+          clashCandidate(c.name, 2, () => "zzzz"),
+          c.clash,
+          c.name,
+        );
+        assert.deepEqual(
+          parseGeneratedFilename(c.name) ?? null,
+          c.parsed,
+          c.name,
+        );
       }
     },
   ],
@@ -56,9 +67,16 @@ const cases: Case[] = [
     "an empty note is titled from the slug, never the date, time or id",
     async () => {
       for (const c of nameCases) {
-        assert.equal(parseTitleFromContentOrFilename(`/n/${c.name}`, "# \n"), c.title, c.name);
+        assert.equal(
+          parseTitleFromContentOrFilename(`/n/${c.name}`, "# \n"),
+          c.title,
+          c.name,
+        );
       }
-      const title = parseTitleFromContentOrFilename("/n/2026-10-05 1200 ab12 - untitled.md", "");
+      const title = parseTitleFromContentOrFilename(
+        "/n/2026-10-05 1200 ab12 - untitled.md",
+        "",
+      );
       assert.equal(title, "Untitled");
     },
   ],
@@ -67,7 +85,10 @@ const cases: Case[] = [
     async () => {
       assert.match(randomNoteId(), /^[0-9a-z]{4}$/);
       const draws = ["ab12", "ab12", "cd34"];
-      assert.equal(newNoteId(new Set(["ab12"]), () => draws.shift()!), "cd34");
+      assert.equal(
+        newNoteId(new Set(["ab12"]), () => draws.shift()!),
+        "cd34",
+      );
     },
   ],
   [
@@ -81,8 +102,15 @@ const cases: Case[] = [
       assert.ok(a?.id && b?.id && a.id !== b.id, `${first} ${second}`);
       const renamed = await renameNoteFromTitleIfNeeded(first, "Better title");
       const after = parseGeneratedFilename(path.basename(renamed));
-      assert.deepEqual(after, { stamp: a!.stamp, id: a!.id, slug: "better-title" });
-      assert.equal(await renameNoteFromTitleIfNeeded(renamed, "Better Title"), renamed);
+      assert.deepEqual(after, {
+        stamp: a!.stamp,
+        id: a!.id,
+        slug: "better-title",
+      });
+      assert.equal(
+        await renameNoteFromTitleIfNeeded(renamed, "Better Title"),
+        renamed,
+      );
     },
   ],
   [
@@ -117,18 +145,15 @@ const cases: Case[] = [
     },
   ],
   [
-    "a pin follows its note by id, and a pin from before ids follows the migration",
+    "a pin follows its note by id",
     async () => {
       await togglePin("/n/2026-01-01 0900 ab12 - old.md");
-      await togglePin("/n/2026-01-01 0901 - legacy.md");
       const pins = await reconcilePins([
         "/n/2026-01-01 0900 ab12 - new-title.md",
         "/n/2026-01-01 0900 cd34 - same-minute.md",
-        "/n/2026-01-01 0901 ef56 - legacy.md",
       ]);
       assert.deepEqual([...pins].sort(), [
         "/n/2026-01-01 0900 ab12 - new-title.md",
-        "/n/2026-01-01 0901 ef56 - legacy.md",
       ]);
       for (const pin of pins) {
         await removePin(pin);
@@ -136,26 +161,42 @@ const cases: Case[] = [
     },
   ],
   [
-    "a pin follows a note the window renamed (same prefix, new slug)",
+    "a pin from before ids follows the migration's rename log, even with two notes from the same minute",
     async () => {
-      await togglePin("/n/2026-01-01 0900 - old.md");
-      await togglePin("/n/keep.md");
-      const pins = await reconcilePins([
-        "/n/2026-01-01 0900 - new-title.md",
-        "/n/2026-01-01 0901 - other.md",
-        "/n/keep.md",
-      ]);
-      assert.deepEqual([...pins].sort(), ["/n/2026-01-01 0900 - new-title.md", "/n/keep.md"]);
-      // Two candidates with the prefix: the pin is left alone.
-      await togglePin("/n/2026-02-02 1000 - gone.md");
-      const ambiguous = await reconcilePins([
-        "/n/2026-02-02 1000 - a.md",
-        "/n/2026-02-02 1000 - b.md",
-      ]);
-      assert.ok(ambiguous.has("/n/2026-02-02 1000 - gone.md"));
-      for (const pin of ambiguous) {
+      const dir = freshDir();
+      const a = path.join(dir, "2026-01-01 0900 - a.md");
+      const b = path.join(dir, "2026-01-01 0900 - b.md");
+      const newA = path.join(dir, "2026-01-01 0900 k3x9 - a.md");
+      const newB = path.join(dir, "2026-01-01 0900 p0q1 - b.md");
+      writeFileSync(
+        path.join(dir, ".note-renames.json"),
+        JSON.stringify({
+          renames: {
+            "2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md",
+            "2026-01-01 0900 - b.md": "2026-01-01 0900 p0q1 - b.md",
+          },
+          linksRewritten: true,
+        }),
+      );
+      await togglePin(a);
+      await togglePin(b);
+      const pins = await reconcilePins([newA, newB]);
+      assert.deepEqual([...pins].sort(), [newA, newB].sort());
+      for (const pin of pins) {
         await removePin(pin);
       }
+    },
+  ],
+  [
+    "without a rename log, a pin from before ids is not guessed by timestamp",
+    async () => {
+      const dir = freshDir();
+      const gone = path.join(dir, "2026-01-01 0900 - old.md");
+      const other = path.join(dir, "2026-01-01 0900 k3x9 - new-title.md");
+      await togglePin(gone);
+      const pins = await reconcilePins([other]);
+      assert.deepEqual([...pins], [gone]);
+      await removePin(gone);
     },
   ],
   [
@@ -172,15 +213,30 @@ const cases: Case[] = [
       assert.equal(firstLineTitle(">text"), ">text");
       assert.equal(firstLineTitle(">> two"), ">> two");
       assert.equal(firstLineTitle("\n```\ncode\n```\nafter"), "code");
-      assert.equal(firstLineTitle("see [the manual](https://x.y)"), "see the manual");
+      assert.equal(
+        firstLineTitle("see [the manual](https://x.y)"),
+        "see the manual",
+      );
       assert.equal(firstLineTitle("\n\n"), undefined);
       assert.equal(firstLineTitle("a".repeat(100))?.length, 80);
-      assert.equal(firstLineTitle("![diagram](image.png) here"), "diagram here");
+      assert.equal(
+        firstLineTitle("![diagram](image.png) here"),
+        "diagram here",
+      );
       const emoji = firstLineTitle("👍🏽".repeat(90)) ?? "";
       assert.equal([...new Intl.Segmenter().segment(emoji)].length, 80);
       assert.equal(emoji, "👍🏽".repeat(80));
-      assert.equal(parseTitleFromContentOrFilename("/n/2026-01-01 0900 - x.md", "plain first line"), "plain first line");
-      assert.equal(parseTitleFromContentOrFilename("/n/2026-01-01 0900 - my-note.md", ""), "My Note");
+      assert.equal(
+        parseTitleFromContentOrFilename(
+          "/n/2026-01-01 0900 - x.md",
+          "plain first line",
+        ),
+        "plain first line",
+      );
+      assert.equal(
+        parseTitleFromContentOrFilename("/n/2026-01-01 0900 - my-note.md", ""),
+        "My Note",
+      );
     },
   ],
   [
@@ -259,14 +315,20 @@ const cases: Case[] = [
       await appendTaskToDaily(dir, "x");
       await appendDailyEntry(dir, "y");
       const text = readFileSync(daily, "utf8");
-      assert.ok(!/[^\r]\n/.test(text), `mixed endings: ${JSON.stringify(text)}`);
+      assert.ok(
+        !/[^\r]\n/.test(text),
+        `mixed endings: ${JSON.stringify(text)}`,
+      );
       assert.match(text, /- \[ \] x\r\n- \d\d:\d\d y\r\n$/);
     },
   ],
   [
     "collapses multi-line capture into one task",
     async () => {
-      assert.equal(formatTaskLine("  buy\n\n  milk  \r\nand eggs"), "- [ ] buy milk and eggs");
+      assert.equal(
+        formatTaskLine("  buy\n\n  milk  \r\nand eggs"),
+        "- [ ] buy milk and eggs",
+      );
       const dir = freshDir();
       const daily = await appendTaskToDaily(dir, "line one\nline two");
       const tasks = await listTasks(dir);
@@ -274,7 +336,10 @@ const cases: Case[] = [
         tasks.map((t) => t.text),
         ["line one line two"],
       );
-      assert.match(readFileSync(daily, "utf8"), /^# \d{4}-\d{2}-\d{2}\n\n- \[ \] line one line two\n$/);
+      assert.match(
+        readFileSync(daily, "utf8"),
+        /^# \d{4}-\d{2}-\d{2}\n\n- \[ \] line one line two\n$/,
+      );
     },
   ],
   [
@@ -287,7 +352,13 @@ const cases: Case[] = [
       writeFileSync(taken, "# Second\n\nkeep me\n");
 
       const renamed = await renameNoteFromTitleIfNeeded(created, "Second");
-      assert.equal(path.basename(renamed), `${prefix} - second-2.md`);
+      // The clash draws a new id rather than sharing one with "-2".
+      const name = parseGeneratedFilename(path.basename(renamed));
+      assert.equal(name?.slug, "second");
+      assert.notEqual(
+        name?.id,
+        parseGeneratedFilename(path.basename(taken))?.id,
+      );
       assert.equal(readFileSync(taken, "utf8"), "# Second\n\nkeep me\n");
       assert.match(readFileSync(renamed, "utf8"), /^# First/);
       assert.throws(() => readFileSync(created), /ENOENT/);

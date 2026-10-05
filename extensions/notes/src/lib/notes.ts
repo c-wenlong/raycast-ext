@@ -117,9 +117,78 @@ export function newNoteId(
   return id;
 }
 
+/**
+ * The name to try after `filename` was taken, on attempt 2, 3...: a
+ * generated name with an id draws a new id (`newId`), so two notes never
+ * share one; any other name gets "-2", "-3". Mirrors
+ * NoteNames.clashCandidate in helper/NoteNames.swift.
+ */
+export function clashCandidate(
+  filename: string,
+  attempt: number,
+  newId: () => string,
+): string {
+  if (attempt <= 1) {
+    return filename;
+  }
+  const generated = parseGeneratedFilename(filename);
+  if (generated?.id) {
+    return generatedFilename(generated.stamp, newId(), generated.slug);
+  }
+  const extension = path.extname(filename);
+  return `${path.basename(filename, extension)}-${attempt}${extension}`;
+}
+
+/** `clashCandidate` with a new id checked against the folder as it is now. */
+async function candidateIn(
+  dir: string,
+  filename: string,
+  attempt: number,
+): Promise<string> {
+  if (attempt <= 1 || !parseGeneratedFilename(filename)?.id) {
+    return clashCandidate(filename, attempt, () => "");
+  }
+  const id = await freshNoteId(dir);
+  return clashCandidate(filename, attempt, () => id);
+}
+
 async function freshNoteId(dir: string): Promise<string> {
   const names = await readdir(dir).catch(() => [] as string[]);
   return newNoteId(noteIdsIn(names));
+}
+
+/**
+ * The window's record of what its migration to ids renamed in a folder,
+ * `.note-renames.json` beside the notes: old filename to new, exactly.
+ * Mirrors NoteNames.RenameLog in helper/NoteNames.swift. Empty when the
+ * folder has none or it cannot be read.
+ */
+export const RENAME_LOG_NAME = ".note-renames.json";
+
+export async function readRenameLog(
+  dir: string,
+): Promise<Record<string, string>> {
+  try {
+    const parsed = JSON.parse(
+      await readFileUtf8(path.join(dir, RENAME_LOG_NAME)),
+    );
+    const renames = parsed?.renames;
+    return renames && typeof renames === "object" ? renames : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Where the log says `filename` went, following a name renamed again. */
+export function renamedByLog(
+  filename: string,
+  renames: Record<string, string>,
+): string | undefined {
+  let name = filename;
+  for (let steps = 0; steps < 16 && renames[name]; steps += 1) {
+    name = renames[name];
+  }
+  return name === filename ? undefined : name;
 }
 
 export function slugify(title: string): string {
@@ -330,13 +399,9 @@ async function writeUniqueFile(
   baseFilename: string,
   content: string,
 ): Promise<string> {
-  const extension = path.extname(baseFilename);
-  const basename = path.basename(baseFilename, extension);
-
   let attempt = 1;
   while (true) {
-    const candidate =
-      attempt === 1 ? baseFilename : `${basename}-${attempt}${extension}`;
+    const candidate = await candidateIn(dir, baseFilename, attempt);
     const filePath = path.join(dir, candidate);
 
     try {
@@ -491,13 +556,9 @@ async function moveToUniquePath(
   filename: string,
   sourcePath: string,
 ): Promise<string> {
-  const extension = path.extname(filename);
-  const basename = path.basename(filename, extension);
-
   let attempt = 1;
   while (true) {
-    const candidate =
-      attempt === 1 ? filename : `${basename}-${attempt}${extension}`;
+    const candidate = await candidateIn(dir, filename, attempt);
     const candidatePath = path.join(dir, candidate);
 
     try {
@@ -532,13 +593,9 @@ async function renameToUniquePath(
   filename: string,
   sourcePath: string,
 ): Promise<string> {
-  const extension = path.extname(filename);
-  const basename = path.basename(filename, extension);
-
   let attempt = 1;
   while (true) {
-    const candidate =
-      attempt === 1 ? filename : `${basename}-${attempt}${extension}`;
+    const candidate = await candidateIn(dir, filename, attempt);
     const candidatePath = path.join(dir, candidate);
 
     try {

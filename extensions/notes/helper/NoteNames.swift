@@ -38,6 +38,21 @@ func title(of text: String, filename: String) -> String {
   return NoteNames.fallbackTitle(filename: filename)
 }
 
+/// First free path for `filename` in `directory`: a taken generated name
+/// draws a new id (checked against the folder), any other name gets -2,
+/// -3, ... (`NoteNames.clashCandidate`).
+func uniqueNotePath(for filename: String, in directory: String) -> String {
+  var attempt = 1
+  while true {
+    let candidate = NoteNames.clashCandidate(filename, attempt: attempt) {
+      NoteNames.newID(avoiding: NoteNames.ids(in: (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []))
+    }
+    let path = (directory as NSString).appendingPathComponent(candidate)
+    if !FileManager.default.fileExists(atPath: path) { return path }
+    attempt += 1
+  }
+}
+
 enum NoteNames {
   struct Generated: Equatable {
     /// "2026-10-05 1200"
@@ -91,6 +106,18 @@ enum NoteNames {
     return id
   }
 
+  /// The name to try after `filename` was taken, on attempt 2, 3...: a
+  /// generated name with an id draws a new id (`newID`), so two notes never
+  /// share one; any other name gets "-2", "-3". Mirrors clashCandidate in
+  /// src/lib/notes.ts.
+  static func clashCandidate(_ filename: String, attempt: Int, newID: () -> String) -> String {
+    guard attempt > 1 else { return filename }
+    if let generated = parse(filename), generated.id != nil {
+      return Self.filename(stamp: generated.stamp, id: newID(), slug: generated.slug)
+    }
+    return "\((filename as NSString).deletingPathExtension)-\(attempt).md"
+  }
+
   /// The name a generated note gets for the title `title`: same stamp and
   /// id (a fresh one from `newID` for a name from before ids), the title's
   /// slug. Nil for a name that is not generated, or already right.
@@ -119,6 +146,138 @@ enum NoteNames {
       plan.append((name, target))
     }
     return plan
+  }
+
+  // MARK: Migrating a folder
+
+  /// What the migration renamed in a folder, kept beside the notes as
+  /// `.note-renames.json` (hidden, so no list shows it): old filename to
+  /// new, exactly. Browse Notes moves pins with it, and a stale link to an
+  /// old name (which has no id to look up) still opens through it.
+  /// `linksRewritten` is false until every link to the renamed notes has
+  /// been rewritten. Mirrors readRenameLog in src/lib/notes.ts.
+  struct RenameLog: Codable, Equatable {
+    var renames: [String: String] = [:]
+    var linksRewritten = true
+  }
+
+  static let renameLogName = ".note-renames.json"
+
+  static func renameLog(in directory: String) -> RenameLog? {
+    let path = (directory as NSString).appendingPathComponent(renameLogName)
+    guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    return try? JSONDecoder().decode(RenameLog.self, from: data)
+  }
+
+  static func saveRenameLog(_ log: RenameLog, in directory: String) -> Bool {
+    let path = (directory as NSString).appendingPathComponent(renameLogName)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    guard let data = try? encoder.encode(log) else { return false }
+    return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+  }
+
+  struct MigrationOutcome {
+    /// Old path to new, for the renames made in this run.
+    var renamed: [String: String] = [:]
+    /// Old path to new, for every logged rename whose links were rewritten
+    /// in this run (the open note's text is left to the caller).
+    var rewritten: [String: String] = [:]
+    /// True when nothing is left to do: every rename and every link
+    /// rewrite succeeded. Otherwise the next run tries again.
+    var complete = false
+  }
+
+  static func defaultMove(_ from: String, _ to: String) -> Bool {
+    (try? FileManager.default.moveItem(atPath: from, toPath: to)) != nil
+  }
+
+  static func defaultWrite(_ path: String, _ text: String) -> Bool {
+    (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
+  }
+
+  /// Gives every name from before ids in `directory` an id (`migration`),
+  /// logging each rename before it is made, then rewrites links to the
+  /// renamed notes in every note under `root` except `openPath` (the
+  /// window rewrites that one in its text). Safe to run again: it only
+  /// picks up what is left (names still without an id, links not yet
+  /// rewritten). Never touches anything outside `root`.
+  static func migrateFolder(
+    _ directory: String, root: String, openPath: String?, random: () -> String = randomID,
+    move: (String, String) -> Bool = defaultMove, write: (String, String) -> Bool = defaultWrite
+  ) -> MigrationOutcome {
+    let fm = FileManager.default
+    let names = ((try? fm.contentsOfDirectory(atPath: directory)) ?? []).filter { name in
+      let path = (directory as NSString).appendingPathComponent(name)
+      return !name.hasPrefix(".") && name.lowercased().hasSuffix(".md")
+        && (try? fm.attributesOfItem(atPath: path))?[.type] as? FileAttributeType == .typeRegular
+    }
+    var outcome = MigrationOutcome()
+    var log = renameLog(in: directory) ?? RenameLog()
+    let plan = migration(of: names, random: random)
+    if !plan.isEmpty {
+      for step in plan {
+        // A name logged before and renamed again: the old entry follows.
+        for (old, new) in log.renames where new == step.from { log.renames[old] = step.to }
+        log.renames[step.from] = step.to
+      }
+      log.linksRewritten = false
+      // Logged first, so a rename is never made without its record.
+      guard saveRenameLog(log, in: directory) else { return outcome }
+    }
+    var failed = false
+    for step in plan {
+      let from = (directory as NSString).appendingPathComponent(step.from)
+      let to = (directory as NSString).appendingPathComponent(step.to)
+      if !fm.fileExists(atPath: to), move(from, to) {
+        outcome.renamed[from] = to
+      } else {
+        failed = true
+      }
+    }
+    if !log.linksRewritten {
+      var moves: [String: String] = [:]
+      for (old, new) in log.renames {
+        let to = (directory as NSString).appendingPathComponent(new)
+        if fm.fileExists(atPath: to) { moves[(directory as NSString).appendingPathComponent(old)] = to }
+      }
+      let skip = openPath.map { outcome.renamed[$0] ?? $0 }
+      if rewriteLinks(underRoot: root, moves: moves, skipping: skip, write: write) {
+        outcome.rewritten = moves
+        if !failed {
+          log.linksRewritten = true
+          if !saveRenameLog(log, in: directory) { failed = true }
+        }
+      } else {
+        failed = true
+      }
+    }
+    outcome.complete = !failed
+    return outcome
+  }
+
+  /// Rewrites links to the notes in `moves` in every note under `root`
+  /// except `skipping`. Each changed file is written atomically and its
+  /// modification date moves on, so an editor holding it (Raycast's edit
+  /// form checks the date before saving) sees the change rather than
+  /// writing over it. False when any note could not be read or written.
+  @discardableResult
+  static func rewriteLinks(
+    underRoot root: String, moves: [String: String], skipping: String?,
+    write: (String, String) -> Bool = defaultWrite
+  ) -> Bool {
+    guard !moves.isEmpty else { return true }
+    var ok = true
+    for path in markdownFiles(under: root) where path != skipping {
+      guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+        ok = false
+        continue
+      }
+      let directory = (path as NSString).deletingLastPathComponent
+      guard let updated = rewriteLinks(in: text, directory: directory, moves: moves) else { continue }
+      if !write(path, updated) { ok = false }
+    }
+    return ok
   }
 
   // MARK: Rewriting links after a rename

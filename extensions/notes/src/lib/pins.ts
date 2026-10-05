@@ -1,5 +1,5 @@
 import { LocalStorage } from "@raycast/api";
-import { parseGeneratedFilename } from "./notes";
+import { parseGeneratedFilename, readRenameLog, renamedByLog } from "./notes";
 
 // Pins live in Raycast LocalStorage keyed by file path, so the markdown
 // files stay untouched. Renaming a note through the extension moves the pin.
@@ -56,35 +56,46 @@ export async function movePin(fromPath: string, toPath: string): Promise<void> {
  * Pins point at paths, and the notes window renames a generated file
  * ("YYYY-MM-DD HHmm <id> - slug.md") when its first line changes, and
  * gives names from before ids one, without being able to reach this
- * storage. A pinned path that no longer exists is moved to the one
- * existing note in its folder with the same id (or, for a pin from before
- * ids, the same timestamp); other dead pins are left alone (a note may be
- * back later). Returns the pins as they stand afterwards.
+ * storage. A pinned path that no longer exists moves to where the
+ * window's rename log (`.note-renames.json` in its folder) says it went,
+ * else to the one existing note in its folder with the same id. A pin
+ * from before ids with no log entry is left alone (a timestamp is not an
+ * identity: two notes can share a minute), as are other dead pins (a
+ * note may be back later). Returns the pins as they stand afterwards.
  */
 export async function reconcilePins(
   existingPaths: string[],
 ): Promise<Set<string>> {
   const pins = await getPinnedPaths();
   const existing = new Set(existingPaths);
+  const logs = new Map<string, Record<string, string>>();
   let changed = false;
   for (const pinned of [...pins]) {
     if (existing.has(pinned)) {
       continue;
     }
-    const name = parseGeneratedFilename(baseOf(pinned));
-    if (!name) {
-      continue;
+    const dir = dirOf(pinned);
+    if (!logs.has(dir)) {
+      logs.set(dir, await readRenameLog(dir));
     }
-    const candidates = existingPaths.filter((candidate) => {
-      if (candidate === pinned || dirOf(candidate) !== dirOf(pinned)) {
-        return false;
-      }
-      const other = parseGeneratedFilename(baseOf(candidate));
-      return name.id ? other?.id === name.id : other?.stamp === name.stamp;
-    });
-    if (candidates.length === 1) {
+    const logged = renamedByLog(baseOf(pinned), logs.get(dir) ?? {});
+    let target =
+      logged && existing.has(`${dir}/${logged}`)
+        ? `${dir}/${logged}`
+        : undefined;
+    const id = parseGeneratedFilename(baseOf(pinned))?.id;
+    if (!target && id) {
+      const candidates = existingPaths.filter(
+        (candidate) =>
+          candidate !== pinned &&
+          dirOf(candidate) === dir &&
+          parseGeneratedFilename(baseOf(candidate))?.id === id,
+      );
+      target = candidates.length === 1 ? candidates[0] : undefined;
+    }
+    if (target) {
       pins.delete(pinned);
-      pins.add(candidates[0]);
+      pins.add(target);
       changed = true;
     }
   }

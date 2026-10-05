@@ -138,16 +138,9 @@ func listNotes() -> [Note] {
     .sorted { $0.modified > $1.modified }
 }
 
-/// First free path for `filename` in `directory`, adding -2, -3, ...
+/// First free path for `filename` in `directory` (`uniqueNotePath`).
 func uniquePath(for filename: String, in directory: String = notesDir) -> String {
-  let base = (filename as NSString).deletingPathExtension
-  var attempt = 1
-  while true {
-    let candidate = attempt == 1 ? filename : "\(base)-\(attempt).md"
-    let path = (directory as NSString).appendingPathComponent(candidate)
-    if !diskFiles.fileExists(atPath: path) { return path }
-    attempt += 1
-  }
+  uniqueNotePath(for: filename, in: directory)
 }
 
 // MARK: - Entry point

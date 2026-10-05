@@ -961,11 +961,13 @@ do {
     let name: String
     let parsed: Parsed?
     let title: String
+    let clash: String
   }
   let cases = try! JSONDecoder().decode([Case].self, from: Data(contentsOf: URL(fileURLWithPath: "test/note-names.json")))
   for c in cases {
     let got = NoteNames.parse(c.name).map { Case.Parsed(stamp: $0.stamp, id: $0.id, slug: $0.slug) }
     check("parses \(c.name)", got == c.parsed, "\(String(describing: got))")
+    check("a clash on \(c.name) tries \(c.clash)", NoteNames.clashCandidate(c.name, attempt: 2, newID: { "zzzz" }) == c.clash, NoteNames.clashCandidate(c.name, attempt: 2, newID: { "zzzz" }))
     check("an empty note named \(c.name) is titled \(c.title)", title(of: "# \n", filename: c.name) == c.title, title(of: "# \n", filename: c.name))
   }
   check("the empty-note title never shows the date, time or id", !title(of: "", filename: "2026-10-05 1200 ab12 - untitled.md").contains("ab12")
@@ -1031,6 +1033,84 @@ do {
   check("rewriting walks every .md under the root, never hidden files or symlinks", walkedNames == ["a.md", "b.md"], "\(walked) \(walkedNames)")
   check("the walk keeps the root as given, so paths match the window's", NoteNames.markdownFiles(under: root).allSatisfy { $0.hasPrefix(root + "/") }, "\(NoteNames.markdownFiles(under: root))")
   try? fm.removeItem(atPath: root)
+}
+
+// Migrating a folder: the rename log, retries and modification dates
+
+do {
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-migrate-\(getpid())"
+  func reset() {
+    try? fm.removeItem(atPath: dir)
+    try! fm.createDirectory(atPath: dir + "/sub", withIntermediateDirectories: true)
+    let old = Date(timeIntervalSince1970: 1_700_000_000)
+    for (name, text) in [
+      ("2026-10-01 0900 - a.md", "# A\n\n[b](2026-10-01%200900%20-%20b.md)\n"),
+      ("2026-10-01 0900 - b.md", "# B\n"),
+      ("2026-10-01.md", "[a](2026-10-01%200900%20-%20a.md)\n"),
+      ("sub/s.md", "[b](../2026-10-01%200900%20-%20b.md)\n"),
+    ] {
+      try! text.write(toFile: dir + "/" + name, atomically: true, encoding: .utf8)
+      try! fm.setAttributes([.modificationDate: old], ofItemAtPath: dir + "/" + name)
+    }
+  }
+  func read(_ name: String) -> String { (try? String(contentsOfFile: dir + "/" + name, encoding: .utf8)) ?? "<missing>" }
+  var ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+
+  reset()
+  let first = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! })
+  let log = NoteNames.renameLog(in: dir)
+  check("migration records the exact old to new filenames", log?.renames == ["2026-10-01 0900 - a.md": "2026-10-01 0900 aaaa - a.md", "2026-10-01 0900 - b.md": "2026-10-01 0900 bbbb - b.md"], "\(String(describing: log))")
+  check("a full run is complete and rewrites links", first.complete && log?.linksRewritten == true
+    && read("2026-10-01 0900 aaaa - a.md").contains("](2026-10-01%200900%20bbbb%20-%20b.md)")
+    && read("2026-10-01.md") == "[a](2026-10-01%200900%20aaaa%20-%20a.md)\n" && read("sub/s.md") == "[b](../2026-10-01%200900%20bbbb%20-%20b.md)\n",
+    "\(read("2026-10-01.md")) \(read("sub/s.md"))")
+  let bumped = (try? fm.attributesOfItem(atPath: dir + "/2026-10-01.md"))?[.modificationDate] as? Date
+  check("a rewritten note's modification date moves on, so editors see the change", (bumped ?? .distantPast) > Date(timeIntervalSince1970: 1_700_000_000), "\(String(describing: bumped))")
+  check("a run after a complete one does nothing", NoteNames.migrateFolder(dir, root: dir, openPath: nil).complete
+    && NoteNames.renameLog(in: dir)?.renames.count == 2 && (try! fm.contentsOfDirectory(atPath: dir)).filter { $0.hasSuffix(".md") }.count == 3)
+
+  reset()
+  ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  let failedMove = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! },
+    move: { from, to in from.hasSuffix(" - b.md") ? false : ((try? fm.moveItem(atPath: from, toPath: to)) != nil) })
+  check("a failed rename leaves the run incomplete", !failedMove.complete && fm.fileExists(atPath: dir + "/2026-10-01 0900 - b.md"))
+  let retried = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! })
+  let retriedLog = NoteNames.renameLog(in: dir)
+  check("the next run retries it and completes", retried.complete && !fm.fileExists(atPath: dir + "/2026-10-01 0900 - b.md")
+    && retriedLog?.renames["2026-10-01 0900 - b.md"].map { fm.fileExists(atPath: dir + "/" + $0) } == true
+    && retriedLog?.renames["2026-10-01 0900 - a.md"] == "2026-10-01 0900 aaaa - a.md", "\(String(describing: retriedLog))")
+  check("and the links to it follow", read("sub/s.md").contains(ListEditing.encodedLinkTarget("../" + (retriedLog?.renames["2026-10-01 0900 - b.md"] ?? "?"))), read("sub/s.md"))
+
+  reset()
+  ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  let failedWrite = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! }, write: { path, _ in !path.hasSuffix("s.md") })
+  check("a failed link rewrite leaves the run incomplete", !failedWrite.complete && NoteNames.renameLog(in: dir)?.linksRewritten == false
+    && read("sub/s.md") == "[b](../2026-10-01%200900%20-%20b.md)\n")
+  check("the next run rewrites the links it missed", NoteNames.migrateFolder(dir, root: dir, openPath: nil).complete
+    && read("sub/s.md") == "[b](../2026-10-01%200900%20bbbb%20-%20b.md)\n", read("sub/s.md"))
+
+  let names = ["2026-10-01 0900 bbbb - b.md", "x.md"]
+  let renames = ["2026-10-01 0900 - b.md": "2026-10-01 0900 bbbb - b.md"]
+  check("a stale link to a name from before ids resolves through the log", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, exists: names.contains) == "2026-10-01 0900 bbbb - b.md")
+  check("not when the logged note is gone, or the name is not logged", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, exists: { _ in false }) == nil
+    && NoteLinks.renamedByLog("2026-10-01 0900 - c.md", renames: renames, exists: names.contains) == nil)
+  check("a log entry renamed again is followed", NoteLinks.renamedByLog("o.md", renames: ["o.md": "m.md", "m.md": "n.md"], exists: { $0 == "n.md" }) == "n.md")
+  check("the log is hidden from the note list", NoteNames.renameLogName.hasPrefix("."))
+  try? fm.removeItem(atPath: dir)
+}
+
+do {
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-clash-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "x".write(toFile: dir + "/2026-10-05 1200 ab12 - x.md", atomically: true, encoding: .utf8)
+  let free = uniqueNotePath(for: "2026-10-05 1200 ab12 - x.md", in: dir)
+  let parsed = NoteNames.parse((free as NSString).lastPathComponent)
+  check("a taken generated name gets a new id, never a shared one", parsed?.slug == "x" && parsed?.id != nil && parsed?.id != "ab12", free)
+  check("a free name is used as it is", uniqueNotePath(for: "2026-10-05 1200 cd34 - y.md", in: dir) == dir + "/2026-10-05 1200 cd34 - y.md")
+  try? fm.removeItem(atPath: dir)
 }
 
 print("\(count - failures)/\(count) passed")
