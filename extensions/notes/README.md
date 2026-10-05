@@ -60,6 +60,7 @@ Inside the window:
 | `⇥` / `⇧⇥` in a list | nest / unnest the item with everything under it |
 | `⌫` right after a marker | remove the marker (a nested item steps out first) |
 | ```` ``` ```` then `↩` or `Space` | open a code block and add its closing fence |
+| `@today`, `@tomorrow` or `@yesterday` then `Space`, `↩`, `⇥` or punctuation | the word becomes the local date, `2026-10-05`, keeping what you typed after it; `⌘Z` right after gives the word back. Only at the start of a word (not in `kai@today.com`), never in code or a link address; pasted text is left alone |
 | paste a URL over a selection | turn the selection into `[text](url)` |
 | `⌘Z` / `⇧⌘Z` | undo / redo; each typing rule and formatting key is one step |
 
@@ -72,7 +73,11 @@ spanning its lines). A marker forms only with the space after it: `|text`,
 in the window, per note, until the helper quits; the file never changes. The
 caret skips over markers and hidden children, Backspace and Delete look through
 them to the styled text, and a pair left empty disappears, so styled text
-is removed by removing the text. Edits save 0.4s after you stop typing, and
+is removed by removing the text. A date standing on its own (`2026-10-05`,
+also in brackets or before punctuation) sits on a faint accent chip; one
+glued to other text (`2026-10-05.md`, `x-2026-10-05`), followed by a time
+(`2026-10-05 1008`, as in generated filenames) or in code or a link address
+stays plain. Edits save 0.4s after you stop typing, and
 the window reloads a note that another program changes.
 
 The window is a native helper, `helper/main.swift`, compiled into
