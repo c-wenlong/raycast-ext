@@ -633,7 +633,12 @@ check("words match the title in any case, order kept", NoteLinks.matches("PROJ",
 check("every word must match", NoteLinks.matches("proj old", in: targets).map(\.title) == ["Old project notes"])
 check("the filename matches too", NoteLinks.matches("grocer", in: targets).map(\.title) == ["Groceries"] && NoteLinks.matches("elsewhere", in: targets).count == 1)
 check("a note beside the open one is linked by filename", NoteLinks.linkTarget(for: "/n/a b.md", from: "/n") == "a b.md" && NoteLinks.linkTarget(for: "/n/a.md", from: "/n/") == "a.md")
-check("a note elsewhere by its path", NoteLinks.linkTarget(for: "/m/a.md", from: "/n") == "/m/a.md")
+check("a note elsewhere by a relative path", NoteLinks.linkTarget(for: "/m/a.md", from: "/n") == "../m/a.md", NoteLinks.linkTarget(for: "/m/a.md", from: "/n"))
+check("from a subfolder note, a root note is ../name and resolves back", NoteLinks.linkTarget(for: "/n/a b.md", from: "/n/sub") == "../a b.md"
+  && NoteLinks.notePath(for: URL(string: ListEditing.encodedLinkTarget(NoteLinks.linkTarget(for: "/n/a b.md", from: "/n/sub")))!, in: "/n/sub") == "/n/a b.md")
+check("a note in a folder below is sub/name", NoteLinks.linkTarget(for: "/n/sub/a.md", from: "/n") == "sub/a.md")
+check("only a note directly in the notes folder opens in the window", NoteLinks.opensInWindow("/n/a.md", root: "/n") && NoteLinks.opensInWindow("/n/./a.md", root: "/n/")
+  && !NoteLinks.opensInWindow("/n/sub/a.md", root: "/n") && !NoteLinks.opensInWindow("/m/a.md", root: "/n") && !NoteLinks.opensInWindow("/n/../m/a.md", root: "/n"))
 check("a relative .md link resolves in the note's folder", NoteLinks.notePath(for: URL(string: "My%20Note.md")!, in: "/n") == "/n/My Note.md")
 check("parent folders and fragments resolve", NoteLinks.notePath(for: URL(string: "../x.md#top")!, in: "/n/sub") == "/n/x.md")
 check("an absolute or file: path stays", NoteLinks.notePath(for: URL(string: "/a/b.md")!, in: "/n") == "/a/b.md" && NoteLinks.notePath(for: URL(string: "file:///a/b.md")!, in: "/n") == "/a/b.md")
@@ -642,9 +647,19 @@ let inserted = ListEditing.noteLink(title: "Project plan", target: "2026-10-05 1
 let insertedSpan = LinkController.span(in: "x " + inserted, at: 3)
 check("the inserted link is one markdown link the window styles", insertedSpan?.range == NSRange(location: 2, length: (inserted as NSString).length) && insertedSpan.flatMap { URL(string: $0.url) }.flatMap { NoteLinks.notePath(for: $0, in: "/n") } == "/n/2026-10-05 1200 - project-plan.md",
   "\(String(describing: insertedSpan))")
-check("a renamed generated note is found by its timestamp", NoteLinks.renamedNote("2026-10-05 1200 - old-title.md", among: ["2026-10-05 1200 - new-title.md", "other.md"]) == "2026-10-05 1200 - new-title.md")
-check("not when two notes share the timestamp", NoteLinks.renamedNote("2026-10-05 1200 - old.md", among: ["2026-10-05 1200 - a.md", "2026-10-05 1200 - a-copy.md"]) == nil)
-check("not for a hand-named note", NoteLinks.renamedNote("groceries.md", among: ["groceries-2.md"]) == nil)
+let titlesByName = ["2026-10-05 1200 - plan.md": "# Project **plan**", "2026-10-05 1200 - shopping.md": "Shopping", "2026-10-05 1200 - plan-copy.md": "Project plan copy"]
+func renamed(_ file: String, _ names: [String], _ text: String) -> String? {
+  NoteLinks.renamedNote(file, among: names, linkText: text, firstLineOf: { titlesByName[$0].flatMap(Titles.firstLine(of:)) })
+}
+check("a renamed generated note is found by its timestamp and title", renamed("2026-10-05 1200 - project-plan.md", ["2026-10-05 1200 - plan.md", "other.md"], "Project plan") == "2026-10-05 1200 - plan.md")
+check("an unrelated note from the same minute is not opened", renamed("2026-10-05 1200 - project-plan.md", ["2026-10-05 1200 - shopping.md"], "Project plan") == nil)
+check("among notes sharing the timestamp, the one titled like the link", renamed("2026-10-05 1200 - x.md", ["2026-10-05 1200 - shopping.md", "2026-10-05 1200 - plan.md", "2026-10-05 1200 - plan-copy.md"], "Project plan") == "2026-10-05 1200 - plan.md")
+check("not for a hand-named note", renamed("groceries.md", ["groceries-2.md"], "Groceries") == nil)
+let headFile = NSTemporaryDirectory() + "notes-head-\(getpid()).md"
+try! ("# Big note\n" + String(repeating: "word ", count: 400_000)).write(toFile: headFile, atomically: true, encoding: .utf8)
+let head = NoteLinks.headText(atPath: headFile)
+check("a large note is read only as far as its title needs", head.map { ($0 as NSString).length <= NoteLinks.headLimit } == true && head.flatMap(Titles.firstLine(of:)) == "Big note", "\(head?.count ?? -1)")
+try? FileManager.default.removeItem(atPath: headFile)
 check("editing a note link keeps it relative", LinkController.normalizedURL("Other%20Note.md") == "Other%20Note.md" && LinkController.normalizedURL("example.com") == "https://example.com")
 
 var targetReads = 0
@@ -693,6 +708,25 @@ typeKeys("[[@today ")
 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))  // the date conversion would land on this pass
 check("a date keyword in an open note query stays text", tv.notePickerIsOpen && tv.string == "[[@today ", tv.string.debugDescription)
 press(53)
+// A note loaded in place of another drops the cached targets and any dismissal.
+tv.noteLinkTargets = { [NoteLinks.Target(title: "Alpha", target: "alpha.md", modified: Date())] }
+load("")
+typeKeys("[[")
+press(53)
+tv.noteLinkTargets = { [NoteLinks.Target(title: "Beta", target: "beta.md", modified: Date())] }
+load("[[")
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+typeKeys("b")
+check("another note's [[ reads the folder afresh", tv.notePickerIsOpen && (tv.subviews.first { ($0 as? InlinePicker)?.isHidden == false } as? InlinePicker)?.items.map(\.title) == ["Beta"])
+press(53)
+// Each picker keeps its own dismissal.
+tv.noteLinkTargets = { [NoteLinks.Target(title: "gro: list", target: "g.md", modified: Date())] }
+load("")
+typeKeys("[[gro")
+press(53)
+typeKeys(":")
+typeKeys(" ")
+check("a : typed after an escaped [[ does not bring the note picker back", !tv.notePickerIsOpen && tv.string == "[[gro: ", tv.string.debugDescription)
 tv.noteLinkTargets = realTargets
 load("`")
 tv.setSelectedRange(NSRange(location: 1, length: 0))

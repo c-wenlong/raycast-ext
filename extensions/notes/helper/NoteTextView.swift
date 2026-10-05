@@ -331,6 +331,7 @@ final class NoteTextView: NSTextView {
     get { super.string }
     set {
       textGeneration += 1
+      closePicker()
       super.string = newValue
       if let storage = textStorage, storage.length > 0 {
         storage.removeAttribute(Markdown.toggleCollapsed, range: NSRange(location: 0, length: storage.length))
@@ -826,9 +827,15 @@ final class NoteTextView: NSTextView {
   }
 
   private var openPicker: OpenPicker?
-  /// The trigger last closed with escape: typing on after it does not
-  /// open the picker again (until a new trigger character is typed).
-  private var dismissedTrigger: Int?
+  /// Per picker, the trigger last closed with escape (and the text it was
+  /// in): typing on after it does not open that picker again, until a new
+  /// trigger of the same kind is typed or another note is loaded.
+  private var dismissed: [PickerKind: (start: Int, generation: Int)] = [:]
+
+  private func isDismissed(_ kind: PickerKind, at start: Int) -> Bool {
+    guard let mark = dismissed[kind] else { return false }
+    return mark.start == start && mark.generation == textGeneration
+  }
 
   private lazy var slashMenu = SlashMenu { [weak self] entry in self?.pickSlashEntry(entry) }
   private lazy var emojiPicker = InlinePicker(
@@ -844,9 +851,10 @@ final class NoteTextView: NSTextView {
   /// controller lists the folder). Nil: no note picker.
   var noteLinkTargets: (() -> [NoteLinks.Target])?
   /// The targets as read when the note picker last opened, and the "[["
-  /// they were read for: typing on after the same "[[" reuses them.
+  /// (and text) they were read for: typing on after the same "[[" in the
+  /// same note reuses them.
   private var noteTargets: [NoteLinks.Target] = []
-  private var noteTargetsTrigger: Int?
+  private var noteTargetsTrigger: (start: Int, generation: Int)?
 
   var slashMenuIsOpen: Bool { openPicker?.kind == .slash }
   var emojiPickerIsOpen: Bool { openPicker?.kind == .emoji }
@@ -1043,7 +1051,7 @@ final class NoteTextView: NSTextView {
     case 126: view.move(by: -1)
     case 36, 48: view.pick()  // return, tab
     case 53:  // escape
-      if open.kind != .slash { dismissedTrigger = open.start }
+      if open.kind != .slash { dismissed[open.kind] = (open.start, textGeneration) }
       closePicker()
     default: return false
     }
@@ -1054,14 +1062,14 @@ final class NoteTextView: NSTextView {
   /// the caret has just completed (":" and two letters, or "[[").
   private func openPickerForTypedTrigger() {
     let caret = selectedRange().location
-    if let colon = ListEditing.emojiTrigger(in: string, cursor: caret), colon != dismissedTrigger {
+    if let colon = ListEditing.emojiTrigger(in: string, cursor: caret), !isDismissed(.emoji, at: colon) {
       showPicker(.emoji, at: colon, trigger: ":")
     } else if let source = noteLinkTargets, let open = ListEditing.noteLinkTrigger(in: string, cursor: caret),
-      open != dismissedTrigger
+      !isDismissed(.noteLink, at: open)
     {
-      if noteTargetsTrigger != open {
+      if noteTargetsTrigger?.start != open || noteTargetsTrigger?.generation != textGeneration {
         noteTargets = source()
-        noteTargetsTrigger = open
+        noteTargetsTrigger = (open, textGeneration)
       }
       showPicker(.noteLink, at: open, trigger: "[[")
     }
@@ -1350,12 +1358,12 @@ final class NoteTextView: NSTextView {
     // "[[", also starts its own undo group, for the same reason: the
     // picker opens a keystroke or two later.
     if typed == ":", typing {
-      dismissedTrigger = nil
+      dismissed[.emoji] = nil
       if ListEditing.emojiColonCanStart(in: self.string, at: selectedRange().location) { breakUndoCoalescing() }
     }
     if typed == "[", typing {
       if ListEditing.noteLinkCanStart(in: self.string, at: selectedRange().location) {
-        dismissedTrigger = nil
+        dismissed[.noteLink] = nil
         noteTargetsTrigger = nil
         breakUndoCoalescing()
       }

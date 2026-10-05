@@ -895,11 +895,40 @@ enum NoteLinks {
   }
 
   /// The address for a link from a note in `directory` to the note at
-  /// `path`: its filename when it sits in the same folder, else its path.
+  /// `path`: relative to that folder (its filename beside it, `sub/x.md`
+  /// below it, `../x.md` from a subfolder), so it resolves the same way a
+  /// click does.
   static func linkTarget(for path: String, from directory: String) -> String {
-    let folder = ((path as NSString).deletingLastPathComponent as NSString).standardizingPath
-    if folder == (directory as NSString).standardizingPath { return (path as NSString).lastPathComponent }
-    return path
+    let target = ((path as NSString).standardizingPath as NSString).pathComponents
+    let base = ((directory as NSString).standardizingPath as NSString).pathComponents
+    var shared = 0
+    while shared < min(target.count - 1, base.count), target[shared] == base[shared] { shared += 1 }
+    let up = Array(repeating: "..", count: base.count - shared)
+    return (up + target[shared...]).joined(separator: "/")
+  }
+
+  /// True when the note at `path` sits directly in the notes folder
+  /// `root`, the only folder the window lists and keeps a note open from;
+  /// a link to anything else opens in its default app.
+  static func opensInWindow(_ path: String, root: String) -> Bool {
+    let folder = ((path as NSString).standardizingPath as NSString).deletingLastPathComponent
+    return folder == (root as NSString).standardizingPath
+  }
+
+  /// How much of a note the "[[" picker reads for its title.
+  static let headLimit = 4096
+
+  /// The start of the file at `path`, up to `limit` bytes, as text (a
+  /// character cut at the end is dropped): enough for the title without
+  /// reading a long note whole. Nil when the file cannot be read.
+  static func headText(atPath path: String, limit: Int = headLimit) -> String? {
+    guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+    defer { try? handle.close() }
+    guard let data = try? handle.read(upToCount: limit) else { return "" }
+    var bytes = data
+    // Drop a UTF-8 sequence cut by the limit, so the text decodes.
+    while !bytes.isEmpty, String(data: bytes, encoding: .utf8) == nil, data.count - bytes.count < 4 { bytes.removeLast() }
+    return String(data: bytes, encoding: .utf8)
   }
 
   /// The file a note link points at, resolved against `directory` (the
@@ -917,13 +946,22 @@ enum NoteLinks {
 
   /// A generated filename (`YYYY-MM-DD HHmm - slug.md`) is renamed when
   /// its note's title changes, but keeps its timestamp. For a link to such
-  /// a file that no longer exists, the one file in `names` with the same
-  /// timestamp; nil when there is none or more than one (a duplicate).
-  static func renamedNote(_ filename: String, among names: [String]) -> String? {
+  /// a file that no longer exists: the file in `names` with the same
+  /// timestamp whose first line (`firstLineOf`, by filename, as
+  /// `Titles.firstLine` gives it) reads as the link's text. Nil when none
+  /// does, so a deleted note's link never opens another note from the
+  /// same minute.
+  static func renamedNote(
+    _ filename: String, among names: [String], linkText: String, firstLineOf: (String) -> String?
+  ) -> String? {
     let ns = filename as NSString
-    guard let match = generatedPrefix.firstMatch(in: filename, range: NSRange(location: 0, length: ns.length)) else { return nil }
+    guard let match = generatedPrefix.firstMatch(in: filename, range: NSRange(location: 0, length: ns.length)),
+      let wanted = Titles.firstLine(of: linkText)?.lowercased()
+    else { return nil }
     let prefix = ns.substring(with: match.range)
-    let candidates = names.filter { $0.hasPrefix(prefix) && $0.lowercased().hasSuffix(".md") && $0 != filename }
+    let candidates = names.filter {
+      $0.hasPrefix(prefix) && $0.lowercased().hasSuffix(".md") && $0 != filename && firstLineOf($0)?.lowercased() == wanted
+    }
     return candidates.count == 1 ? candidates[0] : nil
   }
 }
