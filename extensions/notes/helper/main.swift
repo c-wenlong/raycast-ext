@@ -116,8 +116,6 @@ struct Note {
   var filename: String { (path as NSString).lastPathComponent }
 }
 
-let generatedNamePattern = try! NSRegularExpression(
-  pattern: #"^(\d{4}-\d{2}-\d{2} \d{4}) - (.+)\.md$"#)
 let dailyNamePattern = try! NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}\.md$"#)
 let headingPattern = try! NSRegularExpression(pattern: #"^#\s+(.+?)\s*$"#, options: .anchorsMatchLines)
 let taskPattern = try! NSRegularExpression(pattern: #"^(\s*[-*+]\s+)\[([ xX])\]"#)
@@ -138,39 +136,6 @@ func listNotes() -> [Note] {
       return Note(path: path, modified: modified)
     }
     .sorted { $0.modified > $1.modified }
-}
-
-/// Mirrors slugify() in src/lib/notes.ts so both editors name files alike.
-func slugify(_ title: String) -> String {
-  let folded = title.lowercased().folding(options: .diacriticInsensitive, locale: nil)
-  let kept = folded.unicodeScalars.filter {
-    ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == " " || $0 == "-"
-  }
-  let words = String(String.UnicodeScalarView(kept)).split(whereSeparator: { $0 == " " || $0 == "-" })
-  let slug = words.joined(separator: "-")
-  return slug.isEmpty ? "untitled" : slug
-}
-
-func humanize(_ slug: String) -> String {
-  slug.split(whereSeparator: { $0 == "-" || $0 == "_" })
-    .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-    .joined(separator: " ")
-}
-
-func title(of text: String, filename: String) -> String {
-  if let first = Titles.firstLine(of: text) { return first }
-  let base = (filename as NSString).deletingPathExtension
-  if let match = generatedNamePattern.firstMatch(in: filename, range: fullRange(filename)) {
-    return humanize((filename as NSString).substring(with: match.range(at: 2)))
-  }
-  return humanize(base)
-}
-
-func timestampPrefix(_ date: Date = Date()) -> String {
-  let formatter = DateFormatter()
-  formatter.locale = Locale(identifier: "en_US_POSIX")
-  formatter.dateFormat = "yyyy-MM-dd HHmm"
-  return formatter.string(from: date)
 }
 
 /// First free path for `filename` in `directory`, adding -2, -3, ...

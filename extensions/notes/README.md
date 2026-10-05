@@ -102,9 +102,18 @@ Raycast LocalStorage so the files stay untouched.
 Naming:
 
 - Daily note: `2026-09-26.md`
-- Regular note: `2026-09-26 1400 - project-ideas.md`; the slug follows the
-  note's first line (markdown stripped) and is renamed on save when that
-  line changes. Pins follow the rename.
+- Regular note: `2026-09-26 1400 k3x9 - project-ideas.md`: the minute it was
+  made, a stable id (four lowercase base36 characters, unique in the folder)
+  and a slug. The slug follows the note's first line (markdown stripped) and
+  the file is renamed on save when that line changes; the id never changes
+  and never shows as a title. Pins follow the rename, and when the window
+  renames a note it rewrites links to it (link addresses only) in every note
+  under the notes folder. A link that went stale anyway (a rename made by
+  Browse Notes) still opens the note carrying its id.
+- Notes from before ids (`2026-09-26 1400 - project-ideas.md`) get one once,
+  when the window first lists the folder, with their links rewritten. Daily
+  notes and hand-named files keep their names: they are never renamed, so
+  links to them never go stale.
 
 ## Development
 

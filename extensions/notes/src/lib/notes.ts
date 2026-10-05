@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import { randomInt } from "node:crypto";
 import { access, link, readdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -34,6 +35,7 @@ function formatDateYYYYMMDD(date: Date): string {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
+/** A slug or filename as words. Mirrors humanize() in helper/NoteNames.swift. */
 function humanizeSlug(value: string): string {
   const words = value
     .replace(/[-_]+/g, " ")
@@ -52,6 +54,72 @@ function humanizeSlug(value: string): string {
 
 function isDailyFilename(filename: string): boolean {
   return /^\d{4}-\d{2}-\d{2}\.md$/i.test(filename);
+}
+
+/**
+ * A generated note name, `YYYY-MM-DD HHmm <id> - slug.md`: the minute the
+ * note was made, a stable id (four lowercase base36 characters, unique in
+ * its folder) and the title's slug. Names from before ids
+ * (`YYYY-MM-DD HHmm - slug.md`) parse with no id. Mirrors NoteNames in
+ * helper/NoteNames.swift.
+ */
+export type GeneratedName = { stamp: string; id: string | null; slug: string };
+
+const GENERATED_NAME =
+  /^(\d{4}-\d{2}-\d{2} \d{4})(?: ([0-9a-z]{4}))? - (.+)\.md$/;
+
+export function parseGeneratedFilename(
+  filename: string,
+): GeneratedName | undefined {
+  const match = filename.match(GENERATED_NAME);
+  if (!match) {
+    return undefined;
+  }
+  return { stamp: match[1], id: match[2] ?? null, slug: match[3] };
+}
+
+export function generatedFilename(
+  stamp: string,
+  id: string,
+  slug: string,
+): string {
+  return `${stamp} ${id} - ${slug}.md`;
+}
+
+const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+export function randomNoteId(): string {
+  let id = "";
+  for (let i = 0; i < 4; i += 1) {
+    id += ID_ALPHABET[randomInt(ID_ALPHABET.length)];
+  }
+  return id;
+}
+
+/** The ids the generated names in `names` carry. */
+export function noteIdsIn(names: string[]): Set<string> {
+  return new Set(
+    names
+      .map((name) => parseGeneratedFilename(name)?.id)
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
+/** A fresh id, drawn again while it clashes with `taken`. */
+export function newNoteId(
+  taken: Set<string>,
+  random: () => string = randomNoteId,
+): string {
+  let id = random();
+  for (let tries = 0; taken.has(id) && tries < 10_000; tries += 1) {
+    id = random();
+  }
+  return id;
+}
+
+async function freshNoteId(dir: string): Promise<string> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  return newNoteId(noteIdsIn(names));
 }
 
 export function slugify(title: string): string {
@@ -127,16 +195,14 @@ export function parseTitleFromContentOrFilename(
     return firstLine;
   }
 
-  const filename = path.basename(filePath, ".md");
-  const regularNoteMatch = filename.match(
-    /^\d{4}-\d{2}-\d{2}\s\d{4}\s-\s(.+)$/,
-  );
-
-  if (regularNoteMatch?.[1]) {
-    return humanizeSlug(regularNoteMatch[1]);
+  // An empty note: the slug of a generated name, never its date, time
+  // or id; else the filename.
+  const generated = parseGeneratedFilename(path.basename(filePath));
+  if (generated) {
+    return humanizeSlug(generated.slug);
   }
 
-  return humanizeSlug(filename);
+  return humanizeSlug(path.basename(filePath, ".md"));
 }
 
 export function countCharacters(content: string): number {
@@ -207,7 +273,7 @@ export async function listMarkdownFileMetadata(
         const fileStats = await stat(filePath);
         // Title resolution strategy:
         // - For filenames that match the extension's own created pattern
-        //   (e.g. "YYYY-MM-DD HHmm - slug.md"), we derive the visible
+        //   (e.g. "YYYY-MM-DD HHmm <id> - slug.md"), we derive the visible
         //   title from the slug rather than reading the file's H1 heading.
         //   This keeps the Browse Notes list stable when users rename the
         //   note via the UI. The tradeoff is that if a user edits the
@@ -215,8 +281,7 @@ export async function listMarkdownFileMetadata(
         //   that change — the title remains derived from the filename's
         //   slug. This is an intentional design decision and not a bug.
         const shouldReadForTitle =
-          !isDailyFilename(entry.name) &&
-          !/^\d{4}-\d{2}-\d{2}\s\d{4}\s-\s.+\.md$/i.test(entry.name);
+          !isDailyFilename(entry.name) && !parseGeneratedFilename(entry.name);
         const contentForTitle = shouldReadForTitle
           ? await readFileUtf8(filePath)
           : "";
@@ -344,7 +409,11 @@ export async function createNewNoteFile(
 
   const trimmedTitle = title.trim();
   const trimmedContent = content.trim();
-  const filename = `${formatDateYYYYMMDD(date)} ${formatTimeHHmm(date).replace(":", "")} - ${slugify(trimmedTitle)}.md`;
+  const filename = generatedFilename(
+    `${formatDateYYYYMMDD(date)} ${formatTimeHHmm(date).replace(":", "")}`,
+    await freshNoteId(notesDir),
+    slugify(trimmedTitle),
+  );
 
   const fileContent = trimmedContent
     ? `# ${trimmedTitle}\n\n${trimmedContent.replace(/\s+$/, "")}\n`
@@ -359,7 +428,16 @@ export async function duplicateNoteFile(sourcePath: string): Promise<string> {
   const basename = path.basename(sourcePath, extension);
 
   const content = await readFileUtf8(sourcePath);
-  return writeUniqueFile(directory, `${basename} copy${extension}`, content);
+  // A generated name gets an id of its own, so ids stay unique.
+  const generated = parseGeneratedFilename(path.basename(sourcePath));
+  const copyName = generated
+    ? generatedFilename(
+        generated.stamp,
+        await freshNoteId(directory),
+        `${generated.slug}-copy`,
+      )
+    : `${basename} copy${extension}`;
+  return writeUniqueFile(directory, copyName, content);
 }
 
 export async function renameNoteFromTitleIfNeeded(
@@ -373,21 +451,24 @@ export async function renameNoteFromTitleIfNeeded(
     return notePath;
   }
 
-  const base = path.basename(filename, extension);
-  const match = base.match(/^(\d{4}-\d{2}-\d{2}\s\d{4})\s-\s(.+)$/);
-
-  if (!match) {
+  const generated = parseGeneratedFilename(filename);
+  if (!generated) {
     return notePath;
   }
 
-  const prefix = match[1];
-  const nextFilename = `${prefix} - ${slugify(newTitle)}.md`;
-
-  if (nextFilename === filename) {
+  // Only the slug follows the title; the id stays (a name from before
+  // ids gets one). Mirrors NoteNames.renamed in helper/NoteNames.swift.
+  const slug = slugify(newTitle);
+  if (generated.id && generated.slug === slug) {
     return notePath;
   }
 
   const directory = path.dirname(notePath);
+  const nextFilename = generatedFilename(
+    generated.stamp,
+    generated.id ?? (await freshNoteId(directory)),
+    slug,
+  );
   return moveToUniquePath(directory, nextFilename, notePath);
 }
 

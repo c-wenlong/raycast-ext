@@ -1,4 +1,5 @@
 import { LocalStorage } from "@raycast/api";
+import { parseGeneratedFilename } from "./notes";
 
 // Pins live in Raycast LocalStorage keyed by file path, so the markdown
 // files stay untouched. Renaming a note through the extension moves the pin.
@@ -53,10 +54,11 @@ export async function movePin(fromPath: string, toPath: string): Promise<void> {
 
 /**
  * Pins point at paths, and the notes window renames a generated file
- * ("YYYY-MM-DD HHmm - slug.md") when its first line changes without
- * being able to reach this storage. A pinned path that no longer exists
- * is moved to the existing note with the same timestamp prefix, if
- * there is exactly one; other dead pins are left alone (a note may be
+ * ("YYYY-MM-DD HHmm <id> - slug.md") when its first line changes, and
+ * gives names from before ids one, without being able to reach this
+ * storage. A pinned path that no longer exists is moved to the one
+ * existing note in its folder with the same id (or, for a pin from before
+ * ids, the same timestamp); other dead pins are left alone (a note may be
  * back later). Returns the pins as they stand afterwards.
  */
 export async function reconcilePins(
@@ -69,16 +71,17 @@ export async function reconcilePins(
     if (existing.has(pinned)) {
       continue;
     }
-    const prefix = generatedPrefix(pinned);
-    if (!prefix) {
+    const name = parseGeneratedFilename(baseOf(pinned));
+    if (!name) {
       continue;
     }
-    const candidates = existingPaths.filter(
-      (candidate) =>
-        candidate !== pinned &&
-        dirOf(candidate) === dirOf(pinned) &&
-        generatedPrefix(candidate) === prefix,
-    );
+    const candidates = existingPaths.filter((candidate) => {
+      if (candidate === pinned || dirOf(candidate) !== dirOf(pinned)) {
+        return false;
+      }
+      const other = parseGeneratedFilename(baseOf(candidate));
+      return name.id ? other?.id === name.id : other?.stamp === name.stamp;
+    });
     if (candidates.length === 1) {
       pins.delete(pinned);
       pins.add(candidates[0]);
@@ -95,9 +98,8 @@ function dirOf(filePath: string): string {
   return filePath.slice(0, filePath.lastIndexOf("/"));
 }
 
-function generatedPrefix(filePath: string): string | undefined {
-  const filename = filePath.slice(filePath.lastIndexOf("/") + 1);
-  return filename.match(/^(\d{4}-\d{2}-\d{2} \d{4}) - .+\.md$/)?.[1];
+function baseOf(filePath: string): string {
+  return filePath.slice(filePath.lastIndexOf("/") + 1);
 }
 
 export async function removePin(notePath: string): Promise<void> {
