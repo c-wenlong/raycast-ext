@@ -153,12 +153,23 @@ enum NoteNames {
   /// The renames that give every generated name in `names` without an id
   /// one, each unique among the folder's ids and each other. Daily notes
   /// and hand-named files are left alone; run again, it finds nothing.
-  static func migration(of names: [String], avoiding used: Set<String> = [], random: () -> String = randomID) -> [(from: String, to: String)] {
+  /// A name whose rename is already `logged` (an earlier run could not
+  /// move it) gets the logged name again, so a retry reserves no new id.
+  static func migration(
+    of names: [String], avoiding used: Set<String> = [], logged: [String: String] = [:], random: () -> String = randomID
+  ) -> [(from: String, to: String)] {
     var taken = ids(in: names).union(used)
     let existing = Set(names)
     var plan: [(from: String, to: String)] = []
     for name in names.sorted() {
       guard let generated = parse(name), generated.id == nil else { continue }
+      if let target = logged[name], let id = parse(target)?.id, parse(target)?.stamp == generated.stamp,
+        !existing.contains(target)
+      {
+        taken.insert(id)
+        plan.append((name, target))
+        continue
+      }
       var target: String
       repeat {
         let id = newID(avoiding: taken, random: random)
@@ -181,8 +192,9 @@ enum NoteNames {
   ///   {"retire":"k3x9"}                            a deleted note's id
   ///   {"links":"pending"} / {"links":"done"}       links not yet / all rewritten
   /// Readers fold every line in order and skip a line that does not parse
-  /// (a half-written last line included). A `.note-renames.json` from
-  /// before is read too and moved into the log by the first append.
+  /// (a half-written last line included). State follows line order: the
+  /// last "links" event wins, so a "done" never outlives a later
+  /// "pending".
   /// Browse Notes moves pins with the renames, a stale link to an old name
   /// (which has no id to look up) still opens through them, and no new note
   /// gets a logged or retired id. Mirrors readNoteLog in src/lib/notes.ts.
@@ -211,9 +223,6 @@ enum NoteNames {
   }
 
   static let renameLogName = ".note-renames.jsonl"
-  /// The single-file log from before, read and then moved into the
-  /// append-only one.
-  static let oldRenameLogName = ".note-renames.json"
 
   private static func fold(_ event: [String: Any], into log: inout RenameLog) {
     if let pair = event["rename"] as? [String], pair.count == 2 {
@@ -227,18 +236,11 @@ enum NoteNames {
     }
   }
 
-  private static func oldLog(in directory: String) -> RenameLog? {
-    let path = (directory as NSString).appendingPathComponent(oldRenameLogName)
-    guard let data = FileManager.default.contents(atPath: path) else { return nil }
-    return try? JSONDecoder().decode(RenameLog.self, from: data)
-  }
-
   /// The folder's log, folded; nil when it has none.
   static func renameLog(in directory: String) -> RenameLog? {
-    let old = oldLog(in: directory)
     let path = (directory as NSString).appendingPathComponent(renameLogName)
-    guard let data = FileManager.default.contents(atPath: path) else { return old }
-    var log = old ?? RenameLog()
+    guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    var log = RenameLog()
     var lines = data.split(separator: 0x0A, omittingEmptySubsequences: false)
     // Only lines ended by "\n" are whole; a last one without is half written.
     if data.last != 0x0A { lines.removeLast() }
@@ -250,20 +252,12 @@ enum NoteNames {
   }
 
   /// Appends `events` to the folder's log, each line by one O_APPEND write
-  /// (starting on a fresh line if a writer stopped half way). Moves an old
-  /// `.note-renames.json` into the log first. False when it cannot write.
+  /// (starting on a fresh line if a writer stopped half way). False when
+  /// it cannot write.
   @discardableResult
   static func appendLog(_ events: [LogEvent], in directory: String) -> Bool {
     let path = (directory as NSString).appendingPathComponent(renameLogName)
-    let oldPath = (directory as NSString).appendingPathComponent(oldRenameLogName)
-    var all: [[String: Any]] = []
-    let old = oldLog(in: directory)
-    if let old {
-      all += old.renames.sorted { $0.key < $1.key }.map { LogEvent.rename($0.key, $0.value).json }
-      all += (old.retiredIDs ?? []).map { LogEvent.retire($0).json }
-      all.append(LogEvent.links(done: old.linksRewritten).json)
-    }
-    all += events.map(\.json)
+    let all = events.map(\.json)
     // Read-write so the last byte can be checked; writes still go to the end.
     let fd = open(path, O_RDWR | O_APPEND | O_CREAT, 0o644)
     guard fd >= 0 else { return false }
@@ -284,7 +278,6 @@ enum NoteNames {
       let written = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
       guard written == line.count else { return false }
     }
-    if old != nil { try? FileManager.default.removeItem(atPath: oldPath) }
     return true
   }
 
@@ -345,11 +338,14 @@ enum NoteNames {
     }
     var outcome = MigrationOutcome()
     var log = renameLog(in: directory) ?? RenameLog()
-    let plan = migration(of: names, avoiding: usedIDs(in: directory), random: random)
-    if !plan.isEmpty {
+    // Ids reserved by the log stay reserved, except that a logged rename
+    // not yet made is planned again under its logged name.
+    let plan = migration(of: names, avoiding: usedIDs(in: directory), logged: log.renames, random: random)
+    let fresh = plan.filter { log.renames[$0.from] != $0.to }
+    if !fresh.isEmpty {
       // Logged first, so a rename is never made without its record.
-      guard appendLog(plan.map { .rename($0.from, $0.to) } + [.links(done: false)], in: directory) else { return outcome }
-      for step in plan { log.renames[step.from] = step.to }
+      guard appendLog(fresh.map { .rename($0.from, $0.to) } + [.links(done: false)], in: directory) else { return outcome }
+      for step in fresh { log.renames[step.from] = step.to }
       log.linksRewritten = false
     }
     var failed = false

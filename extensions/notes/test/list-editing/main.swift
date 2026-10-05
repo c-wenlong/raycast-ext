@@ -1173,14 +1173,24 @@ do {
 
   try? fm.removeItem(atPath: dir)
   try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-  let legacy = #"{"renames":{"2026-01-01 0900 - a.md":"2026-01-01 0900 k3x9 - a.md"},"linksRewritten":false,"retiredIDs":["cccc"]}"#
-  try! legacy.write(toFile: dir + "/.note-renames.json", atomically: true, encoding: .utf8)
-  check("an old .note-renames.json is read", NoteNames.renameLog(in: dir)?.renames.count == 1 && NoteNames.renameLog(in: dir)?.linksRewritten == false)
-  _ = NoteNames.appendLog([.retire("dddd")], in: dir)
-  let upgraded = NoteNames.renameLog(in: dir)
-  check("and moved into the append-only log on the first write, once", !fm.fileExists(atPath: dir + "/.note-renames.json")
-    && upgraded?.renames == ["2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md"] && upgraded?.retiredIDs == ["cccc", "dddd"] && upgraded?.linksRewritten == false,
-    "\(String(describing: upgraded))")
+  _ = NoteNames.appendLog([.links(done: true), .links(done: false)], in: dir)
+  check("the links state follows line order: a later pending wins over an earlier done", NoteNames.renameLog(in: dir)?.linksRewritten == false)
+  _ = NoteNames.appendLog([.links(done: true)], in: dir)
+  check("and a later done over an earlier pending", NoteNames.renameLog(in: dir)?.linksRewritten == true)
+
+  // A rename that keeps failing reuses its logged name and id.
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! "x".write(toFile: dir + "/2026-10-01 0900 - stuck.md", atomically: true, encoding: .utf8)
+  var draws = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
+  for _ in 0..<3 {
+    _ = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { draws.next() ?? "zzzz" }, move: { _, _ in false })
+  }
+  let lines = ((try? String(contentsOfFile: dir + "/" + NoteNames.renameLogName, encoding: .utf8)) ?? "").split(separator: "\n").filter { $0.contains("rename") }
+  check("a move failing three times leaves one logged rename and one reserved id", lines.count == 1
+    && NoteNames.usedIDs(in: dir) == ["aaaa"], "\(lines) \(NoteNames.usedIDs(in: dir))")
+  let done = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { draws.next() ?? "zzzz" })
+  check("and once it can move, it lands on the logged name", done.complete && fm.fileExists(atPath: dir + "/2026-10-01 0900 aaaa - stuck.md"))
   try? fm.removeItem(atPath: dir)
 }
 

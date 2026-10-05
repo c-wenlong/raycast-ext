@@ -176,14 +176,10 @@ const cases: Case[] = [
       const newA = path.join(dir, "2026-01-01 0900 k3x9 - a.md");
       const newB = path.join(dir, "2026-01-01 0900 p0q1 - b.md");
       writeFileSync(
-        path.join(dir, ".note-renames.json"),
-        JSON.stringify({
-          renames: {
-            "2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md",
-            "2026-01-01 0900 - b.md": "2026-01-01 0900 p0q1 - b.md",
-          },
-          linksRewritten: true,
-        }),
+        path.join(dir, ".note-renames.jsonl"),
+        `{"rename":["2026-01-01 0900 - a.md","2026-01-01 0900 k3x9 - a.md"]}\n` +
+          `{"rename":["2026-01-01 0900 - b.md","2026-01-01 0900 p0q1 - b.md"]}\n` +
+          `{"links":"done"}\n`,
       );
       await togglePin(a);
       await togglePin(b);
@@ -199,11 +195,9 @@ const cases: Case[] = [
     async () => {
       const dir = freshDir();
       writeFileSync(
-        path.join(dir, ".note-renames.json"),
-        JSON.stringify({
-          renames: { "2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md" },
-          linksRewritten: true,
-        }),
+        path.join(dir, ".note-renames.jsonl"),
+        `{"rename":["2026-01-01 0900 - a.md","2026-01-01 0900 k3x9 - a.md"]}\n` +
+          `{"links":"done"}\n`,
       );
       const gone = path.join(dir, "2026-01-01 0900 - a.md");
       const now = path.join(dir, "2026-01-01 0900 k3x9 - renamed-since.md");
@@ -409,11 +403,9 @@ const cases: Case[] = [
     async () => {
       const dir = freshDir();
       writeFileSync(
-        path.join(dir, ".note-renames.json"),
-        JSON.stringify({
-          renames: { "2026-01-01 0900 - a.md": "2026-01-01 0900 bbbb - a.md" },
-          linksRewritten: true,
-        }),
+        path.join(dir, ".note-renames.jsonl"),
+        `{"rename":["2026-01-01 0900 - a.md","2026-01-01 0900 bbbb - a.md"]}\n` +
+          `{"links":"done"}\n`,
       );
       writeFileSync(path.join(dir, "2026-01-02 0900 aaaa - here.md"), "x");
       await retireNoteId(path.join(dir, "2026-01-03 0900 cccc - gone.md"));
@@ -425,11 +417,6 @@ const cases: Case[] = [
       ]);
       const log = await readNoteLog(dir);
       assert.deepEqual(log?.retiredIDs, ["cccc"]);
-      // The old single-file log was moved into the append-only one.
-      assert.throws(
-        () => readFileSync(path.join(dir, ".note-renames.json")),
-        /ENOENT/,
-      );
       assert.equal(
         log?.renames["2026-01-01 0900 - a.md"],
         "2026-01-01 0900 bbbb - a.md",
@@ -474,6 +461,21 @@ const cases: Case[] = [
         "dddd",
         "eeee",
       ]);
+    },
+  ],
+  [
+    "the links state follows line order: a later pending wins over an earlier done",
+    async () => {
+      const dir = freshDir();
+      await appendNoteLog(dir, [{ links: "done" }, { links: "pending" }]);
+      assert.equal((await readNoteLog(dir))?.linksRewritten, false);
+      await appendNoteLog(dir, [{ links: "done" }]);
+      assert.equal((await readNoteLog(dir))?.linksRewritten, true);
+      await appendNoteLog(dir, [
+        { rename: ["x.md", "y.md"] },
+        { links: "pending" },
+      ]);
+      assert.equal((await readNoteLog(dir))?.linksRewritten, false);
     },
   ],
   [

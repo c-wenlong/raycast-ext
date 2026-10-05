@@ -188,12 +188,11 @@ async function freshNoteId(dir: string): Promise<string> {
  *   {"retire":"k3x9"}
  *   {"links":"pending"} / {"links":"done"}
  * Readers fold every line in order and skip a line that does not parse (a
- * half-written last line included). A `.note-renames.json` from before is
- * read too and moved into the log by the first append. Mirrors
- * NoteNames.RenameLog in helper/NoteNames.swift.
+ * half-written last line included). State follows line order: the last
+ * "links" event wins, so a "done" never outlives a later "pending".
+ * Mirrors NoteNames.RenameLog in helper/NoteNames.swift.
  */
 export const RENAME_LOG_NAME = ".note-renames.jsonl";
-const OLD_RENAME_LOG_NAME = ".note-renames.json";
 
 export type NoteLog = {
   renames: Record<string, string>;
@@ -233,39 +232,15 @@ function foldEvent(log: NoteLog, event: unknown): void {
   }
 }
 
-async function readOldNoteLog(dir: string): Promise<NoteLog | undefined> {
-  try {
-    const parsed = JSON.parse(
-      await readFileUtf8(path.join(dir, OLD_RENAME_LOG_NAME)),
-    );
-    if (!parsed || typeof parsed !== "object") {
-      return undefined;
-    }
-    return {
-      renames:
-        parsed.renames && typeof parsed.renames === "object"
-          ? parsed.renames
-          : {},
-      linksRewritten: parsed.linksRewritten !== false,
-      retiredIDs: Array.isArray(parsed.retiredIDs)
-        ? parsed.retiredIDs
-        : undefined,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 /** The folder's log, folded; undefined when it has none. */
 export async function readNoteLog(dir: string): Promise<NoteLog | undefined> {
-  const old = await readOldNoteLog(dir);
   let text: string;
   try {
     text = await readFileUtf8(path.join(dir, RENAME_LOG_NAME));
   } catch {
-    return old;
+    return undefined;
   }
-  const log: NoteLog = old ?? { renames: {}, linksRewritten: true };
+  const log: NoteLog = { renames: {}, linksRewritten: true };
   const lines = text.split("\n");
   // Only lines ended by "\n" are whole; the last piece never is.
   lines.pop();
@@ -285,24 +260,12 @@ export async function readNoteLog(dir: string): Promise<NoteLog | undefined> {
 /**
  * Appends `events` to the folder's log, each line by one write on an
  * O_APPEND handle (starting on a fresh line if a writer stopped half
- * way). Moves an old `.note-renames.json` into the log first.
+ * way). Mirrors NoteNames.appendLog.
  */
 export async function appendNoteLog(
   dir: string,
   events: NoteLogEvent[],
 ): Promise<void> {
-  const old = await readOldNoteLog(dir);
-  const all: NoteLogEvent[] = [];
-  if (old) {
-    for (const [from, to] of Object.entries(old.renames).sort()) {
-      all.push({ rename: [from, to] });
-    }
-    for (const id of old.retiredIDs ?? []) {
-      all.push({ retire: id });
-    }
-    all.push({ links: old.linksRewritten ? "done" : "pending" });
-  }
-  all.push(...events);
   // "a+": read-write, every write at the end (O_APPEND).
   const handle = await open(path.join(dir, RENAME_LOG_NAME), "a+");
   try {
@@ -313,16 +276,13 @@ export async function appendNoteLog(
       await handle.read(last, 0, 1, size - 1);
       needsBreak = last[0] !== 0x0a;
     }
-    for (const event of all) {
+    for (const event of events) {
       const line = `${needsBreak ? "\n" : ""}${JSON.stringify(event)}\n`;
       needsBreak = false;
       await handle.write(line);
     }
   } finally {
     await handle.close();
-  }
-  if (old) {
-    await unlink(path.join(dir, OLD_RENAME_LOG_NAME)).catch(() => undefined);
   }
 }
 
