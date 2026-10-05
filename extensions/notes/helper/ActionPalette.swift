@@ -46,6 +46,12 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   private var visible: [PaletteAction] = []
   private let run: (String) -> Void
   private static let width: CGFloat = 420
+  /// From the panel's top edge to the list's: search field and divider.
+  private static let listTop: CGFloat = 64
+  /// The divider's bottom edge sits this far above the list's top.
+  private static let dividerGap: CGFloat = 2
+  private static let maxHeight: CGFloat = 480
+  private weak var parent: NSWindow?
 
   init(actions: [PaletteAction], run: @escaping (String) -> Void) {
     self.actions = actions
@@ -104,7 +110,9 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     table.target = self
     table.action = #selector(rowClicked)
 
-    let scroll = NSScrollView(frame: NSRect(x: 0, y: 8, width: ActionPalette.width, height: panel.frame.height - 72))
+    // The list fills the panel below the divider; `fit` sizes the panel
+    // so its bottom margin matches the top one.
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: ActionPalette.width, height: panel.frame.height - Self.listTop))
     scroll.autoresizingMask = [.width, .height]
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
@@ -116,13 +124,15 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
   func show(over parent: NSWindow) {
     search.stringValue = ""
-    filter()
+    self.parent = parent
     let width = min(ActionPalette.width, parent.frame.width - 40)
-    let height = min(CGFloat(visible.count) * (table.rowHeight + 2) + 80, parent.frame.height - 40, 480)
-    let origin = NSPoint(
-      x: parent.frame.midX - width / 2,
-      y: parent.frame.midY - height / 2)
-    panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: false)
+    panel.setFrame(NSRect(x: parent.frame.midX - width / 2, y: parent.frame.midY, width: width, height: panel.frame.height), display: false)
+    filter()
+    // Centred on the window for the full list; filtering then keeps the
+    // top edge still and moves only the bottom.
+    var frame = panel.frame
+    frame.origin.y = parent.frame.midY - frame.height / 2
+    panel.setFrame(frame, display: false)
     parent.addChildWindow(panel, ordered: .above)
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(search)
@@ -138,10 +148,45 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     let query = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
     visible = query.isEmpty ? actions : actions.filter { $0.matches(query) }
     table.reloadData()
+    fit()
     if !visible.isEmpty {
       table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
       table.scrollRowToVisible(0)
     }
+  }
+
+  /// The panel height that shows every row with the gap under the last
+  /// row equal to the gap between the divider and the first one (the
+  /// table's own top inset plus `dividerGap`), whatever the row count;
+  /// capped to fit the parent window, past which the list scrolls.
+  var fittedHeight: CGFloat {
+    let rows = table.numberOfRows
+    let topInset = rows > 0 ? table.rect(ofRow: 0).minY : 0
+    let rowsBottom = rows > 0 ? table.rect(ofRow: rows - 1).maxY : 0
+    let natural = Self.listTop + rowsBottom + Self.dividerGap + topInset
+    return min(natural, (parent?.frame.height ?? .greatestFiniteMagnitude) - 40, Self.maxHeight)
+  }
+
+  /// Resizes the panel to `fittedHeight`, keeping its top edge in place.
+  private func fit() {
+    var frame = panel.frame
+    let height = fittedHeight
+    guard abs(frame.height - height) > 0.5 else { return }
+    frame.origin.y = frame.maxY - height
+    frame.size.height = height
+    panel.setFrame(frame, display: panel.isVisible)
+  }
+
+  /// The gaps above the first row (from the divider) and below the last
+  /// row (to the panel's bottom edge), in points; for the view tests.
+  var listGaps: (top: CGFloat, bottom: CGFloat)? {
+    let rows = table.numberOfRows
+    guard rows > 0, let content = panel.contentView else { return nil }
+    let first = content.convert(table.rect(ofRow: 0), from: table)
+    let last = content.convert(table.rect(ofRow: rows - 1), from: table)
+    let dividerBottom = content.bounds.height - Self.listTop + Self.dividerGap
+    // The content view is not flipped: larger y is higher.
+    return (dividerBottom - first.maxY, last.minY)
   }
 
   private func runSelected() {

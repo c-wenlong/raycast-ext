@@ -1485,5 +1485,20 @@ for name in [NSAppearance.Name.aqua, .darkAqua] {
   check("\(label): dividers and callout borders show", contrast(resolved(Markdown.dividerColor, name), on: canvas) >= 1.3 && contrast(resolved(Markdown.calloutBorder, name), on: canvas) >= 1.3, "\(contrast(resolved(Markdown.dividerColor, name), on: canvas)) \(contrast(resolved(Markdown.calloutBorder, name), on: canvas))")
 }
 
+// The palette's last row has the same margin below it as the first row has above it.
+let gapPalette = ActionPalette(actions: []) { _ in }
+for count in [1, 3, 6, 23] {
+  gapPalette.actions = (0..<count).map { PaletteAction(title: "Row \($0)", keys: "", symbol: "plus", command: "x") }
+  gapPalette.show(over: win)
+  if count == 23 {
+    check("palette with \(count) rows stops at the window's height and scrolls", gapPalette.fittedHeight == win.frame.height - 40, "\(gapPalette.fittedHeight)")
+  } else if let gaps = gapPalette.listGaps {
+    check("palette with \(count) rows: the margin under the last row matches the one over the first", abs(gaps.top - gaps.bottom) < 0.5 && gaps.top > 4, "\(gaps)")
+  } else {
+    check("palette with \(count) rows lays out", false)
+  }
+  gapPalette.hide()
+}
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
