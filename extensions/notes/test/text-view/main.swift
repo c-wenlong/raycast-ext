@@ -24,6 +24,15 @@ var failures = 0
 func check(_ name: String, _ ok: Bool, _ detail: String = "") { print((ok ? "ok   " : "FAIL ") + name + (ok ? "" : "  " + detail)); if !ok { failures += 1 } }
 func load(_ text: String) { tv.undoManager?.removeAllActions(); tv.string = text; Markdown.apply(to: tv.textStorage!); tv.layoutManager?.ensureLayout(for: tv.textContainer!) }
 func caret() -> Int { tv.selectedRange().location }
+/// Runs the run loop until everything already queued on the main queue
+/// has run (a marker block queued now runs after it), however loaded the
+/// machine is; gives up after `timeout`.
+func drainMain(timeout: TimeInterval = 10) {
+  var done = false
+  DispatchQueue.main.async { done = true }
+  let deadline = Date().addingTimeInterval(timeout)
+  while !done && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+}
 
 // 1. clicking the header lands in the body
 load("a\n```python\nx = 1\n```\nb\n")
@@ -69,7 +78,7 @@ check("delete forward keeps closing fence", tv.string == "```\nx\n```\n", tv.str
 // 6b. an empty closed block gets a body line when entered
 load("a\n```\n```\nb\n")
 tv.setSelectedRange(NSRange(location: 3, length: 0))
-RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+drainMain()
 check("entering an empty block adds a body line", tv.string == "a\n```\n\n```\nb\n" && caret() == 6, "\(tv.string.debugDescription) \(caret())")
 
 // 6c. arrow up between body lines stays inside the block
@@ -100,7 +109,7 @@ tv.suppressFenceRelocation = false
 tv.suppressFenceEdits = true
 tv.setSelectedRange(NSRange(location: 7, length: 0))
 tv.suppressFenceEdits = false
-RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+drainMain()
 check("placing the caret while loading leaves the file alone", tv.string == "```\n```", tv.string.debugDescription)
 
 // 6g. loading a note that ends with a closing fence lands in the body
@@ -866,6 +875,50 @@ check("a pasted ← then > makes ↔", tv.string == "a\u{2194}", tv.string.debug
 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
 tv.undoManager?.undo()
 check("and undo gives back the ← and the typed >", tv.string == "a\u{2190}>", tv.string.debugDescription)
+
+// 21c. the same through real key events: keyDown → interpretKeyEvents →
+// insertText, with the run loop closing each event's undo group (the
+// window's undo manager groups by event), and ⌘Z through
+// performKeyEquivalent, the window's own path (the harness has no menu).
+func settle(timeout: TimeInterval = 5) {
+  let deadline = Date().addingTimeInterval(timeout)
+  repeat {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+  } while (tv.undoManager?.groupingLevel ?? 0) > 0 && Date() < deadline
+}
+func keyEvent(_ characters: String, keyCode: UInt16, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+  NSEvent.keyEvent(
+    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+    windowNumber: win.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+    isARepeat: false, keyCode: keyCode)!
+}
+let keyCodes: [Character: (UInt16, NSEvent.ModifierFlags)] = [
+  "a": (0, []), "-": (27, []), "=": (24, []), "<": (43, .shift), ">": (47, .shift), ".": (47, []),
+]
+func press(_ text: String) {
+  for ch in text {
+    let (code, flags) = keyCodes[ch]!
+    tv.keyDown(with: keyEvent(String(ch), keyCode: code, flags: flags))
+    settle()
+  }
+}
+func commandZ() -> Bool {
+  let handled = tv.performKeyEquivalent(with: keyEvent("z", keyCode: 6, flags: .command))
+  settle()
+  return handled
+}
+check("the note view is first responder for key events", win.firstResponder === tv)
+for (typedText, symbol) in [("->", "\u{2192}"), ("<->", "\u{2194}"), ("-->", "\u{2192}"), ("<=>", "\u{21D4}"), ("<-->", "\u{2194}"), ("...", "\u{2026}")] {
+  load("")
+  settle()
+  press("a" + typedText)
+  check("keys a\(typedText) make \(symbol)", tv.string == "a" + symbol && caret() == 2, "\(tv.string.debugDescription) \(caret())")
+  let handled = commandZ()
+  let back = "a" + typedText
+  check("one ⌘Z after keys a\(typedText) gives back what was typed", handled && tv.string == back && tv.selectedRange() == NSRange(location: (back as NSString).length, length: 0), "\(handled) \(tv.string.debugDescription) \(tv.selectedRange())")
+  _ = commandZ()
+  check("a second ⌘Z after keys a\(typedText) leaves no symbol", !tv.string.unicodeScalars.contains { $0.value > 0x7F } && back.hasPrefix(tv.string), tv.string.debugDescription)
+}
 
 // 22. dividers: a drawn hairline, dashes hidden, removed whole
 let dividerText = "a\n---\nb"
