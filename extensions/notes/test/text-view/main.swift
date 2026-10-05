@@ -25,13 +25,16 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") { print((ok ? "ok 
 func load(_ text: String) { tv.undoManager?.removeAllActions(); tv.string = text; Markdown.apply(to: tv.textStorage!); tv.layoutManager?.ensureLayout(for: tv.textContainer!) }
 func caret() -> Int { tv.selectedRange().location }
 /// Runs the run loop until everything already queued on the main queue
-/// has run (a marker block queued now runs after it), however loaded the
-/// machine is; gives up after `timeout`.
+/// has run (a marker block queued now runs after it) and the text view's
+/// undo group for the current event has closed, as the event loop would,
+/// however loaded the machine is; gives up after `timeout`.
 func drainMain(timeout: TimeInterval = 10) {
   var done = false
   DispatchQueue.main.async { done = true }
   let deadline = Date().addingTimeInterval(timeout)
-  while !done && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+  repeat {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+  } while (!done || (tv.undoManager?.groupingLevel ?? 0) > 0) && Date() < deadline
 }
 
 // 1. clicking the header lands in the body
@@ -394,10 +397,10 @@ check("/ after a space opens the menu", tv.slashMenuIsOpen)
 tv.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("2", replacementRange: NSRange(location: NSNotFound, length: 0))
 check("typing filters and keeps the menu open", tv.slashMenuIsOpen)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))  // closes the typing undo group, as the event loop would
+drainMain()  // closes the typing undo group, as the event loop would
 tv.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
 check("return applies the entry and removes the /query", tv.string == "## hello " && !tv.slashMenuIsOpen, tv.string.debugDescription)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.undoManager?.undo()
 check("one undo restores the text from before the slash", tv.string == "hello ", tv.string.debugDescription)
 tv.undoManager?.redo()
@@ -410,7 +413,7 @@ load("")
 tv.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("i", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.insertText("/", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
 tv.insertText("2", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -426,12 +429,12 @@ check("a further undo still reaches the typing from before the slash, not lost",
 // A query edited with Backspace spans more than one typing group.
 load("hello ")
 tv.setSelectedRange(NSRange(location: 6, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
-for ch in ["/", "h", "e", "a"] { tv.insertText(ch, replacementRange: NSRange(location: NSNotFound, length: 0)); RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
+drainMain()
+for ch in ["/", "h", "e", "a"] { tv.insertText(ch, replacementRange: NSRange(location: NSNotFound, length: 0)); drainMain() }
 tv.deleteBackward(nil)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 check("the edited query still filters", tv.slashMenuIsOpen && tv.string == "hello /hea", "open=\(tv.slashMenuIsOpen) \(tv.string.debugDescription)")
 tv.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
 check("return applies the entry after an edited query (Heading 1 is first for \"hea\")", tv.string == "# hello ", tv.string.debugDescription)
@@ -440,17 +443,17 @@ check("one undo restores the text from before the slash after an edited query", 
 // A query edited many times over (well past eight groups).
 load("hello ")
 tv.setSelectedRange(NSRange(location: 6, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.insertText("/", replacementRange: NSRange(location: NSNotFound, length: 0))
 for _ in 0..<12 {
-  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+  drainMain()
   tv.insertText("h", replacementRange: NSRange(location: NSNotFound, length: 0))
-  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+  drainMain()
   tv.deleteBackward(nil)
 }
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.insertText("q", replacementRange: NSRange(location: NSNotFound, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 check("a much-edited query still filters", tv.slashMenuIsOpen && tv.string == "hello /q", tv.string.debugDescription)
 tv.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
 check("return applies Quote for \"q\"", tv.string == "| hello ", tv.string.debugDescription)
@@ -531,7 +534,7 @@ check("a short window trims the menu to fit", menu.frame.maxY <= 200 && menu.fra
 func typeKeys(_ text: String) {
   for ch in text {
     tv.insertText(String(ch), replacementRange: NSRange(location: NSNotFound, length: 0))
-    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))  // each keystroke is its own event in the app
+    drainMain()  // each keystroke is its own event in the app
   }
 }
 func press(_ keyCode: UInt16, _ characters: String = "") {
@@ -547,14 +550,14 @@ check("lookup takes any of an emoji's names", Emoji.lookup("+1") == "👍" && Em
 check("nonsense matches nothing", Emoji.matches("zzzq").isEmpty)
 load("hi ")
 tv.setSelectedRange(NSRange(location: 3, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 typeKeys(":c")
 check("one letter after : does not open the picker", !tv.emojiPickerIsOpen)
 typeKeys("la")
 check(":cla opens the emoji picker", tv.emojiPickerIsOpen && !tv.slashMenuIsOpen)
 press(36, "\r")
 check("return inserts the emoji in place of :cla", tv.string == "hi 👏" && caret() == 5 && !tv.emojiPickerIsOpen, "\(tv.string.debugDescription) \(caret())")
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.undoManager?.undo()
 check("one undo restores the text from before the colon", tv.string == "hi ", tv.string.debugDescription)
 tv.undoManager?.redo()
@@ -666,7 +669,7 @@ var targetReads = 0
 tv.noteLinkTargets = { targetReads += 1; return targets }
 load("see ")
 tv.setSelectedRange(NSRange(location: 4, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 typeKeys("[")
 check("one bracket opens nothing", !tv.notePickerIsOpen)
 typeKeys("[")
@@ -677,7 +680,7 @@ check("the folder is read once per [[", targetReads == 1, "\(targetReads)")
 press(36, "\r")
 check("return inserts a markdown link in place of [[query", tv.string == "see [Project plan](2026-10-05%201200%20-%20project-plan.md)" && !tv.notePickerIsOpen, tv.string.debugDescription)
 check("the caret lands after the link", caret() == (tv.string as NSString).length, "\(caret())")
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.undoManager?.undo()
 check("one undo restores the text from before the brackets", tv.string == "see ", tv.string.debugDescription)
 load("")
@@ -705,7 +708,7 @@ press(53)
 tv.noteLinkTargets = { [NoteLinks.Target(title: "@today plan", target: "plan.md", modified: Date())] }
 load("")
 typeKeys("[[@today ")
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))  // the date conversion would land on this pass
+drainMain()  // the date conversion would land on this pass
 check("a date keyword in an open note query stays text", tv.notePickerIsOpen && tv.string == "[[@today ", tv.string.debugDescription)
 press(53)
 // A note loaded in place of another drops the cached targets and any dismissal.
@@ -872,11 +875,11 @@ check("a list inside a toggle sits one column in", abs(textX(1, 8) - 2 * column)
 // 19. stacking, peeling, and markers that never show
 load("# Title")
 tv.setSelectedRange(NSRange(location: 2, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.insertText(">", replacementRange: NSRange(location: NSNotFound, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 check("> then space on an H1 makes a heading toggle", tv.string == "> # Title" && caret() == 4, "\(tv.string) \(caret())")
 tv.undoManager?.undo()
 check("one undo takes the rewrite back to what was typed", tv.string == "# > Title", tv.string.debugDescription)
@@ -890,15 +893,15 @@ for ch in ["|", " "] { tv.insertText(ch, replacementRange: NSRange(location: NSN
 check("| then space on a heading toggle makes a plain quote", tv.string == "| Title" && caret() == 2, "\(tv.string) \(caret())")
 load("| > # Deep")
 tv.setSelectedRange(NSRange(location: 6, length: 0))
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.deleteBackward(nil); Markdown.apply(to: ts)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 check("backspace peels the heading first", tv.string == "| > Deep" && caret() == 4, "\(tv.string) \(caret())")
 tv.deleteBackward(nil); Markdown.apply(to: ts)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 check("then the toggle", tv.string == "| Deep" && caret() == 2, "\(tv.string) \(caret())")
 tv.deleteBackward(nil); Markdown.apply(to: ts)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 check("then the quote", tv.string == "Deep" && caret() == 0, "\(tv.string) \(caret())")
 tv.undoManager?.undo()
 check("each peel is its own undo step", tv.string == "| Deep", tv.string)
@@ -973,7 +976,7 @@ check("⌘⌫ from a toggle heading's text start removes its markers whole", tv.
 func type(_ s: String) {
   for ch in s {
     tv.insertText(String(ch), replacementRange: NSRange(location: NSNotFound, length: 0))
-    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))  // one event per key, as in the app
+    drainMain()  // one event per key, as in the app
   }
 }
 load("")
@@ -1065,7 +1068,7 @@ for (typedText, symbol) in [("<->", "\u{2194}"), ("-->", "\u{2192}"), ("<=>", "\
   load("")
   type("a" + typedText)
   check("a\(typedText) makes \(symbol)", tv.string == "a" + symbol && caret() == 2, "\(tv.string.debugDescription) \(caret())")
-  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+  drainMain()
   tv.undoManager?.undo()
   let back = "a" + typedText
   check("one undo after a\(typedText) gives back what was typed", tv.string == back && tv.selectedRange() == NSRange(location: (back as NSString).length, length: 0), "\(tv.string.debugDescription) \(tv.selectedRange())")
@@ -1074,7 +1077,7 @@ for (typedText, symbol) in [("<->", "\u{2194}"), ("-->", "\u{2192}"), ("<=>", "\
 }
 load("")
 type("a<->")
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.undoManager?.undo()
 tv.undoManager?.undo()
 check("a second undo steps back through the typing, never leaving a symbol", !tv.string.contains("\u{2190}") && "a<->".hasPrefix(tv.string), tv.string.debugDescription)
@@ -1082,7 +1085,7 @@ load("a\u{2190}")
 tv.setSelectedRange(NSRange(location: 2, length: 0))
 type(">")
 check("a pasted ← then > makes ↔", tv.string == "a\u{2194}", tv.string.debugDescription)
-RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+drainMain()
 tv.undoManager?.undo()
 check("and undo gives back the ← and the typed >", tv.string == "a\u{2190}>", tv.string.debugDescription)
 
@@ -1280,7 +1283,7 @@ let none = NSRange(location: NSNotFound, length: 0)
 /// One pass of the run loop, as after each key event: closes the event's
 /// undo group and runs the date conversion queued for after it (`type`
 /// above makes one per key).
-func pass() { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
+func pass() { drainMain() }
 load("")
 type("@today ")
 check("typing @today then space gives the date", tv.string == "2026-10-05 " && caret() == 11, "\(tv.string.debugDescription) \(caret())")
