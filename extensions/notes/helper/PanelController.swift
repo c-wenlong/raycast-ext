@@ -618,7 +618,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let filename = (path as NSString).lastPathComponent
     let directory = (path as NSString).deletingLastPathComponent
     guard let next = NoteNames.renamed(filename, title: titleText, newID: { self.freshID(in: directory) }) else { return }
-    let nextPath = uniquePath(for: next, in: directory)
+    let nextPath = uniqueNotePath(for: next, in: directory, renaming: true)
     guard nextPath != path, (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }
     currentPath = nextPath
     if let index = notes.firstIndex(where: { $0.path == path }) {
@@ -808,15 +808,13 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     if diskFiles.fileExists(atPath: path) { return path }
     let directory = (path as NSString).deletingLastPathComponent
     let filename = (path as NSString).lastPathComponent
+    let names = (try? diskFiles.contentsOfDirectory(atPath: directory)) ?? []
     // A name from before ids: where the migration's log says it went.
     if let log = NoteNames.renameLog(in: directory),
-      let logged = NoteLinks.renamedByLog(filename, renames: log.renames, exists: {
-        diskFiles.fileExists(atPath: (directory as NSString).appendingPathComponent($0))
-      })
+      let logged = NoteLinks.renamedByLog(filename, renames: log.renames, among: names)
     {
       return (directory as NSString).appendingPathComponent(logged)
     }
-    let names = (try? diskFiles.contentsOfDirectory(atPath: directory)) ?? []
     return NoteNames.parse(filename)?.id == nil ? nil
       : NoteLinks.noteWithSameID(as: filename, among: names).map { (directory as NSString).appendingPathComponent($0) }
   }

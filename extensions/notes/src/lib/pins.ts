@@ -78,20 +78,17 @@ export async function reconcilePins(
     if (!logs.has(dir)) {
       logs.set(dir, await readRenameLog(dir));
     }
+    // The log's name, or (renamed since by its title) the note carrying
+    // the id in the logged name.
     const logged = renamedByLog(baseOf(pinned), logs.get(dir) ?? {});
-    let target =
-      logged && existing.has(`${dir}/${logged}`)
+    let target = logged
+      ? existing.has(`${dir}/${logged}`)
         ? `${dir}/${logged}`
-        : undefined;
+        : sameIdIn(existingPaths, dir, logged, pinned)
+      : undefined;
     const id = parseGeneratedFilename(baseOf(pinned))?.id;
     if (!target && id) {
-      const candidates = existingPaths.filter(
-        (candidate) =>
-          candidate !== pinned &&
-          dirOf(candidate) === dir &&
-          parseGeneratedFilename(baseOf(candidate))?.id === id,
-      );
-      target = candidates.length === 1 ? candidates[0] : undefined;
+      target = sameIdIn(existingPaths, dir, baseOf(pinned), pinned);
     }
     if (target) {
       pins.delete(pinned);
@@ -103,6 +100,26 @@ export async function reconcilePins(
     await savePinnedPaths(pins);
   }
   return pins;
+}
+
+/** The one path in `dir` carrying the id in `filename`, if exactly one. */
+function sameIdIn(
+  paths: string[],
+  dir: string,
+  filename: string,
+  except: string,
+): string | undefined {
+  const id = parseGeneratedFilename(filename)?.id;
+  if (!id) {
+    return undefined;
+  }
+  const candidates = paths.filter(
+    (candidate) =>
+      candidate !== except &&
+      dirOf(candidate) === dir &&
+      parseGeneratedFilename(baseOf(candidate))?.id === id,
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 function dirOf(filePath: string): string {

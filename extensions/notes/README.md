@@ -110,13 +110,14 @@ Naming:
   renames a note it rewrites links to it (link addresses only) in every note
   under the notes folder. A rewritten note counts as edited (its date moves
   on, so it rises in newest-first lists). A link that went stale anyway (a
-  rename made by Browse Notes) still opens the note carrying its id. A name
-  that is taken draws a new id rather than sharing one.
+  rename made by Browse Notes) still opens the note carrying its id. A new
+  note whose name is taken draws a new id rather than sharing one; a rename
+  onto a taken name keeps its id and adds "-2" to the slug.
 - Notes from before ids (`2026-09-26 1400 - project-ideas.md`) get one once,
   when the window first lists the folder, with their links rewritten. Each
   rename is recorded first in `.note-renames.json` in the notes folder (old
   filename to new; hidden, safe to keep): Browse Notes moves pins with it,
-  and a link to an old name still opens through it. A run that fails part
+  and a link to an old name still opens through it (by the id in the logged name, if the note was renamed again). A run that fails part
   way is retried at the next listing. Daily notes and hand-named files keep
   their names: they are never renamed, so links to them never go stale.
 

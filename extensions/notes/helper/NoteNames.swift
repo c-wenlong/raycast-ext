@@ -38,15 +38,18 @@ func title(of text: String, filename: String) -> String {
   return NoteNames.fallbackTitle(filename: filename)
 }
 
-/// First free path for `filename` in `directory`: a taken generated name
-/// draws a new id (checked against the folder), any other name gets -2,
-/// -3, ... (`NoteNames.clashCandidate`).
-func uniqueNotePath(for filename: String, in directory: String) -> String {
+/// First free path for `filename` in `directory`. A new note (`renaming`
+/// false) whose generated name is taken draws a new id, checked against
+/// the folder (`NoteNames.clashCandidate`); a rename keeps its id and gets
+/// -2, -3, ... on the slug (`renameClashCandidate`), as any other name does.
+func uniqueNotePath(for filename: String, in directory: String, renaming: Bool = false) -> String {
   var attempt = 1
   while true {
-    let candidate = NoteNames.clashCandidate(filename, attempt: attempt) {
-      NoteNames.newID(avoiding: NoteNames.ids(in: (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []))
-    }
+    let candidate = renaming
+      ? NoteNames.renameClashCandidate(filename, attempt: attempt)
+      : NoteNames.clashCandidate(filename, attempt: attempt) {
+        NoteNames.newID(avoiding: NoteNames.ids(in: (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []))
+      }
     let path = (directory as NSString).appendingPathComponent(candidate)
     if !FileManager.default.fileExists(atPath: path) { return path }
     attempt += 1
@@ -106,15 +109,23 @@ enum NoteNames {
     return id
   }
 
-  /// The name to try after `filename` was taken, on attempt 2, 3...: a
-  /// generated name with an id draws a new id (`newID`), so two notes never
-  /// share one; any other name gets "-2", "-3". Mirrors clashCandidate in
-  /// src/lib/notes.ts.
+  /// For a new note: the name to try after `filename` was taken, on
+  /// attempt 2, 3...: a generated name with an id draws a new id
+  /// (`newID`), so two notes never share one; any other name gets "-2",
+  /// "-3". Mirrors clashCandidate in src/lib/notes.ts.
   static func clashCandidate(_ filename: String, attempt: Int, newID: () -> String) -> String {
     guard attempt > 1 else { return filename }
     if let generated = parse(filename), generated.id != nil {
       return Self.filename(stamp: generated.stamp, id: newID(), slug: generated.slug)
     }
+    return renameClashCandidate(filename, attempt: attempt)
+  }
+
+  /// For a rename: the name to try after `filename` was taken. A rename
+  /// never changes the id, so the slug gets "-2", "-3". Mirrors
+  /// renameClashCandidate in src/lib/notes.ts.
+  static func renameClashCandidate(_ filename: String, attempt: Int) -> String {
+    guard attempt > 1 else { return filename }
     return "\((filename as NSString).deletingPathExtension)-\(attempt).md"
   }
 
@@ -180,8 +191,9 @@ enum NoteNames {
   struct MigrationOutcome {
     /// Old path to new, for the renames made in this run.
     var renamed: [String: String] = [:]
-    /// Old path to new, for every logged rename whose links were rewritten
-    /// in this run (the open note's text is left to the caller).
+    /// Old path to new, for every logged rename whose links this run
+    /// rewrote (a note that failed is retried next run); the caller applies
+    /// it to the open note's text.
     var rewritten: [String: String] = [:]
     /// True when nothing is left to do: every rename and every link
     /// rewrite succeeded. Otherwise the next run tries again.
@@ -242,8 +254,10 @@ enum NoteNames {
         if fm.fileExists(atPath: to) { moves[(directory as NSString).appendingPathComponent(old)] = to }
       }
       let skip = openPath.map { outcome.renamed[$0] ?? $0 }
+      // Every note that could be rewritten is, one by one; the open note
+      // gets the mapping whatever happened to the others.
+      outcome.rewritten = moves
       if rewriteLinks(underRoot: root, moves: moves, skipping: skip, write: write) {
-        outcome.rewritten = moves
         if !failed {
           log.linksRewritten = true
           if !saveRenameLog(log, in: directory) { failed = true }

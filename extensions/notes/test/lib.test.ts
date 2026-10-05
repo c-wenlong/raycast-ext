@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   appendDailyEntry,
   clashCandidate,
+  renameClashCandidate,
   createNewNoteFile,
   duplicateNoteFile,
   newNoteId,
@@ -40,6 +41,7 @@ type NameCase = {
   parsed: { stamp: string; id: string | null; slug: string } | null;
   title: string;
   clash: string;
+  renameClash: string;
 };
 const nameCases: NameCase[] = JSON.parse(
   readFileSync(path.join(__dirname, "../test/note-names.json"), "utf8"),
@@ -55,6 +57,7 @@ const cases: Case[] = [
           c.clash,
           c.name,
         );
+        assert.equal(renameClashCandidate(c.name, 2), c.renameClash, c.name);
         assert.deepEqual(
           parseGeneratedFilename(c.name) ?? null,
           c.parsed,
@@ -185,6 +188,25 @@ const cases: Case[] = [
       for (const pin of pins) {
         await removePin(pin);
       }
+    },
+  ],
+  [
+    "a pin follows the log's note after a later rename, by the logged id",
+    async () => {
+      const dir = freshDir();
+      writeFileSync(
+        path.join(dir, ".note-renames.json"),
+        JSON.stringify({
+          renames: { "2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md" },
+          linksRewritten: true,
+        }),
+      );
+      const gone = path.join(dir, "2026-01-01 0900 - a.md");
+      const now = path.join(dir, "2026-01-01 0900 k3x9 - renamed-since.md");
+      await togglePin(gone);
+      const pins = await reconcilePins([now]);
+      assert.deepEqual([...pins], [now]);
+      await removePin(now);
     },
   ],
   [
@@ -352,13 +374,8 @@ const cases: Case[] = [
       writeFileSync(taken, "# Second\n\nkeep me\n");
 
       const renamed = await renameNoteFromTitleIfNeeded(created, "Second");
-      // The clash draws a new id rather than sharing one with "-2".
-      const name = parseGeneratedFilename(path.basename(renamed));
-      assert.equal(name?.slug, "second");
-      assert.notEqual(
-        name?.id,
-        parseGeneratedFilename(path.basename(taken))?.id,
-      );
+      // A rename never changes the id: the clash suffixes the slug.
+      assert.equal(path.basename(renamed), `${prefix} - second-2.md`);
       assert.equal(readFileSync(taken, "utf8"), "# Second\n\nkeep me\n");
       assert.match(readFileSync(renamed, "utf8"), /^# First/);
       assert.throws(() => readFileSync(created), /ENOENT/);

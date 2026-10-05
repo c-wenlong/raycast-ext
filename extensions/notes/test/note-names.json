@@ -1,11 +1,11 @@
 [
-  {"name": "2026-10-05 1200 ab12 - project-plan.md", "parsed": {"stamp": "2026-10-05 1200", "id": "ab12", "slug": "project-plan"}, "title": "Project Plan", "clash": "2026-10-05 1200 zzzz - project-plan.md"},
-  {"name": "2026-10-05 1200 - project-plan.md", "parsed": {"stamp": "2026-10-05 1200", "id": null, "slug": "project-plan"}, "title": "Project Plan", "clash": "2026-10-05 1200 - project-plan-2.md"},
-  {"name": "2026-10-05 0907 z9z9 - untitled.md", "parsed": {"stamp": "2026-10-05 0907", "id": "z9z9", "slug": "untitled"}, "title": "Untitled", "clash": "2026-10-05 0907 zzzz - untitled.md"},
-  {"name": "2026-10-05 1200 ab12 - x-2.md", "parsed": {"stamp": "2026-10-05 1200", "id": "ab12", "slug": "x-2"}, "title": "X 2", "clash": "2026-10-05 1200 zzzz - x-2.md"},
-  {"name": "2026-10-05 1200 ab12 - plan copy.md", "parsed": {"stamp": "2026-10-05 1200", "id": "ab12", "slug": "plan copy"}, "title": "Plan Copy", "clash": "2026-10-05 1200 zzzz - plan copy.md"},
-  {"name": "2026-10-05 1200 AB12 - x.md", "parsed": null, "title": "2026 10 05 1200 AB12 X", "clash": "2026-10-05 1200 AB12 - x-2.md"},
-  {"name": "2026-10-05 1200 abcde - x.md", "parsed": null, "title": "2026 10 05 1200 Abcde X", "clash": "2026-10-05 1200 abcde - x-2.md"},
-  {"name": "2026-10-05.md", "parsed": null, "title": "2026 10 05", "clash": "2026-10-05-2.md"},
-  {"name": "groceries.md", "parsed": null, "title": "Groceries", "clash": "groceries-2.md"}
+  {"name": "2026-10-05 1200 ab12 - project-plan.md", "parsed": {"stamp": "2026-10-05 1200", "id": "ab12", "slug": "project-plan"}, "title": "Project Plan", "clash": "2026-10-05 1200 zzzz - project-plan.md", "renameClash": "2026-10-05 1200 ab12 - project-plan-2.md"},
+  {"name": "2026-10-05 1200 - project-plan.md", "parsed": {"stamp": "2026-10-05 1200", "id": null, "slug": "project-plan"}, "title": "Project Plan", "clash": "2026-10-05 1200 - project-plan-2.md", "renameClash": "2026-10-05 1200 - project-plan-2.md"},
+  {"name": "2026-10-05 0907 z9z9 - untitled.md", "parsed": {"stamp": "2026-10-05 0907", "id": "z9z9", "slug": "untitled"}, "title": "Untitled", "clash": "2026-10-05 0907 zzzz - untitled.md", "renameClash": "2026-10-05 0907 z9z9 - untitled-2.md"},
+  {"name": "2026-10-05 1200 ab12 - x-2.md", "parsed": {"stamp": "2026-10-05 1200", "id": "ab12", "slug": "x-2"}, "title": "X 2", "clash": "2026-10-05 1200 zzzz - x-2.md", "renameClash": "2026-10-05 1200 ab12 - x-2-2.md"},
+  {"name": "2026-10-05 1200 ab12 - plan copy.md", "parsed": {"stamp": "2026-10-05 1200", "id": "ab12", "slug": "plan copy"}, "title": "Plan Copy", "clash": "2026-10-05 1200 zzzz - plan copy.md", "renameClash": "2026-10-05 1200 ab12 - plan copy-2.md"},
+  {"name": "2026-10-05 1200 AB12 - x.md", "parsed": null, "title": "2026 10 05 1200 AB12 X", "clash": "2026-10-05 1200 AB12 - x-2.md", "renameClash": "2026-10-05 1200 AB12 - x-2.md"},
+  {"name": "2026-10-05 1200 abcde - x.md", "parsed": null, "title": "2026 10 05 1200 Abcde X", "clash": "2026-10-05 1200 abcde - x-2.md", "renameClash": "2026-10-05 1200 abcde - x-2.md"},
+  {"name": "2026-10-05.md", "parsed": null, "title": "2026 10 05", "clash": "2026-10-05-2.md", "renameClash": "2026-10-05-2.md"},
+  {"name": "groceries.md", "parsed": null, "title": "Groceries", "clash": "groceries-2.md", "renameClash": "groceries-2.md"}
 ]

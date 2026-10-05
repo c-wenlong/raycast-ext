@@ -118,9 +118,9 @@ export function newNoteId(
 }
 
 /**
- * The name to try after `filename` was taken, on attempt 2, 3...: a
- * generated name with an id draws a new id (`newId`), so two notes never
- * share one; any other name gets "-2", "-3". Mirrors
+ * For a new note: the name to try after `filename` was taken, on attempt
+ * 2, 3...: a generated name with an id draws a new id (`newId`), so two
+ * notes never share one; any other name gets "-2", "-3". Mirrors
  * NoteNames.clashCandidate in helper/NoteNames.swift.
  */
 export function clashCandidate(
@@ -134,6 +134,21 @@ export function clashCandidate(
   const generated = parseGeneratedFilename(filename);
   if (generated?.id) {
     return generatedFilename(generated.stamp, newId(), generated.slug);
+  }
+  return renameClashCandidate(filename, attempt);
+}
+
+/**
+ * For a rename: the name to try after `filename` was taken. A rename never
+ * changes the id, so the slug gets "-2", "-3". Mirrors
+ * NoteNames.renameClashCandidate in helper/NoteNames.swift.
+ */
+export function renameClashCandidate(
+  filename: string,
+  attempt: number,
+): string {
+  if (attempt <= 1) {
+    return filename;
   }
   const extension = path.extname(filename);
   return `${path.basename(filename, extension)}-${attempt}${extension}`;
@@ -558,7 +573,7 @@ async function moveToUniquePath(
 ): Promise<string> {
   let attempt = 1;
   while (true) {
-    const candidate = await candidateIn(dir, filename, attempt);
+    const candidate = renameClashCandidate(filename, attempt);
     const candidatePath = path.join(dir, candidate);
 
     try {
@@ -595,7 +610,7 @@ async function renameToUniquePath(
 ): Promise<string> {
   let attempt = 1;
   while (true) {
-    const candidate = await candidateIn(dir, filename, attempt);
+    const candidate = renameClashCandidate(filename, attempt);
     const candidatePath = path.join(dir, candidate);
 
     try {

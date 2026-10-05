@@ -88,16 +88,19 @@ enum NoteLinks {
   }
 
   /// For a link whose file is gone: where the migration's rename log
-  /// (`NoteNames.RenameLog`) says that name went, following a name renamed
-  /// again, when the file `exists`. This is how a link to a name from
-  /// before ids, which has no id to look up, still opens.
-  static func renamedByLog(_ filename: String, renames: [String: String], exists: (String) -> Bool) -> String? {
+  /// (`NoteNames.RenameLog`) says that name went (following a name logged
+  /// again), when that file is among `names`; if a title rename moved it
+  /// since, the note carrying the id in the logged name. This is how a
+  /// link to a name from before ids, which has no id of its own, still
+  /// opens. The log itself is never rewritten.
+  static func renamedByLog(_ filename: String, renames: [String: String], among names: [String]) -> String? {
     var name = filename
     var steps = 0
     while let next = renames[name], steps < 16 {
       name = next
       steps += 1
     }
-    return name != filename && exists(name) ? name : nil
+    guard name != filename else { return nil }
+    return names.contains(name) ? name : noteWithSameID(as: name, among: names)
   }
 }

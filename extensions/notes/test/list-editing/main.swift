@@ -962,11 +962,13 @@ do {
     let parsed: Parsed?
     let title: String
     let clash: String
+    let renameClash: String
   }
   let cases = try! JSONDecoder().decode([Case].self, from: Data(contentsOf: URL(fileURLWithPath: "test/note-names.json")))
   for c in cases {
     let got = NoteNames.parse(c.name).map { Case.Parsed(stamp: $0.stamp, id: $0.id, slug: $0.slug) }
     check("parses \(c.name)", got == c.parsed, "\(String(describing: got))")
+    check("a rename clashing on \(c.name) keeps the id and tries \(c.renameClash)", NoteNames.renameClashCandidate(c.name, attempt: 2) == c.renameClash, NoteNames.renameClashCandidate(c.name, attempt: 2))
     check("a clash on \(c.name) tries \(c.clash)", NoteNames.clashCandidate(c.name, attempt: 2, newID: { "zzzz" }) == c.clash, NoteNames.clashCandidate(c.name, attempt: 2, newID: { "zzzz" }))
     check("an empty note named \(c.name) is titled \(c.title)", title(of: "# \n", filename: c.name) == c.title, title(of: "# \n", filename: c.name))
   }
@@ -1085,6 +1087,7 @@ do {
   reset()
   ids = ["aaaa", "bbbb", "cccc", "dddd"].makeIterator()
   let failedWrite = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { ids.next()! }, write: { path, _ in !path.hasSuffix("s.md") })
+  check("the open note still gets the mapping when another note fails", failedWrite.rewritten.count == 2, "\(failedWrite.rewritten)")
   check("a failed link rewrite leaves the run incomplete", !failedWrite.complete && NoteNames.renameLog(in: dir)?.linksRewritten == false
     && read("sub/s.md") == "[b](../2026-10-01%200900%20-%20b.md)\n")
   check("the next run rewrites the links it missed", NoteNames.migrateFolder(dir, root: dir, openPath: nil).complete
@@ -1092,10 +1095,11 @@ do {
 
   let names = ["2026-10-01 0900 bbbb - b.md", "x.md"]
   let renames = ["2026-10-01 0900 - b.md": "2026-10-01 0900 bbbb - b.md"]
-  check("a stale link to a name from before ids resolves through the log", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, exists: names.contains) == "2026-10-01 0900 bbbb - b.md")
-  check("not when the logged note is gone, or the name is not logged", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, exists: { _ in false }) == nil
-    && NoteLinks.renamedByLog("2026-10-01 0900 - c.md", renames: renames, exists: names.contains) == nil)
-  check("a log entry renamed again is followed", NoteLinks.renamedByLog("o.md", renames: ["o.md": "m.md", "m.md": "n.md"], exists: { $0 == "n.md" }) == "n.md")
+  check("a stale link to a name from before ids resolves through the log", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, among: names) == "2026-10-01 0900 bbbb - b.md")
+  check("the logged note renamed since is found by the id in the logged name", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, among: ["2026-10-01 0900 bbbb - new-title.md", "x.md"]) == "2026-10-01 0900 bbbb - new-title.md")
+  check("not when the logged note is gone, or the name is not logged", NoteLinks.renamedByLog("2026-10-01 0900 - b.md", renames: renames, among: ["x.md"]) == nil
+    && NoteLinks.renamedByLog("2026-10-01 0900 - c.md", renames: renames, among: names) == nil)
+  check("a log entry renamed again is followed", NoteLinks.renamedByLog("o.md", renames: ["o.md": "m.md", "m.md": "n.md"], among: ["n.md"]) == "n.md")
   check("the log is hidden from the note list", NoteNames.renameLogName.hasPrefix("."))
   try? fm.removeItem(atPath: dir)
 }
@@ -1109,6 +1113,8 @@ do {
   let free = uniqueNotePath(for: "2026-10-05 1200 ab12 - x.md", in: dir)
   let parsed = NoteNames.parse((free as NSString).lastPathComponent)
   check("a taken generated name gets a new id, never a shared one", parsed?.slug == "x" && parsed?.id != nil && parsed?.id != "ab12", free)
+  try! "x".write(toFile: dir + "/2026-10-05 1200 ab12 - y.md", atomically: true, encoding: .utf8)
+  check("a rename onto a taken name keeps its id and suffixes the slug", uniqueNotePath(for: "2026-10-05 1200 ab12 - y.md", in: dir, renaming: true) == dir + "/2026-10-05 1200 ab12 - y-2.md")
   check("a free name is used as it is", uniqueNotePath(for: "2026-10-05 1200 cd34 - y.md", in: dir) == dir + "/2026-10-05 1200 cd34 - y.md")
   try? fm.removeItem(atPath: dir)
 }
