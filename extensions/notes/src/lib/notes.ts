@@ -3,11 +3,11 @@ import { randomInt } from "node:crypto";
 import {
   access,
   link,
+  open,
   readdir,
   rename,
   stat,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -147,21 +147,6 @@ export function clashCandidate(
 }
 
 /**
- * True when `current` already is `slug`, or `slug` with a "-2", "-3" a
- * clash gave it, so a later save does not move it on to "-3", "-4".
- * Mirrors NoteNames.settled.
- */
-export function settledSlug(current: string, slug: string): boolean {
-  if (current === slug) {
-    return true;
-  }
-  return (
-    current.startsWith(`${slug}-`) &&
-    /^\d+$/.test(current.slice(slug.length + 1))
-  );
-}
-
-/**
  * For a rename: the name to try after `filename` was taken. A rename never
  * changes the id, so the slug gets "-2", "-3". Mirrors
  * NoteNames.renameClashCandidate in helper/NoteNames.swift.
@@ -196,15 +181,23 @@ async function freshNoteId(dir: string): Promise<string> {
 
 /**
  * The window's record of what its migration to ids renamed in a folder,
- * `.note-renames.json` beside the notes: old filename to new, exactly.
- * Mirrors NoteNames.RenameLog in helper/NoteNames.swift. Empty when the
- * folder has none or it cannot be read.
+ * and the ids retired there: `.note-renames.jsonl` beside the notes,
+ * append-only JSON Lines, one event per line, each line one O_APPEND
+ * write so the window and Browse Notes never drop each other's events:
+ *   {"rename":["old filename","new filename"]}
+ *   {"retire":"k3x9"}
+ *   {"links":"pending"} / {"links":"done"}
+ * Readers fold every line in order and skip a line that does not parse (a
+ * half-written last line included). A `.note-renames.json` from before is
+ * read too and moved into the log by the first append. Mirrors
+ * NoteNames.RenameLog in helper/NoteNames.swift.
  */
-export const RENAME_LOG_NAME = ".note-renames.json";
+export const RENAME_LOG_NAME = ".note-renames.jsonl";
+const OLD_RENAME_LOG_NAME = ".note-renames.json";
 
-type NoteLog = {
+export type NoteLog = {
   renames: Record<string, string>;
-  linksRewritten?: boolean;
+  linksRewritten: boolean;
   /**
    * Ids of notes deleted from the window or Browse Notes: never drawn
    * again, so an old link or pin cannot land on an unrelated note that
@@ -213,23 +206,123 @@ type NoteLog = {
   retiredIDs?: string[];
 };
 
-async function readNoteLog(dir: string): Promise<NoteLog | undefined> {
+export type NoteLogEvent =
+  | { rename: [string, string] }
+  | { retire: string }
+  | { links: "pending" | "done" };
+
+function foldEvent(log: NoteLog, event: unknown): void {
+  if (!event || typeof event !== "object") {
+    return;
+  }
+  const e = event as Record<string, unknown>;
+  if (
+    Array.isArray(e.rename) &&
+    e.rename.length === 2 &&
+    e.rename.every((name) => typeof name === "string")
+  ) {
+    log.renames[e.rename[0]] = e.rename[1];
+  } else if (typeof e.retire === "string") {
+    const retired = log.retiredIDs ?? [];
+    if (!retired.includes(e.retire)) {
+      retired.push(e.retire);
+    }
+    log.retiredIDs = retired;
+  } else if (typeof e.links === "string") {
+    log.linksRewritten = e.links === "done";
+  }
+}
+
+async function readOldNoteLog(dir: string): Promise<NoteLog | undefined> {
   try {
     const parsed = JSON.parse(
-      await readFileUtf8(path.join(dir, RENAME_LOG_NAME)),
+      await readFileUtf8(path.join(dir, OLD_RENAME_LOG_NAME)),
     );
     if (!parsed || typeof parsed !== "object") {
       return undefined;
     }
     return {
-      ...parsed,
       renames:
         parsed.renames && typeof parsed.renames === "object"
           ? parsed.renames
           : {},
+      linksRewritten: parsed.linksRewritten !== false,
+      retiredIDs: Array.isArray(parsed.retiredIDs)
+        ? parsed.retiredIDs
+        : undefined,
     };
   } catch {
     return undefined;
+  }
+}
+
+/** The folder's log, folded; undefined when it has none. */
+export async function readNoteLog(dir: string): Promise<NoteLog | undefined> {
+  const old = await readOldNoteLog(dir);
+  let text: string;
+  try {
+    text = await readFileUtf8(path.join(dir, RENAME_LOG_NAME));
+  } catch {
+    return old;
+  }
+  const log: NoteLog = old ?? { renames: {}, linksRewritten: true };
+  const lines = text.split("\n");
+  // Only lines ended by "\n" are whole; the last piece never is.
+  lines.pop();
+  for (const line of lines) {
+    if (!line) {
+      continue;
+    }
+    try {
+      foldEvent(log, JSON.parse(line));
+    } catch {
+      // A line a writer never finished, or not ours.
+    }
+  }
+  return log;
+}
+
+/**
+ * Appends `events` to the folder's log, each line by one write on an
+ * O_APPEND handle (starting on a fresh line if a writer stopped half
+ * way). Moves an old `.note-renames.json` into the log first.
+ */
+export async function appendNoteLog(
+  dir: string,
+  events: NoteLogEvent[],
+): Promise<void> {
+  const old = await readOldNoteLog(dir);
+  const all: NoteLogEvent[] = [];
+  if (old) {
+    for (const [from, to] of Object.entries(old.renames).sort()) {
+      all.push({ rename: [from, to] });
+    }
+    for (const id of old.retiredIDs ?? []) {
+      all.push({ retire: id });
+    }
+    all.push({ links: old.linksRewritten ? "done" : "pending" });
+  }
+  all.push(...events);
+  // "a+": read-write, every write at the end (O_APPEND).
+  const handle = await open(path.join(dir, RENAME_LOG_NAME), "a+");
+  try {
+    const { size } = await handle.stat();
+    let needsBreak = false;
+    if (size > 0) {
+      const last = Buffer.alloc(1);
+      await handle.read(last, 0, 1, size - 1);
+      needsBreak = last[0] !== 0x0a;
+    }
+    for (const event of all) {
+      const line = `${needsBreak ? "\n" : ""}${JSON.stringify(event)}\n`;
+      needsBreak = false;
+      await handle.write(line);
+    }
+  } finally {
+    await handle.close();
+  }
+  if (old) {
+    await unlink(path.join(dir, OLD_RENAME_LOG_NAME)).catch(() => undefined);
   }
 }
 
@@ -261,28 +354,15 @@ export async function usedNoteIds(dir: string): Promise<Set<string>> {
 
 /**
  * Records the id of a note just deleted (moved to the Trash) as retired
- * in its folder's log, keeping everything else in the log. Mirrors
- * NoteNames.retireID. Does nothing for a name without an id.
+ * in its folder's log. Mirrors NoteNames.retireID. Does nothing for a
+ * name without an id.
  */
 export async function retireNoteId(notePath: string): Promise<void> {
   const id = parseGeneratedFilename(path.basename(notePath))?.id;
   if (!id) {
     return;
   }
-  const dir = path.dirname(notePath);
-  const log: NoteLog = (await readNoteLog(dir)) ?? {
-    renames: {},
-    linksRewritten: true,
-  };
-  const retired = log.retiredIDs ?? [];
-  if (!retired.includes(id)) {
-    retired.push(id);
-  }
-  log.retiredIDs = retired;
-  // Written whole and moved into place, so a reader never sees half a log.
-  const temp = path.join(dir, `.note-renames-${process.pid}-${Date.now()}.tmp`);
-  await writeFile(temp, JSON.stringify(log, null, 2), "utf8");
-  await rename(temp, path.join(dir, RENAME_LOG_NAME));
+  await appendNoteLog(path.dirname(notePath), [{ retire: id }]);
 }
 
 /** Where the log says `filename` went, following a name renamed again. */
@@ -629,18 +709,46 @@ export async function renameNoteFromTitleIfNeeded(
 
   // Only the slug follows the title; the id stays (a name from before
   // ids gets one). Mirrors NoteNames.renamed in helper/NoteNames.swift.
-  const slug = slugify(newTitle);
-  if (generated.id && settledSlug(generated.slug, slug)) {
-    return notePath;
-  }
-
   const directory = path.dirname(notePath);
-  const nextFilename = generatedFilename(
+  const base = generatedFilename(
     generated.stamp,
     generated.id ?? (await freshNoteId(directory)),
-    slug,
+    slugify(newTitle),
   );
+  const nextFilename = await renameTarget(filename, base, async (name) =>
+    access(path.join(directory, name), constants.F_OK).then(
+      () => true,
+      () => false,
+    ),
+  );
+  if (!nextFilename) {
+    return notePath;
+  }
   return moveToUniquePath(directory, nextFilename, notePath);
+}
+
+/**
+ * Where a rename of `current` to `base` lands: `base`, or `base` with
+ * "-2", "-3" while the names before it are taken by other notes. Undefined
+ * when that is `current` itself, so a note that took "-2" by a clash stays
+ * put save after save, while "plan-2" retitled "Plan" becomes "plan" once
+ * that name is free. Mirrors NoteNames.renamed.
+ */
+export async function renameTarget(
+  current: string,
+  base: string,
+  exists: (name: string) => Promise<boolean>,
+): Promise<string | undefined> {
+  for (let attempt = 1; attempt < 10_000; attempt += 1) {
+    const candidate = renameClashCandidate(base, attempt);
+    if (candidate === current) {
+      return undefined;
+    }
+    if (!(await exists(candidate))) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 // Errors that mean "this filesystem has no hard links" rather than "the

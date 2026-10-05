@@ -57,7 +57,7 @@ export async function movePin(fromPath: string, toPath: string): Promise<void> {
  * ("YYYY-MM-DD HHmm <id> - slug.md") when its first line changes, and
  * gives names from before ids one, without being able to reach this
  * storage. A pinned path that no longer exists moves to where the
- * window's rename log (`.note-renames.json` in its folder) says it went,
+ * window's rename log (`.note-renames.jsonl` in its folder) says it went,
  * else to the one existing note in its folder with the same id. A pin
  * from before ids with no log entry is left alone (a timestamp is not an
  * identity: two notes can share a minute), as are other dead pins (a

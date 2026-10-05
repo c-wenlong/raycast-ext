@@ -131,21 +131,23 @@ enum NoteNames {
 
   /// The name a generated note gets for the title `title`: same stamp and
   /// id (a fresh one from `newID` for a name from before ids), the title's
-  /// slug. Nil for a name that is not generated, or already right.
-  static func renamed(_ filename: String, title: String, newID: () -> String) -> String? {
+  /// slug, or the slug with "-2", "-3" when the names before it are taken
+  /// (`exists`, by filename in the note's folder) by other notes. Nil for a
+  /// name that is not generated, or when that lands on its current name, so
+  /// a note that took "-2" by a clash stays put save after save, while
+  /// "plan-2" retitled "Plan" becomes "plan" once that name is free.
+  /// Mirrors renameTarget in src/lib/notes.ts.
+  static func renamed(_ filename: String, title: String, newID: () -> String, exists: (String) -> Bool) -> String? {
     guard let generated = parse(filename) else { return nil }
-    let slug = slugify(title)
-    if generated.id != nil, settled(generated.slug, for: slug) { return nil }
-    return Self.filename(stamp: generated.stamp, id: generated.id ?? newID(), slug: slug)
-  }
-
-  /// True when `current` already is `slug`, or `slug` with a "-2", "-3"
-  /// a clash gave it: a later save must not move it on to "-3", "-4".
-  static func settled(_ current: String, for slug: String) -> Bool {
-    guard current != slug else { return true }
-    guard current.hasPrefix(slug + "-") else { return false }
-    let suffix = current.dropFirst(slug.count + 1)
-    return !suffix.isEmpty && suffix.allSatisfy(\.isASCII) && suffix.allSatisfy(\.isNumber)
+    let base = Self.filename(stamp: generated.stamp, id: generated.id ?? newID(), slug: slugify(title))
+    var attempt = 1
+    while attempt < 10_000 {
+      let candidate = renameClashCandidate(base, attempt: attempt)
+      if candidate == filename { return nil }
+      if !exists(candidate) { return candidate }
+      attempt += 1
+    }
+    return nil
   }
 
   /// The renames that give every generated name in `names` without an id
@@ -170,12 +172,20 @@ enum NoteNames {
 
   // MARK: Migrating a folder
 
-  /// What the migration renamed in a folder, kept beside the notes as
-  /// `.note-renames.json` (hidden, so no list shows it): old filename to
-  /// new, exactly. Browse Notes moves pins with it, and a stale link to an
-  /// old name (which has no id to look up) still opens through it.
-  /// `linksRewritten` is false until every link to the renamed notes has
-  /// been rewritten. Mirrors readRenameLog in src/lib/notes.ts.
+  /// What the migration renamed in a folder, and the ids retired there,
+  /// kept beside the notes as `.note-renames.jsonl` (hidden, so no list
+  /// shows it). It is append-only JSON Lines, one event per line, each line
+  /// written by a single O_APPEND write so the window and Browse Notes can
+  /// both write without losing each other's events:
+  ///   {"rename":["old filename","new filename"]}  the migration renamed it
+  ///   {"retire":"k3x9"}                            a deleted note's id
+  ///   {"links":"pending"} / {"links":"done"}       links not yet / all rewritten
+  /// Readers fold every line in order and skip a line that does not parse
+  /// (a half-written last line included). A `.note-renames.json` from
+  /// before is read too and moved into the log by the first append.
+  /// Browse Notes moves pins with the renames, a stale link to an old name
+  /// (which has no id to look up) still opens through them, and no new note
+  /// gets a logged or retired id. Mirrors readNoteLog in src/lib/notes.ts.
   struct RenameLog: Codable, Equatable {
     var renames: [String: String] = [:]
     var linksRewritten = true
@@ -184,6 +194,98 @@ enum NoteNames {
     /// that happened to get the same id. (A note deleted in Finder is not
     /// seen; with 36^4 ids the chance of a reuse there is tiny.)
     var retiredIDs: [String]? = nil
+  }
+
+  enum LogEvent: Equatable {
+    case rename(String, String)
+    case retire(String)
+    case links(done: Bool)
+
+    var json: [String: Any] {
+      switch self {
+      case .rename(let old, let new): return ["rename": [old, new]]
+      case .retire(let id): return ["retire": id]
+      case .links(let done): return ["links": done ? "done" : "pending"]
+      }
+    }
+  }
+
+  static let renameLogName = ".note-renames.jsonl"
+  /// The single-file log from before, read and then moved into the
+  /// append-only one.
+  static let oldRenameLogName = ".note-renames.json"
+
+  private static func fold(_ event: [String: Any], into log: inout RenameLog) {
+    if let pair = event["rename"] as? [String], pair.count == 2 {
+      log.renames[pair[0]] = pair[1]
+    } else if let id = event["retire"] as? String {
+      var retired = log.retiredIDs ?? []
+      if !retired.contains(id) { retired.append(id) }
+      log.retiredIDs = retired
+    } else if let links = event["links"] as? String {
+      log.linksRewritten = links == "done"
+    }
+  }
+
+  private static func oldLog(in directory: String) -> RenameLog? {
+    let path = (directory as NSString).appendingPathComponent(oldRenameLogName)
+    guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    return try? JSONDecoder().decode(RenameLog.self, from: data)
+  }
+
+  /// The folder's log, folded; nil when it has none.
+  static func renameLog(in directory: String) -> RenameLog? {
+    let old = oldLog(in: directory)
+    let path = (directory as NSString).appendingPathComponent(renameLogName)
+    guard let data = FileManager.default.contents(atPath: path) else { return old }
+    var log = old ?? RenameLog()
+    var lines = data.split(separator: 0x0A, omittingEmptySubsequences: false)
+    // Only lines ended by "\n" are whole; a last one without is half written.
+    if data.last != 0x0A { lines.removeLast() }
+    for line in lines where !line.isEmpty {
+      guard let event = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] else { continue }
+      fold(event, into: &log)
+    }
+    return log
+  }
+
+  /// Appends `events` to the folder's log, each line by one O_APPEND write
+  /// (starting on a fresh line if a writer stopped half way). Moves an old
+  /// `.note-renames.json` into the log first. False when it cannot write.
+  @discardableResult
+  static func appendLog(_ events: [LogEvent], in directory: String) -> Bool {
+    let path = (directory as NSString).appendingPathComponent(renameLogName)
+    let oldPath = (directory as NSString).appendingPathComponent(oldRenameLogName)
+    var all: [[String: Any]] = []
+    let old = oldLog(in: directory)
+    if let old {
+      all += old.renames.sorted { $0.key < $1.key }.map { LogEvent.rename($0.key, $0.value).json }
+      all += (old.retiredIDs ?? []).map { LogEvent.retire($0).json }
+      all.append(LogEvent.links(done: old.linksRewritten).json)
+    }
+    all += events.map(\.json)
+    // Read-write so the last byte can be checked; writes still go to the end.
+    let fd = open(path, O_RDWR | O_APPEND | O_CREAT, 0o644)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    var needsBreak = false
+    var size = stat()
+    if fstat(fd, &size) == 0, size.st_size > 0 {
+      var last: UInt8 = 0
+      if pread(fd, &last, 1, size.st_size - 1) == 1, last != 0x0A { needsBreak = true }
+    }
+    for event in all {
+      guard var line = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return false }
+      line.append(0x0A)
+      if needsBreak {
+        line.insert(0x0A, at: 0)
+        needsBreak = false
+      }
+      let written = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+      guard written == line.count else { return false }
+    }
+    if old != nil { try? FileManager.default.removeItem(atPath: oldPath) }
+    return true
   }
 
   /// Every id a new note must not take in `directory`: those its notes
@@ -202,27 +304,7 @@ enum NoteNames {
   @discardableResult
   static func retireID(of filename: String, in directory: String) -> Bool {
     guard let id = parse(filename)?.id else { return false }
-    var log = renameLog(in: directory) ?? RenameLog()
-    var retired = log.retiredIDs ?? []
-    if !retired.contains(id) { retired.append(id) }
-    log.retiredIDs = retired
-    return saveRenameLog(log, in: directory)
-  }
-
-  static let renameLogName = ".note-renames.json"
-
-  static func renameLog(in directory: String) -> RenameLog? {
-    let path = (directory as NSString).appendingPathComponent(renameLogName)
-    guard let data = FileManager.default.contents(atPath: path) else { return nil }
-    return try? JSONDecoder().decode(RenameLog.self, from: data)
-  }
-
-  static func saveRenameLog(_ log: RenameLog, in directory: String) -> Bool {
-    let path = (directory as NSString).appendingPathComponent(renameLogName)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    guard let data = try? encoder.encode(log) else { return false }
-    return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+    return appendLog([.retire(id)], in: directory)
   }
 
   struct MigrationOutcome {
@@ -265,14 +347,10 @@ enum NoteNames {
     var log = renameLog(in: directory) ?? RenameLog()
     let plan = migration(of: names, avoiding: usedIDs(in: directory), random: random)
     if !plan.isEmpty {
-      for step in plan {
-        // A name logged before and renamed again: the old entry follows.
-        for (old, new) in log.renames where new == step.from { log.renames[old] = step.to }
-        log.renames[step.from] = step.to
-      }
-      log.linksRewritten = false
       // Logged first, so a rename is never made without its record.
-      guard saveRenameLog(log, in: directory) else { return outcome }
+      guard appendLog(plan.map { .rename($0.from, $0.to) } + [.links(done: false)], in: directory) else { return outcome }
+      for step in plan { log.renames[step.from] = step.to }
+      log.linksRewritten = false
     }
     var failed = false
     for step in plan {
@@ -295,10 +373,7 @@ enum NoteNames {
       // gets the mapping whatever happened to the others.
       outcome.rewritten = moves
       if rewriteLinks(underRoot: root, moves: moves, skipping: skip, write: write) {
-        if !failed {
-          log.linksRewritten = true
-          if !saveRenameLog(log, in: directory) { failed = true }
-        }
+        if !failed, !appendLog([.links(done: true)], in: directory) { failed = true }
       } else {
         failed = true
       }

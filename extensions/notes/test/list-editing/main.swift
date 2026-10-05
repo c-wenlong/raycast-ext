@@ -981,11 +981,11 @@ do {
   check("a clashing id is drawn again", NoteNames.newID(avoiding: ["ab12"], random: { draws.next()! }) == "cd34")
   check("the ids of a folder", NoteNames.ids(in: ["2026-10-05 1200 ab12 - x.md", "2026-10-05 1200 - y.md", "z.md"]) == ["ab12"])
 
-  check("a rename keeps the id and follows the title", NoteNames.renamed("2026-10-05 1200 ab12 - old.md", title: "New Title", newID: { "zzzz" }) == "2026-10-05 1200 ab12 - new-title.md")
-  check("no rename when the slug already matches", NoteNames.renamed("2026-10-05 1200 ab12 - new-title.md", title: "New title", newID: { "zzzz" }) == nil)
-  check("a name from before ids gets one when renamed", NoteNames.renamed("2026-10-05 1200 - old.md", title: "Old", newID: { "zzzz" }) == "2026-10-05 1200 zzzz - old.md")
-  check("daily and hand-named notes are never renamed", NoteNames.renamed("2026-10-05.md", title: "X", newID: { "zzzz" }) == nil
-    && NoteNames.renamed("groceries.md", title: "X", newID: { "zzzz" }) == nil)
+  check("a rename keeps the id and follows the title", NoteNames.renamed("2026-10-05 1200 ab12 - old.md", title: "New Title", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 ab12 - new-title.md")
+  check("no rename when the slug already matches", NoteNames.renamed("2026-10-05 1200 ab12 - new-title.md", title: "New title", newID: { "zzzz" }, exists: { _ in false }) == nil)
+  check("a name from before ids gets one when renamed", NoteNames.renamed("2026-10-05 1200 - old.md", title: "Old", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 zzzz - old.md")
+  check("daily and hand-named notes are never renamed", NoteNames.renamed("2026-10-05.md", title: "X", newID: { "zzzz" }, exists: { _ in false }) == nil
+    && NoteNames.renamed("groceries.md", title: "X", newID: { "zzzz" }, exists: { _ in false }) == nil)
 
   var ids = ["ab12", "ab12", "cd34", "ef56"].makeIterator()
   let folder = ["2026-10-05 1200 - a.md", "2026-10-05 1201 ab12 - b.md", "2026-10-05.md", "groceries.md", "2026-10-05 1202 - c.md"]
@@ -1122,19 +1122,19 @@ do {
 // Renames settle; ids are never drawn twice
 
 do {
-  check("a note that landed on -2 by a clash is not moved again on the next save", NoteNames.renamed("2026-10-05 1200 ab12 - second-2.md", title: "Second", newID: { "zzzz" }) == nil
-    && NoteNames.renamed("2026-10-05 1200 ab12 - second-12.md", title: "Second", newID: { "zzzz" }) == nil)
-  check("a real title change still renames it", NoteNames.renamed("2026-10-05 1200 ab12 - second-2.md", title: "Third", newID: { "zzzz" }) == "2026-10-05 1200 ab12 - third.md")
-  check("a title that only looks like a suffix is not one", NoteNames.renamed("2026-10-05 1200 ab12 - second-2x.md", title: "Second", newID: { "zzzz" }) == "2026-10-05 1200 ab12 - second.md")
+  let planTaken: (String) -> Bool = { $0 == "2026-10-05 1200 cd34 - plan.md" || $0 == "2026-10-05 1200 ab12 - plan.md" }
+  check("\"Plan 2\" renamed \"Plan\" becomes plan when that name is free", NoteNames.renamed("2026-10-05 1200 ab12 - plan-2.md", title: "Plan", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 ab12 - plan.md")
+  check("and stays plan-2 while plan is another note's, save after save", NoteNames.renamed("2026-10-05 1200 ab12 - plan-2.md", title: "Plan", newID: { "zzzz" }, exists: planTaken) == nil)
+  check("a clash suffix moves down when a lower one frees up", NoteNames.renamed("2026-10-05 1200 ab12 - plan-3.md", title: "Plan", newID: { "zzzz" }, exists: planTaken) == "2026-10-05 1200 ab12 - plan-2.md")
+  check("a real title change still renames it", NoteNames.renamed("2026-10-05 1200 ab12 - second-2.md", title: "Third", newID: { "zzzz" }, exists: { _ in false }) == "2026-10-05 1200 ab12 - third.md")
+  check("a title that only looks like a suffix is not one", NoteNames.renamed("2026-10-05 1200 ab12 - second-2x.md", title: "Second", newID: { "zzzz" }, exists: { $0 == "2026-10-05 1200 ab12 - second.md" }) == "2026-10-05 1200 ab12 - second-2.md")
 
   let fm = FileManager.default
   let dir = NSTemporaryDirectory() + "notes-ids-\(getpid())"
   try? fm.removeItem(atPath: dir)
   try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
   try! "x".write(toFile: dir + "/2026-10-05 1200 aaaa - here.md", atomically: true, encoding: .utf8)
-  var log = NoteNames.RenameLog()
-  log.renames = ["2026-10-01 0900 - old.md": "2026-10-01 0900 bbbb - old.md"]
-  check("the log saves", NoteNames.saveRenameLog(log, in: dir))
+  check("the log appends", NoteNames.appendLog([.rename("2026-10-01 0900 - old.md", "2026-10-01 0900 bbbb - old.md")], in: dir))
   check("a note deleted from the window retires its id, keeping the log", NoteNames.retireID(of: "2026-10-05 1300 cccc - gone.md", in: dir)
     && NoteNames.renameLog(in: dir)?.retiredIDs == ["cccc"] && NoteNames.renameLog(in: dir)?.renames.count == 1)
   check("a name without an id retires nothing", !NoteNames.retireID(of: "groceries.md", in: dir))
@@ -1145,6 +1145,42 @@ do {
   var migrationDraws = ["bbbb", "cccc", "eeee"].makeIterator()
   _ = NoteNames.migrateFolder(dir, root: dir, openPath: nil, random: { migrationDraws.next()! })
   check("migration never hands out a logged or retired id", fm.fileExists(atPath: dir + "/2026-10-05 1400 eeee - legacy.md"), "\((try? fm.contentsOfDirectory(atPath: dir)) ?? [])")
+  try? fm.removeItem(atPath: dir)
+}
+
+// The rename log is append-only JSON Lines
+
+do {
+  let fm = FileManager.default
+  let dir = NSTemporaryDirectory() + "notes-log-\(getpid())"
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  try! fm.copyItem(atPath: "test/note-log.jsonl", toPath: dir + "/" + NoteNames.renameLogName)
+  let folded = NoteNames.renameLog(in: dir)
+  check("the shared log fixture folds the same as in TS (bad and half-written lines skipped)",
+    folded?.renames == ["2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md"] && folded?.retiredIDs == ["cccc", "dddd"] && folded?.linksRewritten == true,
+    "\(String(describing: folded))")
+  check("an append after a half-written line still reads", NoteNames.appendLog([.retire("eeee")], in: dir)
+    && NoteNames.renameLog(in: dir)?.retiredIDs == ["cccc", "dddd", "eeee"], "\(String(describing: NoteNames.renameLog(in: dir)))")
+
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  DispatchQueue.concurrentPerform(iterations: 200) { i in
+    _ = NoteNames.appendLog([i % 2 == 0 ? .retire(String(format: "r%03d", i)) : .rename("o\(i).md", "n\(i).md")], in: dir)
+  }
+  let both = NoteNames.renameLog(in: dir)
+  check("two writers appending at once lose nothing", both?.retiredIDs?.count == 100 && both?.renames.count == 100, "\(both?.retiredIDs?.count ?? -1) \(both?.renames.count ?? -1)")
+
+  try? fm.removeItem(atPath: dir)
+  try! fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+  let legacy = #"{"renames":{"2026-01-01 0900 - a.md":"2026-01-01 0900 k3x9 - a.md"},"linksRewritten":false,"retiredIDs":["cccc"]}"#
+  try! legacy.write(toFile: dir + "/.note-renames.json", atomically: true, encoding: .utf8)
+  check("an old .note-renames.json is read", NoteNames.renameLog(in: dir)?.renames.count == 1 && NoteNames.renameLog(in: dir)?.linksRewritten == false)
+  _ = NoteNames.appendLog([.retire("dddd")], in: dir)
+  let upgraded = NoteNames.renameLog(in: dir)
+  check("and moved into the append-only log on the first write, once", !fm.fileExists(atPath: dir + "/.note-renames.json")
+    && upgraded?.renames == ["2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md"] && upgraded?.retiredIDs == ["cccc", "dddd"] && upgraded?.linksRewritten == false,
+    "\(String(describing: upgraded))")
   try? fm.removeItem(atPath: dir)
 }
 

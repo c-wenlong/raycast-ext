@@ -8,6 +8,8 @@ import {
   renameClashCandidate,
   retireNoteId,
   usedNoteIds,
+  readNoteLog,
+  appendNoteLog,
   createNewNoteFile,
   duplicateNoteFile,
   newNoteId,
@@ -421,15 +423,75 @@ const cases: Case[] = [
         "bbbb",
         "cccc",
       ]);
-      const log = JSON.parse(
-        readFileSync(path.join(dir, ".note-renames.json"), "utf8"),
+      const log = await readNoteLog(dir);
+      assert.deepEqual(log?.retiredIDs, ["cccc"]);
+      // The old single-file log was moved into the append-only one.
+      assert.throws(
+        () => readFileSync(path.join(dir, ".note-renames.json")),
+        /ENOENT/,
       );
-      assert.deepEqual(log.retiredIDs, ["cccc"]);
       assert.equal(
-        log.renames["2026-01-01 0900 - a.md"],
+        log?.renames["2026-01-01 0900 - a.md"],
         "2026-01-01 0900 bbbb - a.md",
       );
-      assert.equal(log.linksRewritten, true);
+      assert.equal(log?.linksRewritten, true);
+    },
+  ],
+  [
+    '"Plan 2" renamed "Plan" becomes plan when free, stays plan-2 when not',
+    async () => {
+      const dir = freshDir();
+      const note = await createNewNoteFile(dir, "Plan 2", "body");
+      const prefix = path.basename(note).slice(0, 20);
+      assert.equal(path.basename(note), `${prefix} - plan-2.md`);
+      const renamed = await renameNoteFromTitleIfNeeded(note, "Plan");
+      assert.equal(path.basename(renamed), `${prefix} - plan.md`);
+
+      const other = await createNewNoteFile(dir, "Plan 2", "body");
+      const otherPrefix = path.basename(other).slice(0, 20);
+      writeFileSync(path.join(dir, `${otherPrefix} - plan.md`), "# Plan\n");
+      assert.equal(await renameNoteFromTitleIfNeeded(other, "Plan"), other);
+      assert.equal(await renameNoteFromTitleIfNeeded(other, "Plan"), other);
+    },
+  ],
+  [
+    "the shared log fixture folds the same as in Swift",
+    async () => {
+      const dir = freshDir();
+      writeFileSync(
+        path.join(dir, ".note-renames.jsonl"),
+        readFileSync(path.join(__dirname, "../test/note-log.jsonl")),
+      );
+      const log = await readNoteLog(dir);
+      assert.deepEqual(log?.renames, {
+        "2026-01-01 0900 - a.md": "2026-01-01 0900 k3x9 - a.md",
+      });
+      assert.deepEqual(log?.retiredIDs, ["cccc", "dddd"]);
+      assert.equal(log?.linksRewritten, true);
+      await appendNoteLog(dir, [{ retire: "eeee" }]);
+      assert.deepEqual((await readNoteLog(dir))?.retiredIDs, [
+        "cccc",
+        "dddd",
+        "eeee",
+      ]);
+    },
+  ],
+  [
+    "two writers appending at once lose nothing",
+    async () => {
+      const dir = freshDir();
+      await Promise.all(
+        Array.from({ length: 200 }, (_, i) =>
+          appendNoteLog(dir, [
+            i % 2 === 0
+              ? { retire: `r${String(i).padStart(3, "0")}` }
+              : { rename: [`o${i}.md`, `n${i}.md`] },
+          ]),
+        ),
+      );
+      const log = await readNoteLog(dir);
+      assert.equal(log?.retiredIDs?.length, 100);
+      assert.equal(Object.keys(log?.renames ?? {}).length, 100);
     },
   ],
   [

@@ -618,7 +618,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     guard let path = currentPath, let titleText = Titles.firstLine(of: loadedText) else { return }
     let filename = (path as NSString).lastPathComponent
     let directory = (path as NSString).deletingLastPathComponent
-    guard let next = NoteNames.renamed(filename, title: titleText, newID: { self.freshID(in: directory) }) else { return }
+    guard
+      let next = NoteNames.renamed(
+        filename, title: titleText, newID: { self.freshID(in: directory) },
+        exists: { diskFiles.fileExists(atPath: (directory as NSString).appendingPathComponent($0)) })
+    else { return }
     let nextPath = uniqueNotePath(for: next, in: directory, renaming: true)
     guard nextPath != path, (try? diskFiles.moveItem(atPath: path, toPath: nextPath)) != nil else { return }
     currentPath = nextPath
@@ -660,7 +664,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var migratedFolder: String?
 
   /// Generated names from before ids get one (NoteNames.migrateFolder),
-  /// with the renames logged in `.note-renames.json` and links to them
+  /// with the renames logged in `.note-renames.jsonl` and links to them
   /// rewritten. Only the notes folder itself is renamed in; daily and
   /// hand-named notes stay as they are. Until a run completes, every
   /// listing tries again; after that, once per folder per launch.

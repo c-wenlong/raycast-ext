@@ -114,13 +114,14 @@ Naming:
   note whose name is taken draws a new id rather than sharing one; a rename
   onto a taken name keeps its id and adds "-2" to the slug (and stays there
   on later saves). The id of a note deleted from the window or Browse Notes
-  is retired in `.note-renames.json` and never handed out again, so an old
+  is retired in `.note-renames.jsonl` and never handed out again, so an old
   link or pin cannot land on a different note.
 - Notes from before ids (`2026-09-26 1400 - project-ideas.md`) get one once,
   when the window first lists the folder, with their links rewritten. Each
-  rename is recorded first in `.note-renames.json` in the notes folder (old
-  filename to new; hidden, safe to keep): Browse Notes moves pins with it,
-  and a link to an old name still opens through it (by the id in the logged name, if the note was renamed again). A run that fails part
+  rename is recorded first in `.note-renames.jsonl` in the notes folder (old
+  filename to new; hidden, append-only, safe to keep): Browse Notes moves
+  pins with it, and a link to an old name still opens through it (by the id
+  in the logged name, if the note was renamed again). A run that fails part
   way is retried at the next listing. Daily notes and hand-named files keep
   their names: they are never renamed, so links to them never go stale.
 
