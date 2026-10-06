@@ -79,6 +79,22 @@ enum ListEditing {
     return Item(indent: indent, marker: marker, content: content)
   }
 
+  // Shared with Markdown: editing boundaries must match rendered syntax,
+  // including the exclusion of numbered checkbox lines from bullet styling.
+  static let taskPattern = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
+  // Possessive whitespace prevents backtracking into the task marker.
+  static let bulletPattern = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
+
+  /// The actual rendered prefix, including indentation and separator spacing.
+  static func listMarkerRange(in line: String) -> NSRange? {
+    let all = NSRange(location: 0, length: (line as NSString).length)
+    if let task = taskPattern.firstMatch(in: line, range: all) {
+      let body = task.range(at: 4)
+      return NSRange(location: 0, length: body.location == NSNotFound ? NSMaxRange(task.range) : body.location)
+    }
+    return bulletPattern.firstMatch(in: line, range: all)?.range
+  }
+
   // MARK: Line and block helpers
 
   private struct Line {
@@ -559,9 +575,9 @@ enum ListEditing {
     let lineLength = wholeNS.length
     var textStart = blockPrefix(of: whole).contentStart
     if textStart == blockPrefix(of: whole).indent,
-      let list = listPrefix.firstMatch(in: whole, range: NSRange(location: 0, length: lineLength))
+      let list = listMarkerRange(in: whole)
     {
-      textStart = NSMaxRange(list.range)
+      textStart = NSMaxRange(list)
     }
     let moved = wholeNS.substring(from: textStart)
     let between = ns.substring(with: NSRange(location: target, length: lineStart - target))
@@ -599,7 +615,11 @@ enum ListEditing {
         let length = (line as NSString).length
         return (lineStart, [0, length], length)
       }
-      guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
+      guard !insideFence(text, cursor: lineStart) else { return nil }
+      if let prefix = listMarkerRange(in: line) {
+        let end = NSMaxRange(prefix)
+        return (lineStart, [0, end], end)
+      }
       let prefix = blockPrefix(of: line)
       let child = (depth[lineStart] ?? 0) > 0
       guard prefix.hasMarkers || (child && prefix.indent > 0) else { return nil }
@@ -1027,7 +1047,7 @@ enum ListEditing {
     let all = lines(of: text)
     guard let index = lineIndex(of: cursor, in: all),
       let item = parse(line: all[index].text),
-      cursor - all[index].range.location == (item.indent + item.marker.text).count,
+      cursor - all[index].range.location == listMarkerRange(in: all[index].text)?.length,
       !insideFence(text, cursor: all[index].range.location)
     else { return nil }
 
