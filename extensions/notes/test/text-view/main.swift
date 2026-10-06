@@ -1091,6 +1091,17 @@ for divider in ["---  ", "***\t", "___ \t"] {
   check("left crosses divider and its spacing in one move", caret() == 1, "\(caret())")
 }
 
+load("12. [ ] Task")
+check("numbered checkbox prefix is displayed literally", tv.textStorage!.attribute(Markdown.hiddenRun, at: 0, effectiveRange: nil) == nil)
+tv.setSelectedRange(NSRange(location: 0, length: 1))
+tv.deleteBackward(nil)
+check("deleting literal list text removes only the selection", tv.string == "2. [ ] Task", tv.string)
+load("![k](url)")
+check("punctuation before a link remains visible text", tv.textStorage!.attribute(Markdown.hiddenRun, at: 0, effectiveRange: nil) == nil)
+tv.setSelectedRange(NSRange(location: 2, length: 0))
+tv.deleteForward(nil)
+check("deleting a link preserves preceding visible punctuation", tv.string == "!", tv.string)
+
 // 20. typed arrows: "->" and "=>" become one character, as their own undo step
 func type(_ s: String) {
   for ch in s {

@@ -747,10 +747,8 @@ enum Markdown {
     isDark(appearance) ? NSColor(white: 1, alpha: 0.1) : NSColor(white: 0, alpha: 0.07)
   }
 
-  static let task = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
-  // Possessive `[ \t]++` so "-  [ ] x" cannot backtrack to one space and
-  // pass as a bullet as well as a task.
-  static let bullet = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
+  static let task = ListEditing.taskPattern
+  static let bullet = ListEditing.bulletPattern
   // A block needs its closing fence: an opening fence typed on its own
   // stays literal text (the Enter and Space rules add the closing fence)
   // rather than swallowing the rest of the note.

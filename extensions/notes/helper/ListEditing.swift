@@ -79,15 +79,20 @@ enum ListEditing {
     return Item(indent: indent, marker: marker, content: content)
   }
 
-  /// The actual list prefix, including indentation and separator spacing.
-  /// Keep source widths: imported notes may use tabs or multiple spaces.
+  // Shared with Markdown: editing boundaries must match rendered syntax,
+  // including the exclusion of numbered checkbox lines from bullet styling.
+  static let taskPattern = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+])[ \t]+(\[[ xX]\])(?:[ \t]+(.*))?$"#, options: .anchorsMatchLines)
+  // Possessive whitespace prevents backtracking into the task marker.
+  static let bulletPattern = try! NSRegularExpression(pattern: #"^([ \t]*)([-*+]|\d+\.)[ \t]++(?!\[[ xX]\])"#, options: .anchorsMatchLines)
+
+  /// The actual rendered prefix, including indentation and separator spacing.
   static func listMarkerRange(in line: String) -> NSRange? {
-    let ns = line as NSString
-    guard let match = itemPattern.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
-    let body = match.range(at: 5)
-    // Bare "-" and "1." are still literal text in the renderer.
-    guard body.location != NSNotFound || match.range(at: 3).location != NSNotFound else { return nil }
-    return NSRange(location: 0, length: body.location == NSNotFound ? ns.length : body.location)
+    let all = NSRange(location: 0, length: (line as NSString).length)
+    if let task = taskPattern.firstMatch(in: line, range: all) {
+      let body = task.range(at: 4)
+      return NSRange(location: 0, length: body.location == NSNotFound ? NSMaxRange(task.range) : body.location)
+    }
+    return bulletPattern.firstMatch(in: line, range: all)?.range
   }
 
   // MARK: Line and block helpers

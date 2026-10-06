@@ -674,6 +674,10 @@ do {
     let inCode = "```\n" + prefix + "Task\n```"
     check("list syntax in code remains literal", ListEditing.deletionRange(in: inCode, range: NSRange(location: 5, length: 1)) == NSRange(location: 5, length: 1))
   }
+  for literal in ["1. [ ] Task", "12.  [X] Task", "  2.\t[x] Task", "-", "12."] {
+    check("unrendered prefix stays literal: \(literal)", ListEditing.listMarkerRange(in: literal) == nil)
+    check("unrendered prefix selection stays narrow: \(literal)", ListEditing.deletionRange(in: literal, range: NSRange(location: 0, length: 1)) == NSRange(location: 0, length: 1))
+  }
   check("bare dash stays literal", ListEditing.listMarkerRange(in: "-") == nil)
   check("bare number stays literal", ListEditing.listMarkerRange(in: "12.") == nil)
   check("backspace handles task tab spacing", applied("-\t[ ]\tTask", ListEditing.backspace(in: "-\t[ ]\tTask", cursor: 6))?.0 == "Task")
