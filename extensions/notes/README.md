@@ -24,7 +24,7 @@ the way the Raycast Notes window works. Bind it to `⌥⌘N` in Raycast
 Settings → Extensions → Notes (and clear the same hotkey on Raycast Notes).
 `⌘⇧F` in Browse Notes opens the selected note there.
 
-Use the green glass settings popover from the gear beside `⌘K` (or press `⌘,`), then choose **Floating**, **Menu Bar**, or **Notch** under **Attach**.
+Use the settings popover with green glass buttons from the gear beside `⌘K` (or press `⌘,`), then choose **Floating**, **Menu Bar**, or **Notch** under **Attach**.
 The same editor moves between them, preserving the note and undo history. The
 notch card uses a compact half-height layout. Hover opens it temporarily;
 clicking or using the shortcut keeps it open. `Esc` and `⌘W` collapse it.
