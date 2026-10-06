@@ -272,6 +272,13 @@ do {
   host.pointerMoved(inside: false)
   spin(0.4)
   check("a pinned card stays open", host.expanded && host.tab == .notes)
+  let editorClip = rootView.superview!.superview!
+  let editorMask = editorClip.layer?.mask as? CAShapeLayer
+  check("the editor clips both bottom corners to the notch outline",
+    editorMask?.path?.contains(NSPoint(x: 1, y: 1)) == false
+      && editorMask?.path?.contains(NSPoint(x: editorClip.bounds.maxX - 1, y: 1)) == false
+      && editorMask?.path?.contains(NSPoint(x: editorClip.bounds.midX, y: 1)) == true)
+
 
   // Commands through the window: ⌘K, Esc, ⌘W all route.
   var commands: [String] = []

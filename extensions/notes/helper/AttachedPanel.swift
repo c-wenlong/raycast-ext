@@ -406,6 +406,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   private let strip = IslandStripView()
   /// Clips the card's content to the island as it grows and shrinks.
   private let clip = NSView()
+  private let contentMask = CAShapeLayer()
   private let content = NSView()
   /// The editor root while hosted here; goes back to the floating panel.
   private(set) var editorRoot: NSView?
@@ -479,6 +480,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
 
     clip.wantsLayer = true
     clip.layer?.masksToBounds = true
+    if mode == .notch { clip.layer?.mask = contentMask }
     root.addSubview(clip)
     content.wantsLayer = true
     clip.addSubview(content)
@@ -716,6 +718,13 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     island.body = local(shape.rect)
     island.radius = shape.radius
     clip.frame = island.body
+    // The editor paints its own canvas and footer, so clip those to the
+    // same outline as the island instead of covering its rounded corners.
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    contentMask.frame = clip.bounds
+    contentMask.path = NotchGeometry.path(body: clip.bounds, radius: shape.radius).cgPath
+    CATransaction.commit()
     content.frame = local(cardRect).offsetBy(dx: -clip.frame.minX, dy: -clip.frame.minY)
     strip.alphaValue = max(0, 1 - expansion * 3)
     strip.isHidden = expansion >= 1
