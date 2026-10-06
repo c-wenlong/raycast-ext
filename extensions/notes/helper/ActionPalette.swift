@@ -41,6 +41,9 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   private let panel: PalettePanel
   private let search = NSSearchField()
   private let table = NSTableView()
+  private let divider = NSBox()
+  private let scroll = NSScrollView()
+  private var scale: CGFloat = 1
   /// The rows. Replacing them while the palette is open (a setting
   /// changed over the socket) redraws the list in place.
   var actions: [PaletteAction] {
@@ -100,7 +103,7 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     }
     root.addSubview(search)
 
-    let divider = NSBox(frame: NSRect(x: 0, y: panel.frame.height - 62, width: ActionPalette.width, height: 1))
+    divider.frame = NSRect(x: 0, y: panel.frame.height - 62, width: ActionPalette.width, height: 1)
     divider.boxType = .separator
     divider.autoresizingMask = [.width, .minYMargin]
     root.addSubview(divider)
@@ -121,7 +124,7 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
     // The list fills the panel below the divider; `fit` sizes the panel
     // so its bottom margin matches the top one.
-    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: ActionPalette.width, height: panel.frame.height - Self.listTop))
+    scroll.frame = NSRect(x: 0, y: 0, width: ActionPalette.width, height: panel.frame.height - Self.listTop)
     scroll.autoresizingMask = [.width, .height]
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
@@ -134,8 +137,7 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
   func show(over parent: NSWindow) {
     search.stringValue = ""
     self.parent = parent
-    let width = min(ActionPalette.width, parent.frame.width - 40)
-    panel.setFrame(NSRect(x: parent.frame.midX - width / 2, y: parent.frame.midY, width: width, height: panel.frame.height), display: false)
+    applyZoom()
     filter()
     // Centred on the window for the full list; filtering then keeps the
     // top edge still and moves only the bottom.
@@ -145,6 +147,42 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     parent.addChildWindow(panel, ordered: .above)
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(search)
+  }
+
+  /// Applies the note's zoom without clearing the query or selected action.
+  func updateZoom() {
+    applyZoom()
+    refresh()
+  }
+
+  private func applyZoom() {
+    scale = Markdown.zoom
+    search.font = NSFont.systemFont(ofSize: 17 * scale)
+    // The field editor is already active when zoom changes over the socket.
+    (search.currentEditor() as? NSTextView)?.font = search.font
+    table.rowHeight = 40 * scale
+    table.intercellSpacing = NSSize(width: 0, height: 2 * scale)
+    var frame = panel.frame
+    frame.size.width = min(Self.width * scale, max(1, (parent?.frame.width ?? Self.width * scale) - 40))
+    if let parent { frame.origin.x = parent.frame.midX - frame.width / 2 }
+    panel.setFrame(frame, display: false)
+    layoutContents()
+  }
+
+  private func layoutContents() {
+    guard let root = panel.contentView else { return }
+    let width = root.bounds.width
+    let height = root.bounds.height
+    search.frame = NSRect(x: 16 * scale, y: height - 52 * scale,
+      width: max(0, width - 32 * scale), height: 34 * scale)
+    divider.frame = NSRect(x: 0, y: height - 62 * scale, width: width, height: 1)
+    scroll.frame = NSRect(x: 0, y: 0, width: width, height: max(0, height - Self.listTop * scale))
+    table.tableColumns.first?.width = max(0, width - 16 * scale)
+  }
+
+  /// Zoom metrics exposed for the headless view regression tests.
+  var zoomMetrics: (fontSize: CGFloat, rowHeight: CGFloat, width: CGFloat) {
+    (search.font?.pointSize ?? 0, table.rowHeight, panel.frame.width)
   }
 
   func hide() {
@@ -194,18 +232,23 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     let rows = table.numberOfRows
     let topInset = rows > 0 ? table.rect(ofRow: 0).minY : 0
     let rowsBottom = rows > 0 ? table.rect(ofRow: rows - 1).maxY : 0
-    let natural = Self.listTop + rowsBottom + Self.dividerGap + topInset
-    return min(natural, (parent?.frame.height ?? .greatestFiniteMagnitude) - 40, Self.maxHeight)
+    let natural = Self.listTop * scale + rowsBottom + Self.dividerGap * scale + topInset
+    return max(1, min(natural, (parent?.frame.height ?? .greatestFiniteMagnitude) - 40, Self.maxHeight * scale))
   }
 
   /// Resizes the panel to `fittedHeight`, keeping its top edge in place.
   private func fit() {
     var frame = panel.frame
     let height = fittedHeight
-    guard abs(frame.height - height) > 0.5 else { return }
+    guard abs(frame.height - height) > 0.5 else { layoutContents(); return }
     frame.origin.y = frame.maxY - height
     frame.size.height = height
+    // Growing an open palette must not push its bottom past the host.
+    if let parent {
+      frame.origin.y = max(parent.frame.minY + 20, min(frame.origin.y, parent.frame.maxY - 20 - height))
+    }
     panel.setFrame(frame, display: panel.isVisible)
+    layoutContents()
   }
 
   /// The gaps above the first row (from the divider) and below the last
@@ -215,7 +258,7 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     guard rows > 0, let content = panel.contentView else { return nil }
     let first = content.convert(table.rect(ofRow: 0), from: table)
     let last = content.convert(table.rect(ofRow: rows - 1), from: table)
-    let dividerBottom = content.bounds.height - Self.listTop + Self.dividerGap
+    let dividerBottom = content.bounds.height - Self.listTop * scale + Self.dividerGap * scale
     // The content view is not flipped: larger y is higher.
     return (dividerBottom - first.maxY, last.minY)
   }
@@ -271,21 +314,23 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 
     let icon = NSImageView()
     icon.image = NSImage(systemSymbolName: action.symbol, accessibilityDescription: nil)
-    icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+    icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15 * scale, weight: .regular)
     icon.contentTintColor = .secondaryLabelColor
     icon.translatesAutoresizingMaskIntoConstraints = false
 
     let title = NSTextField(labelWithString: action.title)
-    title.font = NSFont.systemFont(ofSize: 15)
+    title.font = NSFont.systemFont(ofSize: 15 * scale)
+    title.lineBreakMode = .byTruncatingTail
+    title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     title.translatesAutoresizingMaskIntoConstraints = false
 
     let keys = NSStackView()
     keys.orientation = .horizontal
-    keys.spacing = 4
+    keys.spacing = 4 * scale
     keys.translatesAutoresizingMaskIntoConstraints = false
     for key in action.keys {
       let badge = NSTextField(labelWithString: String(key))
-      badge.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+      badge.font = NSFont.systemFont(ofSize: 12 * scale, weight: .medium)
       badge.textColor = .secondaryLabelColor
       badge.alignment = .center
       badge.wantsLayer = true
@@ -294,17 +339,17 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
       tableView.effectiveAppearance.performAsCurrentDrawingAppearance {
         badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
       }
-      badge.layer?.cornerRadius = 5
+      badge.layer?.cornerRadius = 5 * scale
       badge.translatesAutoresizingMaskIntoConstraints = false
-      badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
-      badge.heightAnchor.constraint(equalToConstant: 22).isActive = true
+      badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 22 * scale).isActive = true
+      badge.heightAnchor.constraint(equalToConstant: 22 * scale).isActive = true
       keys.addArrangedSubview(badge)
     }
 
     if action.checked {
       let check = NSImageView()
       check.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Current")
-      check.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+      check.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13 * scale, weight: .semibold)
       check.contentTintColor = Markdown.accent
       check.setAccessibilityLabel("Current")
       keys.addArrangedSubview(check)
@@ -314,12 +359,13 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     cell.addSubview(title)
     cell.addSubview(keys)
     NSLayoutConstraint.activate([
-      icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
+      icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10 * scale),
       icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-      icon.widthAnchor.constraint(equalToConstant: 22),
-      title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+      icon.widthAnchor.constraint(equalToConstant: 22 * scale),
+      title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10 * scale),
       title.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-      keys.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+      title.trailingAnchor.constraint(lessThanOrEqualTo: keys.leadingAnchor, constant: -10 * scale),
+      keys.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10 * scale),
       keys.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
     ])
     return cell

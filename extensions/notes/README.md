@@ -48,7 +48,7 @@ Inside the window:
 | `⇧⌘C` | copy the note's markdown |
 | `⌃X` | move the note to the Trash (no confirmation; restore it from the Trash) |
 | `⌘P` | jump to Browse Notes in Raycast |
-| `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (shown in a "Zoomed to 120%" bubble, remembered) |
+| `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (remembered); the action menu scales with the note, and a green pill shows the percentage for one second |
 | `⌘K` then "Appearance: …" | System (follows macOS), Light or Dark, for the window and its menus and popovers; remembered, the current one checked (search "theme", "dark", "light") |
 | `⌘K` then "Font: …" | Sans Serif (the system font), Serif (New York) or Mono (SF Mono) for the note's text and headings; code spans and code blocks stay monospaced; remembered, the current one checked (search "font", "serif", "mono") |
 | `⌘M` | minimise the window |
