@@ -71,6 +71,14 @@ final class NoteTextView: NSTextView {
     else { return nil }
     if role != .line {
       let ns = string as NSString
+      // A link's "](url)" is one hidden closer, even though its characters
+      // differ and it can touch a bold or italic closer.
+      let line = ns.lineRange(for: NSRange(location: index, length: 0))
+      for match in Markdown.link.matches(in: string, range: line) {
+        let linkRun = role == .open ? match.range(at: 1)
+          : NSRange(location: match.range(at: 3).location, length: NSMaxRange(match.range(at: 5)) - match.range(at: 3).location)
+        if NSLocationInRange(index, linkRun) { return HiddenRun(range: linkRun, role: role) }
+      }
       let marker = ns.character(at: index)
       var start = index
       while start > run.location, ns.character(at: start - 1) == marker { start -= 1 }
@@ -123,6 +131,14 @@ final class NoteTextView: NSTextView {
     guard run.role != .line else { return nil }
     let ns = string as NSString
     let line = ns.lineRange(for: run.range)
+    // Links have different opening and closing text: "[" pairs with
+    // the complete "](url)" run, rather than an identical marker.
+    for match in Markdown.link.matches(in: string, range: line) {
+      let opening = match.range(at: 1)
+      let closing = NSRange(location: match.range(at: 3).location, length: NSMaxRange(match.range(at: 5)) - match.range(at: 3).location)
+      if run.role == .open, run.range == opening { return closing }
+      if run.role == .close, run.range == closing { return opening }
+    }
     let marker = ns.substring(with: run.range)
     let wanted: Markdown.HiddenRole = run.role == .open ? .close : .open
     let scan = run.role == .open
@@ -180,6 +196,7 @@ final class NoteTextView: NSTextView {
   }
 
   private var lastCaret = 0
+  private var selectingWithMouse = false
 
   /// Removes an empty marker pair (`****`, `__`...) touching `location`
   /// after a deletion emptied it.
@@ -201,8 +218,10 @@ final class NoteTextView: NSTextView {
     // Every way out of here (including a caret relocated off a marker or
     // fence line) tells the open picker where the caret ended up.
     defer { if pickerIsOpen, !stillSelecting { syncPicker(caretMoved: true) } }
-    if !suppressCaretRules, !stillSelecting, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0 {
-      let target = caretTarget(range.location, forward: range.location >= lastCaret)
+    if !suppressCaretRules, ranges.count == 1, let range = ranges.first?.rangeValue, range.length == 0 {
+      // Mouse tracking is not a backwards arrow move. Clicking a marker
+      // always enters its content, including AppKit's provisional caret.
+      let target = caretTarget(range.location, forward: selectingWithMouse || stillSelecting || range.location >= lastCaret)
       if target != range.location {
         super.setSelectedRanges([NSValue(range: NSRange(location: target, length: 0))], affinity: affinity, stillSelecting: stillSelecting)
         return
@@ -229,6 +248,19 @@ final class NoteTextView: NSTextView {
         }
       }
       super.setSelectedRanges([NSValue(range: NSRange(location: target, length: 0))], affinity: affinity, stillSelecting: stillSelecting)
+      return
+    }
+    if !suppressCaretRules, !hasMarkedText() {
+      let wholeMarkers = ranges.map { value -> NSValue in
+        let range = value.rangeValue
+        guard range.length > 0 else { return value }
+        var start = range.location
+        var end = NSMaxRange(range)
+        if let run = hiddenRun(strictlyContaining: start) { start = run.location }
+        if let run = hiddenRun(strictlyContaining: end) { end = NSMaxRange(run) }
+        return NSValue(range: NSRange(location: start, length: end - start))
+      }
+      super.setSelectedRanges(wholeMarkers, affinity: affinity, stillSelecting: stillSelecting)
       return
     }
     super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
@@ -413,6 +445,8 @@ final class NoteTextView: NSTextView {
       toggleCollapse(atMarker: marker)
       return
     }
+    selectingWithMouse = true
+    defer { selectingWithMouse = false }
     super.mouseDown(with: event)
   }
 
@@ -502,6 +536,20 @@ final class NoteTextView: NSTextView {
       apply(edit)
       return
     }
+    let ns = string as NSString
+    if selection.location < ns.length {
+      let character = ns.rangeOfComposedCharacterSequence(at: selection.location)
+      if character.location == selection.location,
+        let opener = hiddenRun(endingAt: character.location), opener.role == .open,
+        let closer = hiddenRun(startingAt: NSMaxRange(character)), closer.role == .close,
+        partner(of: opener) == closer.range
+      {
+        // Emptying the visible span removes its markers before restyling
+        // can turn an empty link back into literal markdown.
+        apply(ListEditing.Edit(range: NSRange(location: opener.range.location, length: NSMaxRange(closer.range) - opener.range.location), replacement: "", cursor: opener.range.location))
+        return
+      }
+    }
     if let run = hiddenRun(startingAt: selection.location) {
       // Look through the marker: delete the first character after it.
       let after = NSMaxRange(run.range)
@@ -511,7 +559,7 @@ final class NoteTextView: NSTextView {
         return
       }
       setSelectedRange(NSRange(location: after, length: 0))
-      super.deleteForward(sender)
+      deleteForward(sender)
       removeEmptyPair(around: selectedRange().location)
       return
     }

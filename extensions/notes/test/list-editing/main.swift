@@ -663,6 +663,21 @@ do {
     let range = ListEditing.deletionRange(in: text, range: NSRange(location: location, length: length), folded: folded)
     return (text as NSString).replacingCharacters(in: range, with: "")
   }
+  for prefix in ["- [ ] ", "- [X] ", "  - [ ] ", "- ", "123. ", "-\t[ ]\t", "1.\t", "-  [ ]   "] {
+    let text = "ab\n" + prefix + "Task"
+    let end = 3 + (prefix as NSString).length
+    check("list join removes \(prefix.debugDescription)", deleted(text, 2, 1) == "abTask")
+    for index in 3..<end {
+      check("partial list deletion at \(index) removes \(prefix.debugDescription)", deleted(text, index, 1) == "ab\nTask")
+    }
+    check("whole preceding line preserves list", deleted(text, 0, 3) == prefix + "Task")
+    let inCode = "```\n" + prefix + "Task\n```"
+    check("list syntax in code remains literal", ListEditing.deletionRange(in: inCode, range: NSRange(location: 5, length: 1)) == NSRange(location: 5, length: 1))
+  }
+  check("bare dash stays literal", ListEditing.listMarkerRange(in: "-") == nil)
+  check("bare number stays literal", ListEditing.listMarkerRange(in: "12.") == nil)
+  check("backspace handles task tab spacing", applied("-\t[ ]\tTask", ListEditing.backspace(in: "-\t[ ]\tTask", cursor: 6))?.0 == "Task")
+  check("backspace handles wide task spacing", applied("-  [ ]   Task", ListEditing.backspace(in: "-  [ ]   Task", cursor: 9))?.0 == "Task")
   check("joining onto a heading line drops its markers", deleted("ab\n# T", 2, 1) == "abT", deleted("ab\n# T", 2, 1))
   check("a deletion ending inside markers takes them", deleted("ab\n| > T", 1, 4) == "aT", deleted("ab\n| > T", 1, 4))
   check("a deletion across two markers takes both whole", deleted("| > T", 1, 2) == "T", deleted("| > T", 1, 2))

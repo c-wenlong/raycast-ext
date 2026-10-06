@@ -155,6 +155,51 @@ check("an empty pair is hidden", tv.textStorage!.attribute(Markdown.hiddenRun, a
 load("****")
 check("a rule line is not treated as an empty pair", tv.textStorage!.attribute(Markdown.hiddenRun, at: 1, effectiveRange: nil) as? String == Markdown.HiddenRole.line.rawValue)
 
+// Markdown links hide the complete address as one marker.
+let atomicLinkText = "a [Link](https://x) b"
+let atomicLinkClose = (atomicLinkText as NSString).range(of: "](https://x)")
+load(atomicLinkText)
+tv.setSelectedRange(NSRange(location: atomicLinkClose.location, length: 0))
+tv.moveRight(nil)
+check("right arrow skips the complete hidden link address", caret() == NSMaxRange(atomicLinkClose), "\(caret())")
+tv.moveLeft(nil)
+check("left arrow skips the complete hidden link address", caret() == atomicLinkClose.location, "\(caret())")
+for offset in 1..<atomicLinkClose.length {
+  load(atomicLinkText)
+  tv.setSelectedRange(NSRange(location: 0, length: 0))
+  tv.setSelectedRange(NSRange(location: atomicLinkClose.location + offset, length: 0))
+  check("caret inside hidden link address at \(offset) skips the whole run", caret() == NSMaxRange(atomicLinkClose), "\(caret())")
+}
+for operation in ["backspace", "delete", "cut", "replace"] {
+  load(atomicLinkText)
+  tv.setSelectedRange(NSRange(location: atomicLinkClose.location + 3, length: 1))
+  switch operation {
+  case "backspace": tv.deleteBackward(nil)
+  case "delete": tv.deleteForward(nil)
+  case "cut": tv.cut(nil)
+  default: tv.insertText("Z", replacementRange: NSRange(location: NSNotFound, length: 0))
+  }
+  let expected = operation == "replace" ? "a Z b" : "a  b"
+  check("\(operation) of partial hidden link address removes both markers", tv.string == expected, tv.string.debugDescription)
+}
+load("a **[Link](https://x)** b")
+let nestedLinkClose = (tv.string as NSString).range(of: "](https://x)")
+tv.setSelectedRange(NSRange(location: nestedLinkClose.location, length: 0))
+tv.moveRight(nil)
+check("link closer stays separate from touching bold closer", caret() == NSMaxRange(nestedLinkClose), "\(caret())")
+for label in ["k", "😀"] {
+  for fromOpening in [false, true] {
+    load("a [\(label)](https://x) b")
+    tv.setSelectedRange(NSRange(location: fromOpening ? 2 : 3, length: 0))
+    tv.deleteForward(nil)
+    check("Delete empties link with \(label) from \(fromOpening ? "opener" : "label") without raw syntax", tv.string == "a  b", tv.string.debugDescription)
+  }
+}
+load("a [k](https://x) b")
+tv.setSelectedRange(NSRange(location: (tv.string as NSString).range(of: " b").location, length: 0))
+tv.deleteBackward(nil)
+check("Backspace empties a link without raw syntax", tv.string == "a  b", tv.string.debugDescription)
+
 // 9. formatting with no selection, then typing
 load("a ")
 tv.setSelectedRange(NSRange(location: 2, length: 0))
@@ -964,6 +1009,87 @@ load("one\n> # Head")
 tv.setSelectedRange(NSRange(location: 8, length: 0))
 tv.deleteToBeginningOfLine(nil)
 check("⌘⌫ from a toggle heading's text start removes its markers whole", tv.string == "one\nHead", tv.string.debugDescription)
+
+// Atomic list prefixes include the drawn marker, indent, and its spacing.
+for prefix in ["- [ ] ", "- [x] ", "  - [ ] ", "- ", "  + ", "123. ", "-\t[ ]\t", "1.\t"] {
+  let body = 2 + (prefix as NSString).length
+  let text = "a\n" + prefix + "Task"
+  load(text)
+  for offset in 2..<body {
+    tv.setSelectedRange(NSRange(location: 1, length: 0))
+    tv.setSelectedRange(NSRange(location: offset, length: 0))
+    check("\(prefix.debugDescription) caret skips prefix offset \(offset)", caret() == body, "\(caret())")
+  }
+  tv.setSelectedRange(NSRange(location: body, length: 0))
+  tv.setSelectedRanges([NSValue(range: NSRange(location: body - 1, length: 0))], affinity: .downstream, stillSelecting: true)
+  check("\(prefix.debugDescription) mouse tracking keeps caret past spacing", caret() == body, "\(caret())")
+  tv.setSelectedRange(NSRange(location: body, length: 0))
+  tv.moveLeftAndModifySelection(nil)
+  check("\(prefix.debugDescription) shift-left selects the whole prefix", tv.selectedRange() == NSRange(location: 2, length: body - 2), "\(tv.selectedRange())")
+  tv.setSelectedRange(NSRange(location: body, length: 0))
+  tv.moveLeft(nil)
+  check("\(prefix.debugDescription) left skips the complete prefix", caret() == 1, "\(caret())")
+  tv.moveRight(nil)
+  check("\(prefix.debugDescription) right enters the content", caret() == body, "\(caret())")
+  load(text)
+  tv.setSelectedRange(NSRange(location: 1, length: 0))
+  tv.deleteForward(nil)
+  check("\(prefix.debugDescription) forward join removes the whole prefix", tv.string == "aTask", tv.string.debugDescription)
+  for offset in 3..<body {
+    load(text)
+    tv.setSelectedRange(NSRange(location: 1, length: offset - 1))
+    tv.insertText("Z", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check("\(prefix.debugDescription) replacement cannot split marker at \(offset)", tv.string == "aZTask", tv.string.debugDescription)
+  }
+}
+load("- [ ] Task")
+tv.setSelectedRange(NSRange(location: 6, length: 0))
+tv.moveLeft(nil)
+check("left at first task stays at content", caret() == 6, "\(caret())")
+tv.deleteBackward(nil)
+check("one backspace removes the checkbox", tv.string == "Task", tv.string.debugDescription)
+
+// Existing block prefixes share the same mouse and selection contract.
+for prefix in ["> ", "| ", "!> ", "### ", "| > ## "] {
+  let text = "a\n" + prefix + "Body"
+  let body = 2 + (prefix as NSString).length
+  load(text)
+  for offset in 2..<body {
+    tv.setSelectedRange(NSRange(location: body, length: 0))
+    tv.setSelectedRanges([NSValue(range: NSRange(location: offset, length: 0))], affinity: .downstream, stillSelecting: true)
+    check("\(prefix.debugDescription) provisional click enters content", caret() == body, "\(caret())")
+  }
+  tv.moveLeft(nil)
+  check("\(prefix.debugDescription) left skips prefix", caret() == 1, "\(caret())")
+  tv.moveRight(nil)
+  check("\(prefix.debugDescription) right skips prefix", caret() == body, "\(caret())")
+}
+load("")
+tv.setSelectedRange(NSRange(location: 0, length: 0))
+for ch in "[] " {
+  tv.insertText(String(ch), replacementRange: NSRange(location: NSNotFound, length: 0))
+  drainMain()
+}
+Markdown.apply(to: tv.textStorage!)
+check("checkbox shortcut consumes its trigger space", tv.string == "- [ ] " && caret() == 6, "\(tv.string.debugDescription) \(caret())")
+tv.moveLeft(nil)
+check("new empty checkbox has no interior caret stop", caret() == 6, "\(caret())")
+tv.deleteBackward(nil)
+drainMain()
+check("new empty checkbox deletes as one unit", tv.string.isEmpty, tv.string.debugDescription)
+tv.undoManager?.undo()
+Markdown.apply(to: tv.textStorage!)
+check("one undo restores the complete checkbox", tv.string == "- [ ] ", tv.string.debugDescription)
+
+for divider in ["---  ", "***\t", "___ \t"] {
+  load("a\n" + divider + "\nb")
+  let end = 2 + (divider as NSString).length
+  tv.setSelectedRange(NSRange(location: 1, length: 0))
+  tv.moveRight(nil)
+  check("divider trailing whitespace has no caret stops", caret() == end, "\(caret())")
+  tv.moveLeft(nil)
+  check("left crosses divider and its spacing in one move", caret() == 1, "\(caret())")
+}
 
 // 20. typed arrows: "->" and "=>" become one character, as their own undo step
 func type(_ s: String) {

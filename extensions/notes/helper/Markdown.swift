@@ -808,9 +808,9 @@ enum Markdown {
     }
   }
 
-  /// Marks every run of characters that is collapsed to nothing on screen
-  /// (heading and list markers, `**`, `_`, `~~`, backticks, link brackets
-  /// and targets). The caret never rests inside such a run.
+  /// Marks source syntax that acts as one editing unit: collapsed inline
+  /// delimiters and targets, or a block/list prefix including its spacing.
+  /// Drawn list markers retain width. The caret never rests inside a run.
   static let hiddenRun = NSAttributedString.Key("hiddenRun")
 
   /// Values of `hiddenRun`: which side of a pair a run is, or a line-start
@@ -956,6 +956,9 @@ enum Markdown {
     let spaceWidth = (" " as NSString).size(withAttributes: [.font: baseFont]).width
     func layoutList(line: NSRange, indent: NSRange, lead: CGFloat, markerWidth: CGFloat, gap: NSRange, textStart: Int) {
       let prefix = NSRange(location: line.location, length: textStart - line.location)
+      // The drawn marker and its layout spacing are one editing unit,
+      // even when their glyphs retain width (checkboxes, numbers, tabs).
+      storage.addAttribute(hiddenRun, value: HiddenRole.line.rawValue, range: prefix)
       guard !ns.substring(with: prefix).contains("\t") else { return }
       // Inside a toggle the list starts one column in per enclosing toggle.
       let level = CGFloat((levels[line.location] ?? 0) + (toggleLayout.depth[line.location] ?? 0))
@@ -1216,6 +1219,9 @@ enum Markdown {
       let marks = NSRange(location: match.range.location, length: (line.trimmingCharacters(in: .whitespaces) as NSString).length)
       storage.removeAttribute(.strikethroughStyle, range: marks)
       storage.addAttributes([.foregroundColor: NSColor.clear, .font: monoFont, .kern: -monoAdvance, hiddenRun: HiddenRole.line.rawValue], range: marks)
+      // Trailing whitespace belongs to the same divider, not extra
+      // invisible caret stops after the painted hairline.
+      storage.addAttribute(hiddenRun, value: HiddenRole.line.rawValue, range: match.range)
       storage.addAttribute(divider, value: true, range: match.range)
     }
     // Room for each chip's padding, so it never covers its neighbours: a

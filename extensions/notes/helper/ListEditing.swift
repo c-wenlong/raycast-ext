@@ -79,6 +79,17 @@ enum ListEditing {
     return Item(indent: indent, marker: marker, content: content)
   }
 
+  /// The actual list prefix, including indentation and separator spacing.
+  /// Keep source widths: imported notes may use tabs or multiple spaces.
+  static func listMarkerRange(in line: String) -> NSRange? {
+    let ns = line as NSString
+    guard let match = itemPattern.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
+    let body = match.range(at: 5)
+    // Bare "-" and "1." are still literal text in the renderer.
+    guard body.location != NSNotFound || match.range(at: 3).location != NSNotFound else { return nil }
+    return NSRange(location: 0, length: body.location == NSNotFound ? ns.length : body.location)
+  }
+
   // MARK: Line and block helpers
 
   private struct Line {
@@ -559,9 +570,9 @@ enum ListEditing {
     let lineLength = wholeNS.length
     var textStart = blockPrefix(of: whole).contentStart
     if textStart == blockPrefix(of: whole).indent,
-      let list = listPrefix.firstMatch(in: whole, range: NSRange(location: 0, length: lineLength))
+      let list = listMarkerRange(in: whole)
     {
-      textStart = NSMaxRange(list.range)
+      textStart = NSMaxRange(list)
     }
     let moved = wholeNS.substring(from: textStart)
     let between = ns.substring(with: NSRange(location: target, length: lineStart - target))
@@ -599,7 +610,11 @@ enum ListEditing {
         let length = (line as NSString).length
         return (lineStart, [0, length], length)
       }
-      guard !insideFence(text, cursor: lineStart), parse(line: line) == nil else { return nil }
+      guard !insideFence(text, cursor: lineStart) else { return nil }
+      if let prefix = listMarkerRange(in: line) {
+        let end = NSMaxRange(prefix)
+        return (lineStart, [0, end], end)
+      }
       let prefix = blockPrefix(of: line)
       let child = (depth[lineStart] ?? 0) > 0
       guard prefix.hasMarkers || (child && prefix.indent > 0) else { return nil }
@@ -1027,7 +1042,7 @@ enum ListEditing {
     let all = lines(of: text)
     guard let index = lineIndex(of: cursor, in: all),
       let item = parse(line: all[index].text),
-      cursor - all[index].range.location == (item.indent + item.marker.text).count,
+      cursor - all[index].range.location == listMarkerRange(in: all[index].text)?.length,
       !insideFence(text, cursor: all[index].range.location)
     else { return nil }
 
