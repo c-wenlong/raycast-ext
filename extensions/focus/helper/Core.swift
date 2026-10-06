@@ -95,6 +95,8 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   private var active: Active?
+  /// The shared-notch lease (NotchBridge.swift): memory only, owned here.
+  private lazy var bridge = NotchBridge(clock: { [unowned self] in self.now })
   private var secondTimer: DispatchSourceTimer?
   /// True while the 1 Hz session tick is scheduled, which is exactly while a
   /// session exists.
@@ -223,6 +225,8 @@ final class FocusCore: SessionPresenterDelegate {
         return .ok([
           "kind": .string(granted.kind), "target": .string(granted.target), "until": .string(ISO.local(granted.until)),
         ])
+      case "notchBridge": return try notchBridge(request)
+      case "notchAction": return try notchAction(request)
       case "quit":
         var reply = Reply.ok()
         reply.quit = true
@@ -251,6 +255,7 @@ final class FocusCore: SessionPresenterDelegate {
       } catch {
         log("recovery failed: \(error.localizedDescription)")
       }
+      expireBridge()
     }
   }
 
@@ -267,6 +272,7 @@ final class FocusCore: SessionPresenterDelegate {
       } catch {
         log("session tick failed: \(error.localizedDescription)")
       }
+      expireBridge()
       publish(.keep)
     }
   }
@@ -454,7 +460,9 @@ final class FocusCore: SessionPresenterDelegate {
     let view = sessionView()
     blocker.sessionChanged(view, profileName: active?.row.profile ?? "default")
     let presenter = storedPresenter
+    let hosted = bridge.hosted(display: config.load().countdownDisplay)
     runOnMain {
+      presenter.setNotchHosted(hosted)
       presenter.update(view)
       switch sheet {
       case .keep: break
@@ -490,6 +498,48 @@ final class FocusCore: SessionPresenterDelegate {
         self.publish(.keep)
       }
     }
+  }
+
+  // MARK: Shared notch bridge
+
+  /// Drops a dead or out-of-mode claim; when hosting changed the UI is
+  /// refreshed so the native island returns (or steps aside) at once.
+  private func expireBridge() {
+    if bridge.expireIfNeeded(display: config.load().countdownDisplay) { publish(.keep) }
+  }
+
+  /// The session as the bridge snapshot: SessionView's fields verbatim, or
+  /// null when nothing is running or paused (idle, ending, finished).
+  private func bridgeSessionJSON() -> JSONValue {
+    guard let view = sessionView(), view.state == "running" || view.state == "paused" else { return .null }
+    return .object([
+      "id": .int(view.id), "goal": .string(view.goal), "state": .string(view.state),
+      "startedAt": .string(ISO.local(view.startedAt)), "plannedEnd": .string(ISO.local(view.plannedEnd)),
+      "remainingSeconds": .int(view.remainingSeconds), "pausedSeconds": .int(view.pausedSeconds),
+      "calendarTitle": .string(view.calendarTitle),
+      "extendOptions": .array(view.extendOptions.map { .int($0) }),
+      "pauseStopsClock": .bool(view.pauseStopsClock),
+    ])
+  }
+
+  /// `{cmd:"notchBridge"}`: status, claim, renew, release. A change in
+  /// claim ownership refreshes the UI so the native island follows it.
+  private func notchBridge(_ request: Request) throws -> Reply {
+    let claimedBefore = bridge.claim != nil
+    let reply = try bridge.handle(
+      request, display: config.load().countdownDisplay, session: bridgeSessionJSON())
+    if (bridge.claim != nil) != claimedBefore { publish(.keep) }
+    return reply
+  }
+
+  /// `{cmd:"notchAction"}`: pause, resume, stop (Complete) or extend from
+  /// the hosting helper, validated against the lease and the current
+  /// session before it reaches `change`, so stale controls never mutate.
+  private func notchAction(_ request: Request) throws -> Reply {
+    let input = try bridge.action(
+      request, display: config.load().countdownDisplay, session: sessionView(), at: now)
+    _ = try change(input)
+    return .ok(bridge.fields(display: config.load().countdownDisplay, session: bridgeSessionJSON()))
   }
 
   // MARK: Calendars and today

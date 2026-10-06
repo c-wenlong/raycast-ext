@@ -23,6 +23,21 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var links: LinkController!
   private var titlebarChrome: TitlebarChrome!
   private var statusBar: StatusBar!
+  /// The view hosting the editor (scroll, fades, status bar, zoom HUD):
+  /// moves between the floating panel and the attached window untouched.
+  private var editorRoot: NSView!
+  private var topFade: FadeOverlay?
+  private(set) var attachment: NoteAttachment = .floating
+  private var attached: AttachedPanel?
+  private var menuBarItem: MenuBarItem?
+  private var bridge: FocusBridgeClient!
+  private var bridgeTimer: Timer?
+  /// True while the bridge says the daemon cannot share the notch (or it
+  /// was lost mid-claim): the editor floats until a probe proves it safe.
+  private var bridgeDegraded = false
+  private var fallbackHUDShown = false
+  private var wasSharing = false
+  private var probeCountdown = 0
   private static let baseTextInset = NSSize(width: 18, height: 16)
   private static let zoomDefaultsKey = "notesPanelZoom"
 
@@ -35,12 +50,19 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     loadTheme()
     installMainMenu()
     buildPanel()
+    _ = applyAttachment(settings.attachment, announce: false)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification,
+      object: nil)
     handle(pendingCommand)
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    // The lease is released so Focus's own island returns before a stale
+    // claim would time out on its own.
+    bridge?.release()
     guard saveNow() else {
       panel.title = "Could not save; quit cancelled"
       return .terminateCancel
@@ -107,7 +129,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   /// Reads the persisted zoom, applied before the first note loads.
   private func loadZoom() {
-    let stored = CGFloat(UserDefaults.standard.double(forKey: Self.zoomDefaultsKey))
+    let stored = CGFloat(userDefaults.double(forKey: Self.zoomDefaultsKey))
     Markdown.zoom = ZoomLevels.steps.contains(where: { abs($0 - stored) < 0.001 }) ? stored : ZoomLevels.default
   }
 
@@ -125,7 +147,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
   private func setZoom(_ value: CGFloat) {
     Markdown.zoom = value
-    UserDefaults.standard.set(Double(value), forKey: Self.zoomDefaultsKey)
+    userDefaults.set(Double(value), forKey: Self.zoomDefaultsKey)
     relayout()
     zoomHUD.show(text: "Zoomed to \(ZoomLevels.percentageString(for: value))")
   }
@@ -146,7 +168,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// Loads and applies both settings at launch, before the panel is
   /// built, so the first show already has them.
   private func loadTheme() {
-    settings = SettingsController()
+    settings = SettingsController(defaults: userDefaults)
     settings.commandActions = Self.commandActions
     settings.onAppearance = { [weak self] value in
       guard let self else { return }
@@ -158,16 +180,22 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       self?.relayout()
       self?.zoomHUD.show(text: value.announcement)
     }
+    settings.onAttachment = { [weak self] value in
+      self?.applyAttachment(value) ?? false
+    }
   }
 
   private func applyTextContainerInset() {
+    topFade?.opaqueHeight = headerHeight
+    topFade?.setHeight(headerHeight + 28)
     textView.textContainerInset = NSSize(
       width: Self.baseTextInset.width * Markdown.zoom, height: Self.baseTextInset.height * Markdown.zoom)
     // Text scrolls under the translucent header and footer; the insets
     // only decide where the first and last lines rest when not scrolled.
     if let scroll = textView.enclosingScrollView {
-      scroll.contentInsets = NSEdgeInsets(top: headerHeight, left: 0, bottom: StatusBar.reservedHeight, right: 0)
-      scroll.scrollerInsets = NSEdgeInsets(top: headerHeight, left: 0, bottom: 0, right: 0)
+      let topInset: CGFloat = attachment == .floating || bridgeDegraded ? headerHeight : 8
+      scroll.contentInsets = NSEdgeInsets(top: topInset, left: 0, bottom: StatusBar.reservedHeight, right: 0)
+      scroll.scrollerInsets = NSEdgeInsets(top: topInset, left: 0, bottom: 0, right: 0)
     }
   }
 
@@ -175,10 +203,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// extends under. contentLayoutRect is not laid out yet while the panel
   /// is being built, so the known height is used until it is.
   private var headerHeight: CGFloat {
-    guard let content = panel.contentView, panel.contentLayoutRect.height > 0,
-      panel.contentLayoutRect.height < content.bounds.height
+    let contentHeight = panel.contentRect(forFrameRect: panel.frame).height
+    guard panel.contentLayoutRect.height > 0,
+      panel.contentLayoutRect.height < contentHeight
     else { return 52 }
-    return content.bounds.height - panel.contentLayoutRect.height
+    return contentHeight - panel.contentLayoutRect.height
   }
 
   private func buildPanel() {
@@ -252,6 +281,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let topFade = FadeOverlay(edge: .top)
     topFade.color = fadeColor
     topFade.install(in: panel.contentView!, height: headerHeight + 28)
+    self.topFade = topFade
     let bottomFade = FadeOverlay(edge: .bottom)
     bottomFade.color = fadeColor
     bottomFade.install(in: panel.contentView!, height: StatusBar.reservedHeight + 34)
@@ -263,6 +293,17 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       self?.handle(command)
     }
     settings.palette = palette
+
+    editorRoot = panel.contentView
+
+    bridge = FocusBridgeClient()
+    bridge.onStatus = { [weak self] status in self?.bridgeStatus(status) }
+    bridge.onActionProblem = { [weak self] message in
+      self?.zoomHUD.show(text: message)
+    }
+    bridgeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+      self?.bridgeTick()
+    }
   }
 
   private static let commandActions: [PaletteAction] = [
@@ -290,6 +331,12 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   func handle(_ command: String) {
     switch command {
     case "toggle":
+      if attachment != .floating, !bridgeDegraded {
+        // Attached: expand and put Notes on top, even over the Focus tab;
+        // only a toggle while Notes itself is expanded collapses.
+        if attached?.expanded == true && attached?.tab == .notes { hide() } else { show() }
+        return
+      }
       // A miniaturized panel is not considered visible in the usual sense
       // (it's parked in the Dock), so treat it like "hidden": restore it
       // rather than trying to hide it again.
@@ -317,7 +364,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       if palette.isVisible {
         palette.hide()
       } else {
-        palette.show(over: panel)
+        palette.show(over: activePanel)
       }
     case "format":
       palette.hide()
@@ -348,7 +395,10 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     case "zoom-reset":
       zoomReset(nil)
     case "minimize":
-      panel.performMiniaturize(nil)
+      // Attached windows are borderless: collapse, never park in the Dock.
+      attachment == .floating ? panel.performMiniaturize(nil) : hide()
+    case "quit":
+      NSApp.terminate(nil)
     default:
       if let format = FormatOptions.format(forCommand: command) {
         applyFormat(format)
@@ -362,10 +412,22 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     }
   }
 
+  /// The window commands address now: the floating panel, or the
+  /// attached one while the editor lives in it.
+  private var activePanel: NSWindow {
+    if attachment != .floating, !bridgeDegraded, let attached { return attached.window }
+    return panel
+  }
+
   private func show() {
     refreshList()
     if currentPath == nil {
       if let first = notes.first { load(first.path) } else { newNote() }
+    }
+    if attachment != .floating, !bridgeDegraded {
+      attached?.expand(tab: .notes, pinned: true)
+      activePanel.makeFirstResponder(textView)
+      return
     }
     if panel.isMiniaturized { panel.deminiaturize(nil) }
     panel.makeKeyAndOrderFront(nil)
@@ -377,12 +439,212 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     codeBlocks.closePicker()
     links.close()
     saveNow()
+    if attachment != .floating, !bridgeDegraded {
+      // Attached: "hidden" is just collapsed; the strip or the status
+      // item stays visible.
+      attached?.collapse()
+      return
+    }
     panel.orderOut(nil)
   }
 
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     hide()
     return false
+  }
+
+  // MARK: Attachment and the Focus bridge
+
+  /// Moves the editor between the floating panel and the attached window
+  /// for `value` (menu bar or notch). Returns false only when the move
+  /// cannot happen, so the setting keeps the old value.
+  @discardableResult
+  private func applyAttachment(_ value: NoteAttachment, announce: Bool = true) -> Bool {
+    let previous = attachment
+    let editorWasOpen = (panel.isVisible && !panel.isMiniaturized) || attached?.expanded == true
+    guard value != previous || attached == nil else { return true }
+    // Child panels out of the way before their parent changes hands.
+    palette.hide()
+    codeBlocks.closePicker()
+    links.close()
+    saveNow()
+    if previous != .floating {
+      bridge.release()
+      attached?.detachEditor()
+      attached?.collapse()
+      attached?.window.orderOut(nil)
+      attached = nil
+      wasSharing = false
+      bridgeDegraded = false
+      fallbackHUDShown = false
+    }
+    attachment = value
+    switch value {
+    case .floating:
+      menuBarItem?.remove()
+      menuBarItem = nil
+      restoreFloatingEditor()
+      panel.orderOut(nil)
+    case .menuBar, .notch:
+      let host = AttachedPanel(mode: value)
+      host.run = { [weak self] command in self?.handle(command) }
+      host.onFocusAction = { [weak self] action, seconds in self?.focusAction(action, seconds: seconds) }
+      host.onResign = { [weak self] in self?.hide() }
+      attached = host
+      host.windowTitle = panel.title
+      host.update(session: bridge.last.display == "notch" ? bridge.last.session : nil)
+      if value == .menuBar {
+        if menuBarItem == nil {
+          menuBarItem = MenuBarItem()
+          menuBarItem?.onToggle = { [weak self] in self?.handle("toggle") }
+        }
+        host.anchor = { [weak self] in self?.menuBarItem?.anchor }
+      } else {
+        menuBarItem?.remove()
+        menuBarItem = nil
+      }
+      panel.orderOut(nil)
+      host.attach(root: editorRoot)
+      topFade?.isHidden = true
+      applyTextContainerInset()
+      host.begin()
+      if value == .notch {
+        if editorWasOpen {
+          host.expand(tab: .notes, pinned: true)
+          host.window.makeFirstResponder(textView)
+        }
+        // An unchanged probe does not emit onStatus, so a new host must
+        // apply the cached compatibility before asking for fresh status.
+        bridgeStatus(bridge.last)
+        probeCountdown = 0
+        bridge.probe()
+      }
+    }
+    if announce && !bridgeDegraded { zoomHUD.show(text: value.announcement) }
+    return true
+  }
+
+  /// AppKit can keep the attached host's size when a content view returns.
+  /// Restore the floating size before measuring the toolbar or laying out fades.
+  private func restoreFloatingEditor() {
+    attached?.detachEditor()
+    editorRoot.removeFromSuperview()
+    // Moving the view into an attached host does not clear NSWindow's
+    // contentView reference. Clear it so assigning the same view reparents it.
+    panel.contentView = nil
+    panel.contentView = editorRoot
+    editorRoot.frame = NSRect(origin: .zero, size: panel.contentRect(forFrameRect: panel.frame).size)
+    editorRoot.isHidden = false
+    editorRoot.layoutSubtreeIfNeeded()
+    topFade?.isHidden = false
+    applyTextContainerInset()
+  }
+
+  /// The editor comes back from the attached window when the bridge is
+  /// degraded: floating keeps the session's controls and the native Focus
+  /// island from overlapping ours.
+  private func enterFallback(_ message: String) {
+    guard !bridgeDegraded else { return }
+    let wasVisible = panel.isVisible || attached?.window.isVisible == true
+    let wasForeground = panel.isKeyWindow || attached?.window.isKeyWindow == true
+      || (attached?.expanded == true && attached?.pinned == true)
+    bridgeDegraded = true
+    attached?.collapse()
+    attached?.window.orderOut(nil)
+    restoreFloatingEditor()
+    if wasVisible {
+      if wasForeground {
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(textView)
+      } else {
+        panel.orderFront(nil)
+      }
+    }
+    if !fallbackHUDShown {
+      fallbackHUDShown = true
+      zoomHUD.show(text: message)
+    }
+  }
+
+  /// The daemon speaks the bridge again: sharing or a Notes-only notch is safe.
+  private func exitFallback() {
+    guard bridgeDegraded, let attached, attachment == .notch else { return }
+    let editorWasOpen = panel.isVisible && !panel.isMiniaturized
+    bridgeDegraded = false
+    fallbackHUDShown = false
+    panel.orderOut(nil)
+    topFade?.isHidden = true
+    attached.attach(root: editorRoot)
+    applyTextContainerInset()
+    attached.begin()
+    if editorWasOpen {
+      attached.expand(tab: .notes, pinned: true)
+      attached.window.makeFirstResponder(textView)
+    }
+  }
+
+  /// The bridge's view of the daemon: drives the shared session's UI and
+  /// the degraded fallback.
+  private func bridgeStatus(_ status: FocusBridgeStatus) {
+    guard attachment == .notch else { return }
+    let sharing = wasSharing
+    wasSharing = status.claimed
+    if status.present, !status.compatible {
+      attached?.update(session: nil)
+      enterFallback("Focus needs an update before it can share the notch")
+      return
+    }
+    if !status.present, sharing {
+      attached?.update(session: nil)
+      enterFallback("Focus went away; floating until it is back")
+      return
+    }
+    if status.present, status.compatible { exitFallback() }
+    attached?.update(session: status.display == "notch" ? status.session : nil)
+  }
+
+  /// Once a second: renew the lease while the notch is ours and healthy,
+  /// or probe while we are waiting on the daemon to become compatible.
+  private func bridgeTick() {
+    guard attachment == .notch else { return }
+    attached?.updateChrome()
+    let status = bridge.last
+    if bridgeDegraded || !status.present || !status.compatible || status.display != "notch" {
+      probeCountdown -= 1
+      if probeCountdown <= 0 {
+        probeCountdown = 3
+        bridge.probe()
+      }
+      return
+    }
+    bridge.tick(active: true)
+  }
+
+  /// A Focus control on the Focus tab dispatches through the bridge.
+  private func focusAction(_ action: String, seconds: Int?) {
+    guard let session = attached?.session else { return }
+    bridge.action(action, session: session, seconds: seconds)
+  }
+
+  /// Displays moved or changed: the attached anchors are recomputed.
+  @objc private func screensChanged() {
+    attached?.screensChanged()
+  }
+
+  /// NOTES_PANEL_DEBUG only: one JSON line of where the window is, so
+  /// isolated live checks can assert on it without reading the UI.
+  func debugStatus() -> String {
+    let fields: [String] = [
+      "\"attachment\": \"\(attachment.rawValue)\"",
+      "\"expanded\": \(attached?.expanded == true)",
+      "\"tab\": \"\(attached?.tab == .focus ? "focus" : "notes")\"",
+      "\"degraded\": \(bridgeDegraded)",
+      "\"claimed\": \(bridge?.last.claimed == true)",
+      "\"focusDisplay\": \"\(bridge?.last.display ?? "")\"",
+      "\"session\": \(attached?.session != nil)",
+      "\"panelVisible\": \(panel.isVisible && !panel.isMiniaturized)",
+    ]
+    return "{" + fields.joined(separator: ", ") + "}"
   }
 
   // MARK: Note list and navigation
@@ -770,8 +1032,8 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       NSSound.beep()
       return
     }
-    panel.makeKeyAndOrderFront(nil)
-    panel.makeFirstResponder(textView)
+    activePanel.makeKeyAndOrderFront(nil)
+    activePanel.makeFirstResponder(textView)
     textView.applyFormat(format)
   }
 
@@ -858,13 +1120,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private func toggleTask(atBox location: Int) {
-    let text = textView.string as NSString
-    guard location + 3 <= text.length,
-      text.substring(with: NSRange(location: location, length: 1)) == "["
-    else { return }
-    let markRange = NSRange(location: location + 1, length: 1)
-    let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
-    textView.insertText(mark, replacementRange: markRange)
+    textView.toggleTaskMark(at: location)
   }
 
   private func toggleTaskOnCurrentLine() {
@@ -873,8 +1129,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let line = text.substring(with: lineRange)
     if let match = taskPattern.firstMatch(in: line, range: fullRange(line)) {
       let markRange = NSRange(location: lineRange.location + match.range(at: 2).location, length: 1)
-      let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
-      textView.insertText(mark, replacementRange: markRange)
+      textView.toggleTaskMark(at: markRange.location - 1)
     } else {
       let indent = line.prefix(while: { $0 == " " || $0 == "\t" })
       let insertAt = NSRange(location: lineRange.location + indent.count, length: 0)
@@ -888,12 +1143,14 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     updateStatus()
     guard let path = currentPath else {
       panel.title = "Notes"
+      attached?.windowTitle = "Notes"
       return
     }
     guard textView.isEditable else { return }
     let noteTitle = title(of: textView.string, filename: (path as NSString).lastPathComponent)
     let unsaved = textView.string != loadedText ? " •" : ""
     panel.title = noteTitle + unsaved
+    attached?.windowTitle = panel.title
   }
 
   private func updateStatus() {

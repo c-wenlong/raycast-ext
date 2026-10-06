@@ -107,6 +107,7 @@ enum NoteFont: String, CaseIterable {
 enum NoteSettings {
   static let appearanceKey = "notesPanelAppearance"
   static let fontKey = "notesPanelFont"
+  static let attachmentKey = "notesPanelAttachment"
 
   static func appearance(in defaults: UserDefaults = .standard) -> NoteAppearance {
     defaults.string(forKey: appearanceKey).flatMap(NoteAppearance.init(rawValue:)) ?? .system
@@ -114,6 +115,10 @@ enum NoteSettings {
 
   static func font(in defaults: UserDefaults = .standard) -> NoteFont {
     defaults.string(forKey: fontKey).flatMap(NoteFont.init(rawValue:)) ?? .sans
+  }
+
+  static func attachment(in defaults: UserDefaults = .standard) -> NoteAttachment {
+    defaults.string(forKey: attachmentKey).flatMap(NoteAttachment.init(rawValue:)) ?? .floating
   }
 
   static func save(_ appearance: NoteAppearance, in defaults: UserDefaults = .standard) {
@@ -124,21 +129,30 @@ enum NoteSettings {
     defaults.set(font.rawValue, forKey: fontKey)
   }
 
+  static func save(_ attachment: NoteAttachment, in defaults: UserDefaults = .standard) {
+    defaults.set(attachment.rawValue, forKey: attachmentKey)
+  }
+
   enum Change: Equatable {
     case appearance(NoteAppearance)
     case font(NoteFont)
+    case attachment(NoteAttachment)
   }
 
-  /// The setting a command (`appearance-dark`, `font-serif`, ...) picks.
+  /// The setting a command (`appearance-dark`, `font-serif`, `attachment-notch`, ...) picks.
   static func change(forCommand command: String) -> Change? {
     if let appearance = NoteAppearance.allCases.first(where: { $0.command == command }) { return .appearance(appearance) }
     if let font = NoteFont.allCases.first(where: { $0.command == command }) { return .font(font) }
+    if let attachment = NoteAttachment.allCases.first(where: { $0.command == command }) { return .attachment(attachment) }
     return nil
   }
 
-  /// The palette rows for both settings, the current choice of each
-  /// checked. Found by "theme", "dark", "light", "font", "serif", "mono".
-  static func paletteActions(appearance current: NoteAppearance, font currentFont: NoteFont) -> [PaletteAction] {
+  /// The palette rows for all settings, the current choice of each
+  /// checked. Found by "theme", "dark", "light", "font", "serif", "mono",
+  /// "attachment", "menu bar", "notch".
+  static func paletteActions(
+    appearance current: NoteAppearance, font currentFont: NoteFont, attachment currentAttachment: NoteAttachment
+  ) -> [PaletteAction] {
     NoteAppearance.allCases.map {
       PaletteAction(
         title: "Appearance: \($0.title)", keys: "", symbol: $0.symbol, command: $0.command,
@@ -148,6 +162,11 @@ enum NoteSettings {
         PaletteAction(
           title: "Font: \($0.title)", keys: "", symbol: $0.symbol, command: $0.command,
           keywords: "typeface " + $0.keywords, checked: $0 == currentFont)
+      }
+      + NoteAttachment.allCases.map {
+        PaletteAction(
+          title: "Attach: \($0.title)", keys: "", symbol: $0.symbol, command: $0.command,
+          keywords: $0.keywords, checked: $0 == currentAttachment)
       }
   }
 }
@@ -159,6 +178,7 @@ enum NoteSettings {
 final class SettingsController {
   private let defaults: UserDefaults
   private(set) var appearance: NoteAppearance
+  private(set) var attachment: NoteAttachment
   /// The palette whose setting rows follow the current choices.
   weak var palette: ActionPalette?
   /// The palette's other rows, listed before the settings.
@@ -166,20 +186,25 @@ final class SettingsController {
   /// Called after a change is applied: restyle, relayout, announce.
   var onAppearance: (NoteAppearance) -> Void = { _ in }
   var onFont: (NoteFont) -> Void = { _ in }
+  /// Called after the attachment changes; the controller only persists it,
+  /// the panel does the moving. It may refuse a change it cannot serve.
+  var onAttachment: (NoteAttachment) -> Bool = { _ in true }
 
   /// Reads the stored settings and applies them (`NSApp.appearance`,
   /// `Markdown.font`); call before the panel is built.
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     appearance = NoteSettings.appearance(in: defaults)
+    attachment = NoteSettings.attachment(in: defaults)
     Markdown.font = NoteSettings.font(in: defaults)
     NSApp.appearance = appearance.nsAppearance
   }
 
-  /// Every palette row: the commands, then both settings with the
+  /// Every palette row: the commands, then all settings with the
   /// current choice of each checked.
   var paletteActions: [PaletteAction] {
-    commandActions + NoteSettings.paletteActions(appearance: appearance, font: Markdown.font)
+    commandActions + NoteSettings.paletteActions(
+      appearance: appearance, font: Markdown.font, attachment: attachment)
   }
 
   /// Applies `command` if it is a setting command; false otherwise.
@@ -197,6 +222,12 @@ final class SettingsController {
       Markdown.font = value
       NoteSettings.save(value, in: defaults)
       onFont(value)
+    case .attachment(let value):
+      guard value != attachment else { break }
+      // The panel moves first; refusing keeps the old attachment.
+      guard onAttachment(value) else { return true }
+      attachment = value
+      NoteSettings.save(value, in: defaults)
     }
     palette?.actions = paletteActions
     return true

@@ -2673,6 +2673,102 @@ do {
   check("updateSession: an abandoned session still never gets a log event", relaunched.send("pending")["waiting"] == [] && relaunched.fake.creates == 0)
 }
 
+
+// MARK: - Notch bridge: the shared-notch lease
+
+do {
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"countdownDisplay": "notch"}"#, clock: clock)
+  let bridge: [String: JSONValue] = ["version": 1]
+
+  // Status alone never suppresses anything and reports the display.
+  let idle = h.send("notchBridge", bridge.merging(["op": "status"]) { _, new in new })
+  check("bridge status: display and no claim, idle session", idle["ok"] == true && idle["display"] == "notch"
+    && idle["claimed"] == false && idle["ttlSeconds"] == 3 && idle["session"]?.isNull == true, idle.serialized())
+  check("bridge status: nothing hosted", h.presenter.hostedFlags.last != true)
+
+  // Bad protocol shapes are refused without touching a claim.
+  check("bridge: missing version refused", h.send("notchBridge", ["op": "status"])["error"]?.stringValue?.contains("version") == true)
+  check("bridge: wrong version refused", h.send("notchBridge", ["version": 2, "op": "status"])["ok"] == false)
+  check("bridge: unknown op refused", h.send("notchBridge", bridge.merging(["op": "peek"]) { _, n in n })["error"]?.stringValue?.contains("op") == true)
+  check("bridge: claim needs an owner", h.send("notchBridge", bridge.merging(["op": "claim"]) { _, n in n })["error"] == "owner is required")
+  check("bridge: renew needs an owner", h.send("notchBridge", bridge.merging(["op": "renew"]) { _, n in n })["error"] == "owner is required")
+
+  _ = h.send("startAdhoc", ["goal": "Deep Work", "durationSeconds": 1500, "calendarId": "work"])
+  let sessionId = h.send("status")["session"]?["id"]?.intValue ?? 0
+
+  // A claim suppresses the notch only, and publish tells the presenter first.
+  let claimed = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+  check("bridge claim: held, session snapshot mirrors the view", claimed["ok"] == true && claimed["claimed"] == true
+    && claimed["session"]?["id"]?.intValue == sessionId && claimed["session"]?["state"] == "running"
+    && claimed["session"]?["goal"] == "Deep Work" && claimed["session"]?["extendOptions"] == [300, 600, 900, 1500]
+    && claimed["session"]?["pauseStopsClock"] == true && claimed["session"]?["remainingSeconds"]?.intValue == 1500,
+    claimed.serialized())
+  check("bridge claim: presenter told hosted before/with the refresh", h.presenter.hostedFlags.last == true
+    && h.presenter.hostedFlags.count == h.presenter.views.count)
+
+  // Another owner can look, but cannot take, prolong or end the claim.
+  check("bridge: foreign claim refused", h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-b"]) { _, n in n })["ok"] == false)
+  check("bridge: foreign renew refused", h.send("notchBridge", bridge.merging(["op": "renew", "owner": "owner-b"]) { _, n in n })["ok"] == false)
+  check("bridge: foreign release refused quietly", h.send("notchBridge", bridge.merging(["op": "release", "owner": "owner-b"]) { _, n in n })["claimed"] == true)
+  clock.now = at(9, 0, 4)
+  let still = h.send("notchBridge", bridge.merging(["op": "status"]) { _, n in n })
+  check("bridge: refused calls never touched the claim; ttl already lapsed", still["claimed"] == false, still.serialized())
+
+  // Renew by the owner pushes the expiry out; without it the tick restores the island.
+  let fresh = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+  check("bridge: reclaim after expiry works", fresh["claimed"] == true)
+  clock.now = at(9, 0, 6)
+  _ = h.send("notchBridge", bridge.merging(["op": "renew", "owner": "owner-a"]) { _, n in n })
+  clock.now = at(9, 0, 8)
+  check("bridge: a matching renew extended the lease", h.send("notchBridge", bridge.merging(["op": "status"]) { _, n in n })["claimed"] == true)
+  clock.now = at(9, 0, 12)
+  h.core.secondTick()
+  check("bridge: expiry on the tick restores the native notch", h.presenter.hostedFlags.last == false
+    && h.send("notchBridge", bridge.merging(["op": "status"]) { _, n in n })["claimed"] == false)
+  check("bridge: the session tick kept ticking through hosting", h.core.ticking)
+
+  // Release hands the notch back at once.
+  _ = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+  let released = h.send("notchBridge", bridge.merging(["op": "release", "owner": "owner-a"]) { _, n in n })
+  check("bridge release: claim gone immediately", released["claimed"] == false && h.presenter.hostedFlags.last == false)
+
+  // A session control from the host dispatches through the normal rules.
+  _ = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+  let paused = h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "pause"])
+  check("notchAction pause: applied, snapshot updated", paused["ok"] == true && paused["session"]?["state"] == "paused", paused.serialized())
+  let frozenRemaining = paused["session"]?["remainingSeconds"]?.intValue ?? -1
+  let stale = h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId + 9), "action": "resume"])
+  check("notchAction: a stale session id never mutates", stale["ok"] == false
+    && h.send("status")["session"]?["state"] == "paused", stale.serialized())
+  clock.now = at(9, 0, 14)
+  check("notchAction: paused ad-hoc remaining stays frozen", h.send("status")["session"]?["remainingSeconds"]?.intValue == frozenRemaining)
+  _ = h.send("notchBridge", bridge.merging(["op": "renew", "owner": "owner-a"]) { _, n in n })
+  let noLease = h.send("notchAction", ["version": 1, "owner": "owner-b", "sessionId": .int(sessionId), "action": "resume"])
+  check("notchAction: a non-owner is refused", noLease["ok"] == false && h.send("status")["session"]?["state"] == "paused")
+  check("notchAction: extend needs seconds", h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "extend"])["ok"] == false)
+  check("notchAction: unknown action refused", h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "poke"])["ok"] == false)
+  let extended = h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "extend", "seconds": 300])
+  check("notchAction extend: applied through change()", extended["ok"] == true
+    && extended["session"]?["remainingSeconds"]?.intValue == frozenRemaining + 300, extended.serialized())
+  let resumed = h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "resume"])
+  check("notchAction resume: applied", resumed["ok"] == true && resumed["session"]?["state"] == "running", resumed.serialized())
+  let sheetsBefore = h.presenter.endSheets.count
+  let stopped = h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "stop"])
+  check("notchAction Complete reaches ending and the normal end card", stopped["ok"] == true
+    && h.send("status")["session"]?["state"] == "ending" && h.presenter.endSheets.count == sheetsBefore + 1
+    && stopped["session"]?.isNull == true, stopped.serialized())
+
+  // Display away from the notch: any claim clears and reports itself.
+  let hosted = Harness(config: #"{"countdownDisplay": "panel"}"#, clock: clock)
+  _ = hosted.send("startAdhoc", ["goal": "x", "durationSeconds": 600, "calendarId": "work"])
+  let panelClaim = hosted.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+  check("bridge: a panel display never hosts a claim", panelClaim["ok"] == true && panelClaim["claimed"] == false
+    && panelClaim["display"] == "panel", panelClaim.serialized())
+  check("notchAction: refused off the notch display", hosted.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(1), "action": "pause"])["ok"] == false
+    && hosted.send("status")["session"]?["state"] == "running")
+}
+
 print("\(count - failures)/\(count) passed")
 if failures == 0 { print("all passed") }
 exit(failures == 0 ? 0 : 1)

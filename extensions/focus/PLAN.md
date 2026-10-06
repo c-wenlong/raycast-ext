@@ -475,3 +475,41 @@ no rating or note when left alone. Decided while building it:
 None. The three from the first draft (block page behaviour, overlapping
 events, paused past planned end) were answered on 2026-09-27 and folded into
 the decisions table.
+
+## Shared notch with Notes (2026-10-06)
+
+Notes's window can attach to the menu bar or the notch (`notesPanelAttachment`
+in its defaults, picked in its ⌘K palette), and while both helpers sit at
+the notch they share it: Notes draws the island and the Focus controls,
+Focus owns the session, the lease and the end card. Decided while building
+it:
+
+- The daemon keeps a lease in memory only (`NotchBridge.swift`): a UUID
+  owner plus an expiry 3 seconds past the last claim or renew. While a
+  claim is live and `countdownDisplay` is "notch", `UIPresenter` hides only
+  its own island — never the menu bar item, the floating panel or the end
+  card — driven by `SessionPresenter.setNotchHosted`, which Core's publish
+  updates before each view. The tick and every bridge request expire dead
+  claims, so a crashed or quit host hands the notch back within seconds; a
+  restarted daemon has no lease and a restarted host reclaims.
+- Claims are owner-scoped and non-stealing: a different owner cannot
+  claim, renew or release a live one, and anything off the notch display
+  clears the claim and reports `claimed: false`. A display switch away
+  from the notch restores the native island the same way.
+- `notchBridge` is status/claim/renew/release; `notchAction` carries
+  pause, resume, stop (Complete, which reaches the normal end card) and
+  extend through the ordinary `change` path, validated against the lease,
+  the display and the current session id first, so stale controls never
+  mutate. The `session` snapshot mirrors `SessionView` verbatim and is
+  null unless the session is running or paused.
+- Notes renews at 1 Hz only while its notch UI is healthy, claims after it
+  has laid out its window, and falls back to floating — never covering
+  Focus — when the daemon is incompatible or was lost mid-claim, probing
+  in the background until the shared notch is safe again. A daemon that
+  does not exist is simply a Notes-only notch.
+- Hover stays Focus-like: resting 0.5 s on the collapsed strip opens it
+  (the Focus tab when a session is shared), a hover-opened card can close
+  0.15 s after the pointer leaves, and any click, tab pick or shortcut
+  pins it until an explicit close. The end card is still Focus's: it
+  appears above the shared window because it already sits at a higher
+  level.

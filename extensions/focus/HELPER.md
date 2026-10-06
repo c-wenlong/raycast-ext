@@ -55,7 +55,8 @@ sqlite stores UTC.
 | `stats {days?}` | `today`, `week` (`{focusedSeconds, sessions, averageRating}`), `perCalendar: [{calendarId, calendarTitle, focusedSeconds, sessions}]`, `days: [{date, focusedSeconds}]`, `recent: [{id, goal, calendarTitle, startedAt, endedAt, focusedSeconds, rating, note, endReason, blockedAttempts, snoozes, logPending}]`, `waiting: [{sessionId, goal, logCalendarName, endedAt}]`, `chartPath`. `days` 1 to 90, default 7. See "Stats" below. |
 | `deleteSession {sessionId}` | `deleted` (true), `logEventRemoved` (bool), `warning` (only when a log event was kept). Removes the session with its pauses and blocked attempts; the open session is discarded first. An unknown id is `ok: false`, "no session with id N". See "Deleting a session" below. |
 | `updateSession {sessionId, rating?, note?}` | `session` (finished, as updated), `logEventUpdated` (bool), `warning` (only when a log event was left as it was). Changes a finished or abandoned session's rating (1 to 5) and note; a field left out keeps its value, null clears it. The open session is refused ("session N is still open; finish it before editing it"), an unknown id is "no session with id N". See "Editing a session" below. |
-| `quit` | `{ok: true}`, then the daemon exits |
+| `notchBridge {version, op, owner?}` | `bridgeVersion` (1), `display` ("panel", "menuBar" or "notch"), `claimed` (bool), `ttlSeconds` (3), `session` (bridge snapshot or null). The shared-notch lease for other helpers (see "Shared notch" below): `op` is `status`, `claim`, `renew` or `release`; `owner` (a UUID) is required for all but status. A claim or renew expires `ttlSeconds` after the last one; a different owner cannot take, prolong or release a live claim. Off the notch display any claim clears and `claimed` is false. Errors never mutate the lease. |
+| `notchAction {version, owner, sessionId, action, seconds?}` | same fields as `notchBridge`. Runs `pause`, `resume`, `stop` (the host's Complete: the session reaches the end sheet) or `extend` (with `seconds`, the same range as `extend`) through the ordinary session rules. Refused without a valid claim for `owner`, off the notch display, for a session that is not the current one, or at a wrong version. |
 
 A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sourceEventId, extendedSeconds, pausedSeconds}`.
 `plannedEnd` includes extensions. While open, `state` is "running", "paused" or
@@ -354,6 +355,22 @@ With `raycastDeeplink` on in config, start also opens
 `raycast://focus/start?goal=<goal>&duration=<seconds left>&mode=block` and
 finish opens `raycast://focus/complete` (`/usr/bin/open`, not waited on). The goal
 is percent-encoded with everything but unreserved characters escaped.
+
+### Shared notch
+
+While `countdownDisplay` is "notch" another helper may host the island over
+the socket (`notchBridge`/`notchAction` above; `NotchBridge.swift`). Core
+keeps the lease — owner UUID plus expiry 3 seconds past the last claim or
+renew — and `publish` tells the presenter before each update;
+`SessionPresenter.setNotchHosted` (a no-op default) makes `UIPresenter`
+hide only its own island while the claim is live. The menu bar item, the
+floating panel and the end card are unaffected, so the end card still
+appears above the host's window. The tick and every bridge request expire
+dead claims: a host that stops renewing hands the notch back, release
+restores the island at once, and a display switch away from "notch" clears
+the claim. Session controls from the host validate the lease, the display
+and the current session id, then dispatch through `change`, so the rules,
+the blocker and the end card are the same as the daemon's own UI.
 
 ## Blocking
 
