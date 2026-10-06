@@ -1578,8 +1578,16 @@ final class NoteTextView: NSTextView {
     }
     let range = NSRange(location: location + 1, length: 1)
     let mark = text.substring(with: range).lowercased() == "x" ? " " : "x"
+    // AppKit's text undo selects the edited marker and scrolls to it.
+    // Register the same position-preserving toggle for undo and redo instead.
+    let manager = undoManager
+    manager?.disableUndoRegistration()
     apply(ListEditing.Edit(range: range, replacement: mark, cursor: selection.location,
       selectionLength: selection.length))
+    manager?.enableUndoRegistration()
+    if (string as NSString).substring(with: range) == mark {
+      manager?.registerUndo(withTarget: self) { $0.toggleTaskMark(at: location) }
+    }
   }
 
   /// Applies a ListEditing edit as one change with its own undo step.
