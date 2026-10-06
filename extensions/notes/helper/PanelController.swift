@@ -1125,13 +1125,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private func toggleTask(atBox location: Int) {
-    let text = textView.string as NSString
-    guard location + 3 <= text.length,
-      text.substring(with: NSRange(location: location, length: 1)) == "["
-    else { return }
-    let markRange = NSRange(location: location + 1, length: 1)
-    let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
-    textView.insertText(mark, replacementRange: markRange)
+    textView.toggleTaskMark(at: location)
   }
 
   private func toggleTaskOnCurrentLine() {
@@ -1140,8 +1134,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let line = text.substring(with: lineRange)
     if let match = taskPattern.firstMatch(in: line, range: fullRange(line)) {
       let markRange = NSRange(location: lineRange.location + match.range(at: 2).location, length: 1)
-      let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
-      textView.insertText(mark, replacementRange: markRange)
+      textView.toggleTaskMark(at: markRange.location - 1)
     } else {
       let indent = line.prefix(while: { $0 == " " || $0 == "\t" })
       let insertAt = NSRange(location: lineRange.location + indent.count, length: 0)

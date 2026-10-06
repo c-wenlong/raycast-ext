@@ -48,11 +48,17 @@ final class AttachedWindow: NSPanel {
 /// and flares of an open card never react (Focus's NotchRootView rule).
 final class AttachedRootView: NSView {
   weak var island: IslandShapeView?
+  var capturesClick: () -> Bool = { false }
+  var onClick: () -> Void = {}
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func mouseDown(with event: NSEvent) { onClick() }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard let island, !island.isHidden else { return super.hitTest(point) }
     let local = island.convert(point, from: superview)
     guard island.path.contains(local) else { return nil }
+    if capturesClick() { return self }
     return super.hitTest(point)
   }
 }
@@ -219,15 +225,25 @@ final class AttachedHeaderView: NSView {
 
   func set(tab: Tab) {
     self.tab = tab
+    updateTabAppearance()
+    needsLayout = true
+  }
+
+  private func updateTabAppearance() {
+    focusTab.isHidden = !tabsVisible
+    notesTab.isHidden = !tabsVisible
     focusTab.contentTintColor = tab == .focus ? NSColor.labelColor : .secondaryLabelColor
     notesTab.contentTintColor = tab == .notes ? NSColor.labelColor : .secondaryLabelColor
+    layoutTabUnderline()
+  }
+
+  private func layoutTabUnderline() {
     let selected = tab == .focus ? focusTab : notesTab
     tabUnderline.isHidden = !tabsVisible
     if tabsVisible {
       let width = (tab == .focus ? focusTab : notesTab).frame.width - 12
       tabUnderline.frame = NSRect(x: selected.frame.minX + 6, y: 4, width: width, height: 2)
     }
-    needsLayout = true
   }
 
   override func layout() {
@@ -264,7 +280,7 @@ final class AttachedHeaderView: NSView {
       button.frame = NSRect(x: right - 28, y: (bounds.height - 28) / 2, width: 28, height: 28)
       right -= 28 + 6
     }
-    set(tab: tab)
+    layoutTabUnderline()
   }
 }
 
@@ -345,12 +361,14 @@ final class FocusTabView: NSView {
 
   override func layout() {
     super.layout()
-    let centerY = bounds.height * 0.58
+    // Keep the controls above the fixed Extend row on short screens.
+    let controlY = max(68, bounds.height * 0.58 - 78)
+    let goalY = controlY + 48
+    let clockY = goalY + 30
     clockLabel.sizeToFit()
     clockLabel.frame = NSRect(
-      x: (bounds.width - clockLabel.frame.width) / 2, y: centerY, width: clockLabel.frame.width, height: clockLabel.frame.height)
-    goalLabel.frame = NSRect(x: 24, y: centerY - 30, width: bounds.width - 48, height: 18)
-    let controlY = centerY - 78
+      x: (bounds.width - clockLabel.frame.width) / 2, y: clockY, width: clockLabel.frame.width, height: clockLabel.frame.height)
+    goalLabel.frame = NSRect(x: 24, y: goalY, width: bounds.width - 48, height: 18)
     let rowWidth: CGFloat = 96 * 2 + 10
     pauseButton.frame = NSRect(x: (bounds.width - rowWidth) / 2, y: controlY, width: 96, height: 30)
     completeButton.frame = NSRect(x: (bounds.width - rowWidth) / 2 + 106, y: controlY, width: 96, height: 30)
@@ -371,6 +389,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   let window: AttachedWindow
   let header = AttachedHeaderView(frame: .zero)
   let focusView = FocusTabView(frame: .zero)
+  private let focusScroll = NSScrollView()
   private let root = AttachedRootView()
   private let island = IslandShapeView()
   private let strip = IslandStripView()
@@ -440,6 +459,8 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     island.isHidden = mode != .notch
     island.autoresizingMask = [.width, .height]
     root.island = island
+    root.capturesClick = { [weak self] in self?.expanded == false }
+    root.onClick = { [weak self] in self?.expand(pinned: true) }
     root.addSubview(island)
     strip.isHidden = mode != .notch
     root.addSubview(strip)
@@ -453,7 +474,11 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     content.addSubview(header)
     header.onTab = { [weak self] tab in self?.select(tab: tab, pinned: true) }
     header.run = { [weak self] command in self?.run(command) }
-    content.addSubview(focusView)
+    focusScroll.drawsBackground = false
+    focusScroll.hasVerticalScroller = true
+    focusScroll.autohidesScrollers = true
+    focusScroll.documentView = focusView
+    content.addSubview(focusScroll)
     focusView.onAction = { [weak self] action, seconds in self?.focusAction(action, seconds: seconds) }
 
     if mode == .menuBar {
@@ -497,10 +522,14 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
       height: AttachedHeaderView.height)
     editorRoot?.frame = editorRect
     editorRoot?.autoresizingMask = [.width, .height]
-    focusView.frame = editorRect
-    focusView.autoresizingMask = [.width, .height]
+    focusScroll.frame = editorRect
+    // Keep the compact controls usable even when the screen leaves less
+    // room than their minimum layout; only Focus scrolls, not the card.
+    focusView.frame = NSRect(x: 0, y: 0, width: focusScroll.contentSize.width,
+      height: max(194, editorRect.height))
+    focusView.autoresizingMask = [.width]
     editorRoot?.isHidden = tab == .focus
-    focusView.isHidden = tab != .focus || session == nil
+    focusScroll.isHidden = tab != .focus || session == nil
   }
 
   // MARK: Session

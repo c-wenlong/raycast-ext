@@ -149,3 +149,5 @@ against a stubbed `@raycast/api`, the pure editing rules in
 `npm run build-helper` rebuilds the window binary
 (`assets/notes-panel`, committed) after any change under `helper/`.
 See the root `AGENTS.md` for how the window is verified live.
+
+Checkbox toggles, undo, and redo preserve the selection and reading position. Switching attachment mode keeps an open note open; a closed note stays closed. The compact Focus tab scrolls when the display is too short for its controls.

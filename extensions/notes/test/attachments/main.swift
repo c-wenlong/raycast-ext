@@ -393,10 +393,25 @@ do {
   check("bridge recovery restores the open editor to the notch",
     status()["degraded"] as? Bool == false && status()["expanded"] as? Bool == true
       && status()["panelVisible"] as? Bool == false)
+  controller.handle("hide")
+  bridge.receive(.success(incompatible), kind: .probe)
+  check("collapsed notch fallback keeps the floating editor hidden",
+    status()["degraded"] as? Bool == true && status()["panelVisible"] as? Bool == false)
+  bridge.receive(.success(compatible), kind: .probe)
+  check("collapsed notch recovery keeps the editor collapsed",
+    status()["degraded"] as? Bool == false && status()["expanded"] as? Bool == false)
+  controller.handle("show")
   controller.handle("attachment-menuBar")
+  check("switching an open editor to menu bar keeps it open", status()["expanded"] as? Bool == true)
   bridge.receive(.success(incompatible), kind: .release)
   check("late bridge replies cannot degrade menu bar mode", status()["degraded"] as? Bool == false)
   controller.handle("attachment-floating")
+  check("switching an open editor to floating keeps it visible", status()["panelVisible"] as? Bool == true)
+  controller.handle("hide")
+  controller.handle("attachment-menuBar")
+  check("switching a hidden editor to menu bar keeps it hidden", status()["expanded"] as? Bool == false)
+  controller.handle("attachment-floating")
+  check("switching a hidden editor to floating keeps it hidden", status()["panelVisible"] as? Bool == false)
   controller.handle("hide")
 }
 
@@ -420,6 +435,9 @@ do {
     bitmap.colorAt(x: 4, y: 66)!.alphaComponent < 0.8
       && bitmap.colorAt(x: 4, y: 79)!.alphaComponent < 0.1)
 }
+
+runBridgeReviewRegressions()
+runAttachmentReviewRegressions()
 
 print("\(count - failures)/\(count) passed")
 if failures == 0 { print("all passed") }
