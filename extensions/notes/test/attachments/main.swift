@@ -318,12 +318,18 @@ do {
   controller.handle("palette")
   let actions = Mirror(reflecting: controller).children.first { $0.label == "palette" }!.value as! ActionPalette
   check("command palette excludes appearance font and attachment choices",
-    !actions.shownRows.isEmpty && actions.shownRows.allSatisfy { NoteSettings.change(forCommand: $0.command) == nil })
+    actions.shownRows.contains { $0.command == "settings" && $0.keys == "⌘," } && actions.shownRows.allSatisfy { NoteSettings.change(forCommand: $0.command) == nil })
   controller.handle("palette")
   let notePath = notesDir + "/Floating geometry.md"
   try! FileManager.default.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
   try! "# Floating geometry\nPreserve this text".write(toFile: notePath, atomically: true, encoding: .utf8)
   controller.handle("open " + notePath)
+  let preferences = NSApp.mainMenu!.items.first!.submenu!.items.first { $0.keyEquivalent == "," }!
+  check("settings has a command-comma menu action", preferences.title == "Settings…" && preferences.target === controller)
+  let settingsUI = Mirror(reflecting: controller).children.first { $0.label == "settingsPopover" }!.value as! SettingsPopover
+  controller.handle("settings")
+  check("keyboard settings command opens the popover", settingsUI.popover.isShown)
+  settingsUI.close()
   let panel = NSApp.windows.first { $0 is NSPanel && $0.styleMask.contains(.titled) }!
   panel.setFrameAutosaveName("")
   panel.setContentSize(NSSize(width: 420, height: 240))

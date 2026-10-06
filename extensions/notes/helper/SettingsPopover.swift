@@ -4,14 +4,14 @@ import AppKit
 final class SettingsPopover: NSObject {
   private let settings: SettingsController
   let popover = NSPopover()
-  let contentView = NSView()
-  let appearanceControl = NSSegmentedControl(
+  let contentView: NSView = SettingsGlassView()
+  let appearanceControl = SettingsPillControl(
     labels: NoteAppearance.allCases.map { $0.title }, trackingMode: .selectOne,
     target: nil, action: nil)
-  let fontControl = NSSegmentedControl(
+  let fontControl = SettingsPillControl(
     labels: NoteFont.allCases.map { $0.title }, trackingMode: .selectOne,
     target: nil, action: nil)
-  let attachmentControl = NSSegmentedControl(
+  let attachmentControl = SettingsPillControl(
     labels: NoteAttachment.allCases.map { $0 == .floating ? "Floating" : $0.title }, trackingMode: .selectOne,
     target: nil, action: nil)
   private let labels = ["Appearance", "Font", "Attach"].map {
@@ -29,9 +29,10 @@ final class SettingsPopover: NSObject {
     popover.animates = false
     let controls = [appearanceControl, fontControl, attachmentControl]
     for (label, control) in zip(labels, controls) {
-      label.textColor = .secondaryLabelColor
+      label.textColor = NSColor(srgbRed: 0.68, green: 0.80, blue: 0.73, alpha: 1)
       contentView.addSubview(label)
       control.segmentStyle = .rounded
+      control.focusRingType = .none
       control.target = self
       control.action = #selector(choose(_:))
       control.setAccessibilityLabel(label.stringValue)
@@ -77,6 +78,8 @@ final class SettingsPopover: NSObject {
         control.setWidth((width - padding * 2 - 8 * scale) / 3, forSegment: segment)
       }
     }
+    contentView.needsDisplay = true
+    [appearanceControl, fontControl, attachmentControl].forEach { $0.needsDisplay = true }
     popover.contentSize = size
   }
 
@@ -96,5 +99,90 @@ final class SettingsPopover: NSObject {
     }
     run(command)
     refresh()
+  }
+}
+
+
+/// The same dark glass and soft green light used by the transient zoom pill.
+private final class SettingsGlassView: NSView {
+  override func draw(_ dirtyRect: NSRect) {
+    let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 14, yRadius: 14)
+    NSGraphicsContext.saveGraphicsState()
+    shape.addClip()
+    NSGradient(starting: NSColor(white: 0.065, alpha: 1),
+               ending: NSColor(srgbRed: 0.10, green: 0.23, blue: 0.17, alpha: 1))?
+      .draw(in: bounds, angle: 90)
+    let glow = NSColor(srgbRed: 0.30, green: 0.83, blue: 0.56, alpha: 0.14)
+    NSGradient(starting: glow, ending: glow.withAlphaComponent(0))?
+      .draw(fromCenter: NSPoint(x: bounds.minX, y: bounds.maxY), radius: 0,
+            toCenter: NSPoint(x: bounds.minX, y: bounds.maxY), radius: bounds.width, options: [])
+    NSGraphicsContext.restoreGraphicsState()
+    NSColor(srgbRed: 0.47, green: 0.80, blue: 0.62, alpha: 0.28).setStroke()
+    shape.stroke()
+  }
+}
+
+/// Keep AppKit's selection, keyboard handling and accessibility, while painting
+/// the choices as individual glass pills instead of standard segmented chrome.
+final class SettingsPillControl: NSSegmentedControl {
+  override func draw(_ dirtyRect: NSRect) {
+    guard segmentCount > 0 else { return }
+    let scale = Markdown.zoom
+    let slotWidth = bounds.width / CGFloat(segmentCount)
+    for index in 0..<segmentCount {
+      let selected = isSelected(forSegment: index)
+      let rect = NSRect(x: CGFloat(index) * slotWidth + 2 * scale,
+                        y: 2 * scale, width: slotWidth - 4 * scale,
+                        height: bounds.height - 4 * scale)
+      let shape = NSBezierPath(roundedRect: rect, xRadius: 9 * scale, yRadius: 9 * scale)
+      NSGraphicsContext.saveGraphicsState()
+      if selected {
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor(srgbRed: 0.30, green: 0.83, blue: 0.56, alpha: 0.24)
+        shadow.shadowBlurRadius = 5 * scale
+        shadow.shadowOffset = .zero
+        shadow.set()
+      }
+      NSColor(white: 0.075, alpha: 0.92).setFill()
+      shape.fill()
+      NSGraphicsContext.restoreGraphicsState()
+      NSGraphicsContext.saveGraphicsState()
+      shape.addClip()
+      let top = selected
+        ? NSColor(srgbRed: 0.15, green: 0.37, blue: 0.26, alpha: 1)
+        : NSColor(srgbRed: 0.12, green: 0.18, blue: 0.15, alpha: 1)
+      NSGradient(starting: NSColor(white: 0.075, alpha: 1), ending: top)?.draw(in: rect, angle: 90)
+      NSGraphicsContext.restoreGraphicsState()
+      NSColor(srgbRed: 0.47, green: 0.80, blue: 0.62, alpha: selected ? 0.65 : 0.16).setStroke()
+      shape.lineWidth = scale
+      shape.stroke()
+      let text = label(forSegment: index) ?? ""
+      let attributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 12 * scale, weight: selected ? .semibold : .medium),
+        .foregroundColor: selected ? NSColor.white : NSColor(white: 0.78, alpha: 1),
+      ]
+      let size = (text as NSString).size(withAttributes: attributes)
+      (text as NSString).draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
+                             withAttributes: attributes)
+    }
+    if window?.firstResponder === self {
+      let focus = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                               xRadius: 11 * scale, yRadius: 11 * scale)
+      NSColor(srgbRed: 0.32, green: 0.82, blue: 0.59, alpha: 0.95).setStroke()
+      focus.lineWidth = scale
+      focus.stroke()
+    }
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    let accepted = super.becomeFirstResponder()
+    needsDisplay = true
+    return accepted
+  }
+
+  override func resignFirstResponder() -> Bool {
+    let accepted = super.resignFirstResponder()
+    needsDisplay = true
+    return accepted
   }
 }

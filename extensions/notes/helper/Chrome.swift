@@ -209,6 +209,7 @@ final class TitlebarChrome: NSObject, NSToolbarDelegate {
   var onSettings: ((NSView) -> Void)?
   private let titleLabel = PassThroughLabel(labelWithString: "")
   private let pill: PillView
+  var settingsAnchor: NSView { pill.subviews.first { $0.toolTip == "Settings" }! }
 
   static let buttonSize: CGFloat = 28
   static let spacing: CGFloat = 4

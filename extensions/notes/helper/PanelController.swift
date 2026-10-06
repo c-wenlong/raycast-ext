@@ -77,6 +77,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let main = NSMenu()
     let appItem = NSMenuItem()
     appItem.submenu = NSMenu()
+    let preferences = appItem.submenu?.addItem(withTitle: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+    preferences?.target = self
+    appItem.submenu?.addItem(.separator())
     appItem.submenu?.addItem(withTitle: "Quit Notes Window", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     main.addItem(appItem)
 
@@ -314,6 +317,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private static let commandActions: [PaletteAction] = [
+    PaletteAction(title: "Open Settings", keys: "⌘,", symbol: "gearshape", command: "settings"),
     PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
     PaletteAction(title: "Open Today's Note", keys: "", symbol: "calendar", command: "today"),
     PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
@@ -367,6 +371,8 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       NSWorkspace.shared.open(URL(string: "raycast://extensions/c-wenlong/notes/browseNotes")!)
     case "toggle-task":
       toggleTaskOnCurrentLine()
+    case "settings":
+      openSettings(nil)
     case "palette":
       settingsPopover.close()
       if palette.isVisible {
@@ -441,6 +447,18 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     if panel.isMiniaturized { panel.deminiaturize(nil) }
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(textView)
+  }
+
+  @objc private func openSettings(_ sender: Any?) {
+    let anchor: NSView
+    if let attached, !bridgeDegraded, attachment != .floating {
+      if !attached.expanded { show() }
+      anchor = attached.header.settingsAnchor
+    } else {
+      if !panel.isVisible { show() }
+      anchor = titlebarChrome.settingsAnchor
+    }
+    toggleSettings(relativeTo: anchor)
   }
 
   private func toggleSettings(relativeTo anchor: NSView) {

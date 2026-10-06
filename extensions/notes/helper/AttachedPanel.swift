@@ -154,6 +154,7 @@ final class AttachedHeaderView: NSView {
   private let focusTab = ChromeButton(glyph: "Focus", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Focus tab")
   private let notesTab = ChromeButton(glyph: "Notes", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Notes tab")
   private let actionsButton = ChromeButton(symbol: "command", pointSize: 13, label: "Actions (⌘K)")
+  var settingsAnchor: NSView { settingsButton }
   private let settingsButton = ChromeButton(symbol: "gearshape", pointSize: 13, label: "Settings")
   private let browseButton = ChromeButton(symbol: "square.on.square", pointSize: 13, label: "Browse Notes (⌘P)")
   private let newButton = ChromeButton(symbol: "plus", pointSize: 13, label: "New Note (⌘N)")
