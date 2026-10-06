@@ -1819,13 +1819,42 @@ for zoom: CGFloat in [0.8, 1, 2] {
       let event = NSEvent.mouseEvent(with: .leftMouseDown, location: hitPill.convert(point, to: nil),
         modifierFlags: [], timestamp: 0, windowNumber: hudWindow.windowNumber, context: nil,
         eventNumber: 0, clickCount: 1, pressure: 1)!
+      hitPill.selectedSegment = (expected + 1) % 3
+      let beforePress = hitPill.selectedSegment
       hitPill.mouseDown(with: event)
+      check("pressing a settings option does not commit", hitPill.selectedSegment == beforePress)
+      let up = NSEvent.mouseEvent(with: .leftMouseUp, location: event.locationInWindow,
+        modifierFlags: [], timestamp: 0, windowNumber: hudWindow.windowNumber, context: nil,
+        eventNumber: 0, clickCount: 1, pressure: 0)!
+      hitPill.mouseUp(with: up)
       check("\(zoom) pill divider \(boundary) side \(offset) selects painted option", hitPill.selectedSegment == expected)
     }
   }
   check("\(zoom) pill ignores clicks outside its rounded edge", hitPill.segment(at: row.origin) == nil)
 }
 Markdown.zoom = 1
+final class SettingsClickRecorder: NSObject {
+  var count = 0
+  @objc func clicked(_ sender: Any?) { count += 1 }
+}
+let clickRecorder = SettingsClickRecorder()
+hitPill.target = clickRecorder
+hitPill.action = #selector(SettingsClickRecorder.clicked(_:))
+hitPill.frame = NSRect(x: 0, y: 0, width: 268, height: 30)
+hitPill.selectedSegment = 0
+func settingsMouse(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+  NSEvent.mouseEvent(with: type, location: hitPill.convert(point, to: nil), modifierFlags: [],
+    timestamp: 0, windowNumber: hudWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+}
+let middleOption = NSPoint(x: hitPill.pillBounds.midX, y: hitPill.pillBounds.midY)
+hitPill.mouseDown(with: settingsMouse(.leftMouseDown, middleOption))
+hitPill.mouseDragged(with: settingsMouse(.leftMouseDragged, NSPoint(x: -20, y: -20)))
+hitPill.mouseUp(with: settingsMouse(.leftMouseUp, NSPoint(x: -20, y: -20)))
+check("dragging away cancels without changing or dispatching settings", hitPill.selectedSegment == 0 && clickRecorder.count == 0)
+hitPill.mouseDown(with: settingsMouse(.leftMouseDown, middleOption))
+check("press alone does not dispatch a settings command", clickRecorder.count == 0)
+hitPill.mouseUp(with: settingsMouse(.leftMouseUp, middleOption))
+check("completed click selects and dispatches once", hitPill.selectedSegment == 1 && clickRecorder.count == 1)
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

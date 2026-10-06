@@ -116,12 +116,27 @@ final class SettingsPillControl: NSSegmentedControl {
     return min(segmentCount - 1, Int((point.x - row.minX) / (row.width / CGFloat(segmentCount))))
   }
 
-  // The cell's native bezel padding differs from our shared pill. Route
-  // pointer selection through the same bounds that draw the dividers.
+  private var pressedSegment: Int?
+
+  // Native bezel padding differs from the painted pill, so track the
+  // completed click against our geometry without committing on press.
   override func mouseDown(with event: NSEvent) {
+    pressedSegment = nil
     guard isEnabled, let index = segment(at: convert(event.locationInWindow, from: nil)),
       isEnabled(forSegment: index) else { return }
     window?.makeFirstResponder(self)
+    pressedSegment = index
+  }
+
+  override func mouseDragged(with event: NSEvent) {
+    // Selection remains unchanged while tracking; releasing elsewhere cancels.
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    let pressed = pressedSegment
+    pressedSegment = nil
+    guard isEnabled, let index = pressed, isEnabled(forSegment: index),
+      segment(at: convert(event.locationInWindow, from: nil)) == index else { return }
     selectedSegment = index
     needsDisplay = true
     sendAction(action, to: target)
