@@ -32,7 +32,6 @@ clicking or using the shortcut keeps it open. `Esc` and `⌘W` collapse it.
 When Focus uses the notch, its timer and controls share the card with Notes.
 If the running Focus helper is too old to share safely, Notes keeps the editor
 visible in a floating window and returns it to the notch after Focus updates.
-Checking a task keeps the current selection and scroll position.
 
 Inside the window:
 

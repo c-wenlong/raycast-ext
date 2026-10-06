@@ -1393,47 +1393,6 @@ check("a selection is not lifted past its start", selectionStart >= scroller.con
 stv.setSelectedRange(NSRange(location: 0, length: 0))
 stv.scrollRangeToVisible(stv.selectedRange())
 check("the top of a note scrolls back to the start", scroller.contentView.bounds.minY <= -52 + 0.5, "\(scroller.contentView.bounds.minY)")
-// Checking a task near the bottom of a scrolled viewport must not run
-// the typing caret lift, or move an existing selection to its marker.
-final class TaskRestyleDelegate: NSObject, NSTextViewDelegate {
-  func textDidChange(_ notification: Notification) {
-    guard let view = notification.object as? NoteTextView, let storage = view.textStorage else { return }
-    let selection = view.selectedRange()
-    Markdown.apply(to: storage)
-    view.setSelectedRange(selection)
-  }
-}
-let taskRestyleDelegate = TaskRestyleDelegate()
-stv.delegate = taskRestyleDelegate
-stv.allowsUndo = true
-stv.string = (1...80).map { "- [ ] task \($0)" }.joined(separator: "\n")
-Markdown.apply(to: stv.textStorage!)
-stv.sizeToFit()
-let taskBox = (stv.string as NSString).range(of: "[ ] task 35").location
-let taskGlyph = stv.layoutManager!.glyphIndexForCharacter(at: taskBox)
-let taskY = stv.layoutManager!.lineFragmentRect(forGlyphAt: taskGlyph, effectiveRange: nil).maxY + stv.textContainerOrigin.y
-let readingOrigin = NSPoint(x: 0, y: taskY - 340)
-let readingSelection = NSRange(location: 6, length: 4)
-stv.setSelectedRange(readingSelection)
-scroller.contentView.scroll(to: readingOrigin)
-stv.undoManager?.removeAllActions()
-stv.toggleTaskMark(at: taskBox)
-drainMain()
-check("checking a visible task preserves the scrolled viewport", abs(scroller.contentView.bounds.minY - readingOrigin.y) < 0.5)
-check("checking a task preserves an unrelated selection", stv.selectedRange() == readingSelection)
-check("checking changes its mark", (stv.string as NSString).substring(with: NSRange(location: taskBox, length: 3)) == "[x]")
-stv.undoManager?.undo()
-check("checking a task is undoable", (stv.string as NSString).substring(with: NSRange(location: taskBox, length: 3)) == "[ ]")
-stv.undoManager?.redo()
-check("checking a task is redoable", (stv.string as NSString).substring(with: NSRange(location: taskBox, length: 3)) == "[x]")
-let taskCaret = NSRange(location: taskBox + 8, length: 0)
-stv.setSelectedRange(taskCaret)
-scroller.contentView.scroll(to: readingOrigin)
-stv.toggleTaskMark(at: taskBox)
-drainMain()
-check("unchecking the current task preserves its caret and viewport", stv.selectedRange() == taskCaret && abs(scroller.contentView.bounds.minY - readingOrigin.y) < 0.5)
-check("unchecking clears its mark", (stv.string as NSString).substring(with: NSRange(location: taskBox, length: 3)) == "[ ]")
-stv.delegate = nil
 // Collapsed children take no part in the overscroll height.
 stv.textContainer?.replaceLayoutManager(TaskBoxLayoutManager())
 stv.string = "> Fold\n" + (1...60).map { "  line \($0)" }.joined(separator: "\n") + "\nend"

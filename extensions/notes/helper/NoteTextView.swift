@@ -1148,7 +1148,6 @@ final class NoteTextView: NSTextView {
   }
 
   override func scrollRangeToVisible(_ range: NSRange) {
-    guard !preservingTaskViewport else { return }
     super.scrollRangeToVisible(range)
     // Only a caret is lifted: lifting a selection's last line could push
     // its start off the top.
@@ -1554,33 +1553,6 @@ final class NoteTextView: NSTextView {
   }
 
   // MARK: Applying an edit
-
-  private var preservingTaskViewport = false
-
-  /// Checking a task changes only its mark, without moving the reader's
-  /// selection or lifting the clicked line into the typing band.
-  func toggleTaskMark(at location: Int) {
-    let text = string as NSString
-    guard location >= 0, location + 3 <= text.length,
-      ["[ ]", "[x]", "[X]"].contains(text.substring(with: NSRange(location: location, length: 3)))
-    else { return }
-    let selection = selectedRange()
-    let clip = enclosingScrollView?.contentView
-    let origin = clip?.bounds.origin
-    preservingTaskViewport = true
-    defer {
-      preservingTaskViewport = false
-      if let clip, let origin {
-        if let textContainer { layoutManager?.ensureLayout(for: textContainer) }
-        clip.scroll(to: origin)
-        enclosingScrollView?.reflectScrolledClipView(clip)
-      }
-    }
-    let range = NSRange(location: location + 1, length: 1)
-    let mark = text.substring(with: range).lowercased() == "x" ? " " : "x"
-    apply(ListEditing.Edit(range: range, replacement: mark, cursor: selection.location,
-      selectionLength: selection.length))
-  }
 
   /// Applies a ListEditing edit as one change with its own undo step.
   /// Returns false only when there was no edit, so callers fall back to

@@ -259,6 +259,7 @@ final class FocusBridgeClient {
   /// reply does not matter; the generation bump keeps late renews out.
   func release() {
     claimed = false
+    last.claimed = false
     generation += 1
     releaseQueued = true
     if !inflight { flushRelease() }
@@ -281,6 +282,12 @@ final class FocusBridgeClient {
   private func send(_ body: BridgeValue, kind: Kind) {
     guard performsIO else { return }
     guard !inflight else { return }  // one in flight; the next tick retries
+    // A pending release belongs to the old attachment. Finish it before
+    // any probe or new claim can reuse this owner's identity.
+    if releaseQueued, kind != .release {
+      flushRelease()
+      return
+    }
     guard socketPath.utf8CString.count <= 104 else {
       receive(.failure(Outgoing.error("socket path too long")), kind: kind, expected: generation)
       return
@@ -299,6 +306,9 @@ final class FocusBridgeClient {
   /// inject results without the socket.
   func receive(_ result: Result<BridgeValue, Error>, kind: Kind, expected: Int? = nil) {
     inflight = false
+    // Even a stale reply finishes the outstanding request: it must drain
+    // the release queued behind it before a new attachment can claim.
+    defer { flushRelease() }
     guard expected == nil || expected == generation else { return }
     var status = last
     switch result {
@@ -312,6 +322,26 @@ final class FocusBridgeClient {
       status.session = nil
       if kind == .action { onActionProblem(error.localizedDescription) }
     case .success(let reply):
+      if reply["ok"] == .bool(false), let message = reply["error"]?.stringValue {
+        let knownRefusal = message == "no live claim for this owner"
+          || message == "the notch is claimed by another host"
+          || message == "countdown display is not the notch"
+          || (message.hasPrefix("session ") && message.hasSuffix(" is not the current session"))
+        let versionMatches = reply["bridgeVersion"] == nil || reply["bridgeVersion"]?.intValue == Self.version
+        let protocolMissing = message.hasPrefix("unknown command") || message == "unsupported bridge version"
+        if versionMatches && !protocolMissing && (last.compatible || knownRefusal) {
+          // A valid refusal is a working protocol, not an old daemon.
+          // Drop uncertain ownership and refresh the snapshot on the next tick.
+          claimed = false
+          status.present = true
+          status.compatible = true
+          status.claimed = false
+          status.session = nil
+          if kind == .action { onActionProblem(message) }
+          apply(status)
+          return
+        }
+      }
       guard reply["ok"] == .bool(true), reply["bridgeVersion"]?.intValue == Self.version else {
         // It answered but does not speak the bridge (an old daemon:
         // "unknown command"), or the answer makes no sense.
@@ -322,7 +352,6 @@ final class FocusBridgeClient {
         status.session = nil
         if kind == .action, let message = reply["error"]?.stringValue { onActionProblem(message) }
         apply(status)
-        if releaseQueued { flushRelease() }
         return
       }
       status.present = true
@@ -333,12 +362,14 @@ final class FocusBridgeClient {
         claimed = false
         status.claimed = false
       } else {
-        claimed = reply["claimed"] == .bool(true)
+        // The wire's claimed flag means *some* host owns the notch. Only
+        // an accepted owner-validated lease/action proves that host is us.
+        let hosted = reply["claimed"] == .bool(true)
+        claimed = hosted && (kind == .lease || kind == .action || claimed)
         status.claimed = claimed
       }
     }
     apply(status)
-    if releaseQueued { flushRelease() }
   }
 
   private func apply(_ status: FocusBridgeStatus) {

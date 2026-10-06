@@ -484,7 +484,12 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       menuBarItem?.remove()
       menuBarItem = nil
       restoreFloatingEditor()
-      panel.orderOut(nil)
+      if editorWasOpen {
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(textView)
+      } else {
+        panel.orderOut(nil)
+      }
     case .menuBar, .notch:
       let host = AttachedPanel(mode: value)
       host.run = { [weak self] command in self?.handle(command) }
@@ -508,11 +513,11 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       topFade?.isHidden = true
       applyTextContainerInset()
       host.begin()
+      if editorWasOpen {
+        host.expand(tab: .notes, pinned: true)
+        host.window.makeFirstResponder(textView)
+      }
       if value == .notch {
-        if editorWasOpen {
-          host.expand(tab: .notes, pinned: true)
-          host.window.makeFirstResponder(textView)
-        }
         // An unchanged probe does not emit onStatus, so a new host must
         // apply the cached compatibility before asking for fresh status.
         bridgeStatus(bridge.last)
@@ -545,7 +550,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// island from overlapping ours.
   private func enterFallback(_ message: String) {
     guard !bridgeDegraded else { return }
-    let wasVisible = panel.isVisible || attached?.window.isVisible == true
+    let wasVisible = (panel.isVisible && !panel.isMiniaturized) || attached?.expanded == true
     let wasForeground = panel.isKeyWindow || attached?.window.isKeyWindow == true
       || (attached?.expanded == true && attached?.pinned == true)
     bridgeDegraded = true
@@ -1120,7 +1125,13 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private func toggleTask(atBox location: Int) {
-    textView.toggleTaskMark(at: location)
+    let text = textView.string as NSString
+    guard location + 3 <= text.length,
+      text.substring(with: NSRange(location: location, length: 1)) == "["
+    else { return }
+    let markRange = NSRange(location: location + 1, length: 1)
+    let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
+    textView.insertText(mark, replacementRange: markRange)
   }
 
   private func toggleTaskOnCurrentLine() {
@@ -1129,7 +1140,8 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let line = text.substring(with: lineRange)
     if let match = taskPattern.firstMatch(in: line, range: fullRange(line)) {
       let markRange = NSRange(location: lineRange.location + match.range(at: 2).location, length: 1)
-      textView.toggleTaskMark(at: markRange.location - 1)
+      let mark = text.substring(with: markRange).lowercased() == "x" ? " " : "x"
+      textView.insertText(mark, replacementRange: markRange)
     } else {
       let indent = line.prefix(while: { $0 == " " || $0 == "\t" })
       let insertAt = NSRange(location: lineRange.location + indent.count, length: 0)
