@@ -104,39 +104,35 @@ final class SettingsPopover: NSObject {
 
 
 /// Keep AppKit's selection, keyboard handling and accessibility, while painting
-/// the choices as individual glass pills instead of standard segmented chrome.
+/// each row as one continuous glass pill instead of standard segmented chrome.
 final class SettingsPillControl: NSSegmentedControl {
   override func draw(_ dirtyRect: NSRect) {
     guard segmentCount > 0 else { return }
     let scale = Markdown.zoom
-    let slotWidth = bounds.width / CGFloat(segmentCount)
+    let row = bounds.insetBy(dx: 2 * scale, dy: 2 * scale)
+    let shape = NSBezierPath(roundedRect: row, xRadius: row.height / 2, yRadius: row.height / 2)
+    let slotWidth = row.width / CGFloat(segmentCount)
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor(srgbRed: 0.30, green: 0.83, blue: 0.56, alpha: 0.18)
+    shadow.shadowBlurRadius = 4 * scale
+    shadow.shadowOffset = .zero
+    shadow.set()
+    NSColor(white: 0.075, alpha: 1).setFill()
+    shape.fill()
+    NSGraphicsContext.restoreGraphicsState()
+
+    // One shared clipping path rounds only the ends of the entire row.
+    NSGraphicsContext.saveGraphicsState()
+    shape.addClip()
     for index in 0..<segmentCount {
       let selected = isSelected(forSegment: index)
-      let rect = NSRect(x: CGFloat(index) * slotWidth + 2 * scale,
-                        y: 2 * scale, width: slotWidth - 4 * scale,
-                        height: bounds.height - 4 * scale)
-      let shape = NSBezierPath(roundedRect: rect, xRadius: 9 * scale, yRadius: 9 * scale)
-      NSGraphicsContext.saveGraphicsState()
-      if selected {
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor(srgbRed: 0.30, green: 0.83, blue: 0.56, alpha: 0.24)
-        shadow.shadowBlurRadius = 5 * scale
-        shadow.shadowOffset = .zero
-        shadow.set()
-      }
-      NSColor(white: 0.075, alpha: 0.92).setFill()
-      shape.fill()
-      NSGraphicsContext.restoreGraphicsState()
-      NSGraphicsContext.saveGraphicsState()
-      shape.addClip()
+      let rect = NSRect(x: row.minX + CGFloat(index) * slotWidth,
+                        y: row.minY, width: slotWidth, height: row.height)
       let top = selected
         ? NSColor(srgbRed: 0.15, green: 0.37, blue: 0.26, alpha: 1)
         : NSColor(srgbRed: 0.12, green: 0.18, blue: 0.15, alpha: 1)
       NSGradient(starting: NSColor(white: 0.075, alpha: 1), ending: top)?.draw(in: rect, angle: 90)
-      NSGraphicsContext.restoreGraphicsState()
-      NSColor(srgbRed: 0.47, green: 0.80, blue: 0.62, alpha: selected ? 0.65 : 0.16).setStroke()
-      shape.lineWidth = scale
-      shape.stroke()
       let text = label(forSegment: index) ?? ""
       let attributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 12 * scale, weight: selected ? .semibold : .medium),
@@ -145,14 +141,20 @@ final class SettingsPillControl: NSSegmentedControl {
       let size = (text as NSString).size(withAttributes: attributes)
       (text as NSString).draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
                              withAttributes: attributes)
+      if index > 0 {
+        let divider = NSBezierPath()
+        divider.move(to: NSPoint(x: rect.minX, y: row.minY))
+        divider.line(to: NSPoint(x: rect.minX, y: row.maxY))
+        NSColor(srgbRed: 0.47, green: 0.80, blue: 0.62, alpha: 0.25).setStroke()
+        divider.lineWidth = scale
+        divider.stroke()
+      }
     }
-    if window?.firstResponder === self {
-      let focus = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                               xRadius: 11 * scale, yRadius: 11 * scale)
-      NSColor(srgbRed: 0.32, green: 0.82, blue: 0.59, alpha: 0.95).setStroke()
-      focus.lineWidth = scale
-      focus.stroke()
-    }
+    NSGraphicsContext.restoreGraphicsState()
+    let focused = window?.firstResponder === self
+    NSColor(srgbRed: 0.47, green: 0.80, blue: 0.62, alpha: focused ? 0.95 : 0.45).setStroke()
+    shape.lineWidth = focused ? 1.5 * scale : scale
+    shape.stroke()
   }
 
   override func becomeFirstResponder() -> Bool {
