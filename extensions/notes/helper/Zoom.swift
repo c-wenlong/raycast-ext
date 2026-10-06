@@ -39,83 +39,122 @@ enum ZoomLevels {
 
 // MARK: - Zoom HUD
 
-/// A small floating pill, like Raycast's, that reports the current zoom
-/// level. Lives at the top centre of a content view and fades in, holds,
-/// then fades out; a repeat call restarts the timer instead of stacking.
+/// Dark green glass with a softly lit rim, matching Focus's floating panel.
+/// Drawing colours here avoids caching appearance-dependent layer colours.
+private final class ZoomPillView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func draw(_ dirtyRect: NSRect) {
+    let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+    let shape = NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14)
+    NSGraphicsContext.saveGraphicsState()
+    shape.addClip()
+    let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let bottom = NSColor(white: dark ? 0.065 : 0.10, alpha: 0.97)
+    let top = NSColor(srgbRed: 0.10, green: 0.23, blue: 0.17, alpha: 0.97)
+    NSGradient(starting: bottom, ending: top)?.draw(in: bounds, angle: 90)
+    let glow = NSColor(srgbRed: 0.30, green: 0.83, blue: 0.56, alpha: 0.17)
+    NSGradient(starting: glow, ending: glow.withAlphaComponent(0))?
+      .draw(fromCenter: NSPoint(x: 19, y: bounds.midY), radius: 0,
+            toCenter: NSPoint(x: 19, y: bounds.midY), radius: 38, options: [])
+    NSGraphicsContext.restoreGraphicsState()
+    NSColor(srgbRed: 0.47, green: 0.80, blue: 0.62, alpha: 0.22).setStroke()
+    shape.lineWidth = 1
+    shape.stroke()
+    NSColor(srgbRed: 0.32, green: 0.82, blue: 0.59, alpha: 1).setFill()
+    NSBezierPath(ovalIn: NSRect(x: 13, y: bounds.midY - 2.5, width: 5, height: 5)).fill()
+  }
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
+  }
+}
+
+/// One transient announcement at the top of the note. Each update replaces
+/// the text and restarts its one-second lifetime.
 final class ZoomHUD {
   let view: NSView
   private let label: NSTextField
   private var hideWorkItem: DispatchWorkItem?
+  private var topConstraint: NSLayoutConstraint?
+  private var topInset: CGFloat = 52
+  private var generation = 0
+  private(set) var isShowing = false
+  var text: String { label.stringValue }
 
   init() {
-    let container = NSView(frame: .zero)
+    let container = ZoomPillView(frame: .zero)
     container.wantsLayer = true
-    container.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.75).cgColor
-    container.layer?.masksToBounds = true
     container.alphaValue = 0
+    container.isHidden = true
     container.translatesAutoresizingMaskIntoConstraints = false
 
-    let dot = NSView(frame: .zero)
-    dot.wantsLayer = true
-    dot.layer?.backgroundColor = NSColor.systemGreen.cgColor
-    dot.layer?.cornerRadius = 3
-    dot.translatesAutoresizingMaskIntoConstraints = false
-
     let text = NSTextField(labelWithString: "")
-    text.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+    text.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
     text.textColor = .white
     text.translatesAutoresizingMaskIntoConstraints = false
-
-    container.addSubview(dot)
     container.addSubview(text)
-
     NSLayoutConstraint.activate([
-      dot.widthAnchor.constraint(equalToConstant: 6),
-      dot.heightAnchor.constraint(equalToConstant: 6),
-      dot.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-      dot.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-
-      text.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 8),
+      text.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 29),
       text.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
       text.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
       text.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
     ])
-
     view = container
     label = text
   }
 
-  /// Adds the HUD centred near the top of `parent`, once.
+  deinit { hideWorkItem?.cancel() }
+
   func install(in parent: NSView) {
     guard view.superview !== parent else { return }
+    topConstraint?.isActive = false
     view.removeFromSuperview()
     parent.addSubview(view)
+    let top = view.topAnchor.constraint(equalTo: parent.topAnchor, constant: topInset)
+    topConstraint = top
     NSLayoutConstraint.activate([
-      view.centerXAnchor.constraint(equalTo: parent.centerXAnchor),
-      view.topAnchor.constraint(equalTo: parent.topAnchor, constant: 24),
+      view.centerXAnchor.constraint(equalTo: parent.centerXAnchor), top,
     ])
   }
 
-  /// Shows (or updates) the pill with `text`, restarting the auto-hide timer.
-  func show(text: String) {
-    label.stringValue = text
-    view.layoutSubtreeIfNeeded()
-    view.layer?.cornerRadius = view.bounds.height / 2
-    hideWorkItem?.cancel()
+  func setTopInset(_ inset: CGFloat) {
+    topInset = inset
+    topConstraint?.constant = inset
+  }
 
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0.15
-      view.animator().alphaValue = 1
+  func showZoom(_ zoom: CGFloat) {
+    show(text: "Zoomed to \(ZoomLevels.percentageString(for: zoom))")
+  }
+
+  /// Fully hidden one second after the most recent call, including the fade.
+  func show(text: String) {
+    hideWorkItem?.cancel()
+    generation += 1
+    let currentGeneration = generation
+    label.stringValue = text
+    if let parent = view.superview {
+      parent.addSubview(view, positioned: .above, relativeTo: nil)
+      parent.layoutSubtreeIfNeeded()
     }
+    view.layer?.removeAllAnimations()
+    view.isHidden = false
+    view.alphaValue = 1
+    isShowing = true
 
     let workItem = DispatchWorkItem { [weak self] in
-      guard let self else { return }
-      NSAnimationContext.runAnimationGroup { context in
-        context.duration = 0.25
+      guard let self, self.generation == currentGeneration else { return }
+      NSAnimationContext.runAnimationGroup({ context in
+        context.duration = 0.15
         self.view.animator().alphaValue = 0
-      }
+      }, completionHandler: { [weak self] in
+        guard let self, self.generation == currentGeneration else { return }
+        self.view.isHidden = true
+        self.isShowing = false
+      })
     }
     hideWorkItem = workItem
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: workItem)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.85, execute: workItem)
   }
 }

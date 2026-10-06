@@ -149,7 +149,8 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     Markdown.zoom = value
     userDefaults.set(Double(value), forKey: Self.zoomDefaultsKey)
     relayout()
-    zoomHUD.show(text: "Zoomed to \(ZoomLevels.percentageString(for: value))")
+    palette.updateZoom()
+    zoomHUD.showZoom(value)
   }
 
   /// Restyles the note and re-measures everything sized from its fonts
@@ -186,6 +187,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private func applyTextContainerInset() {
+    zoomHUD?.setTopInset(attachment == .floating || bridgeDegraded ? headerHeight + 8 : 8)
     topFade?.opaqueHeight = headerHeight
     topFade?.setHeight(headerHeight + 28)
     textView.textContainerInset = NSSize(
@@ -272,6 +274,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
 
     zoomHUD = ZoomHUD()
     zoomHUD.install(in: panel.contentView!)
+    zoomHUD.setTopInset(headerHeight + 8)
 
     titlebarChrome = TitlebarChrome { [weak self] command in self?.handle(command) }
     titlebarChrome.install(in: panel)

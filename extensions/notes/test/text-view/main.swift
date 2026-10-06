@@ -1722,5 +1722,62 @@ NSApp.appearance = nil
 Markdown.font = .sans
 liveDefaults.removePersistentDomain(forName: liveSuite)
 
+// Menu zoom follows the note, including an already open search.
+let zoomPalette = ActionPalette(actions: [
+  PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
+  PaletteAction(title: "Open Today's Note", keys: "⌘T", symbol: "calendar", command: "today"),
+]) { _ in }
+Markdown.zoom = 1
+zoomPalette.show(over: win)
+let baseMetrics = zoomPalette.zoomMetrics
+Markdown.zoom = 0.8
+zoomPalette.updateZoom()
+let smallMetrics = zoomPalette.zoomMetrics
+check("palette fonts and rows shrink with note zoom",
+  abs(smallMetrics.fontSize - baseMetrics.fontSize * 0.8) < 0.01 && smallMetrics.rowHeight == baseMetrics.rowHeight * 0.8)
+check("palette width shrinks with zoom", smallMetrics.width < baseMetrics.width)
+let zoomPanel = win.childWindows!.first { $0 is PalettePanel }!
+let zoomSearch = zoomPanel.contentView!.subviews.compactMap { $0 as? NSSearchField }.first!
+let zoomScroll = zoomPanel.contentView!.subviews.compactMap { $0 as? NSScrollView }.first!
+let zoomTable = zoomScroll.documentView as! NSTableView
+zoomSearch.stringValue = "note"
+zoomPalette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+zoomTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+Markdown.zoom = 2
+zoomPalette.updateZoom()
+check("zoom preserves the open query and selected action", zoomSearch.stringValue == "note" && zoomTable.selectedRow == 1)
+zoomPanel.contentView!.layoutSubtreeIfNeeded()
+let zoomCell = zoomTable.view(atColumn: 0, row: 1, makeIfNecessary: true)!
+zoomCell.layoutSubtreeIfNeeded()
+let zoomTitle = zoomCell.subviews.compactMap { $0 as? NSTextField }.first!
+let zoomKeys = zoomCell.subviews.compactMap { $0 as? NSStackView }.first!
+check("large zoom keeps action title clear of shortcut badges", zoomTitle.frame.maxX <= zoomKeys.frame.minX)
+check("large palette fits narrow parent", zoomPanel.frame.width <= win.frame.width - 40)
+zoomPalette.hide()
+Markdown.zoom = 1
+
+// Repeated zoom announcements replace the previous timer and stay above chrome.
+let hudParent = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 240))
+let hudWindow = NSWindow(contentRect: hudParent.frame, styleMask: .borderless, backing: .buffered, defer: false)
+hudWindow.contentView = hudParent
+let hud = ZoomHUD()
+hud.install(in: hudParent)
+hud.setTopInset(60)
+let hudOverlay = NSView(frame: hudParent.bounds)
+hudParent.addSubview(hudOverlay)
+hud.showZoom(0.8)
+hudParent.layoutSubtreeIfNeeded()
+check("zoom pill reports percentage above later chrome", hud.text == "Zoomed to 80%" && hudParent.subviews.last === hud.view)
+check("zoom pill sits below floating toolbar", abs(hudParent.bounds.maxY - hud.view.frame.maxY - 60) < 0.5)
+check("zoom pill does not intercept editing clicks", hud.view.hitTest(.zero) == nil)
+RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+hud.setTopInset(8)
+hud.showZoom(0.9)
+hudParent.layoutSubtreeIfNeeded()
+check("zoom pill uses compact attached inset", abs(hudParent.bounds.maxY - hud.view.frame.maxY - 8) < 0.5)
+RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+check("repeated zoom restarts the announcement lifetime", hud.isShowing && hud.text == "Zoomed to 90%")
+check("zoom pill disappears one second after last change", pollUntil(timeout: 0.7) { !hud.isShowing && hud.view.isHidden })
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
