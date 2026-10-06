@@ -243,6 +243,10 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     guard abs(frame.height - height) > 0.5 else { layoutContents(); return }
     frame.origin.y = frame.maxY - height
     frame.size.height = height
+    // Growing an open palette must not push its bottom past the host.
+    if let parent {
+      frame.origin.y = max(parent.frame.minY + 20, min(frame.origin.y, parent.frame.maxY - 20 - height))
+    }
     panel.setFrame(frame, display: panel.isVisible)
     layoutContents()
   }

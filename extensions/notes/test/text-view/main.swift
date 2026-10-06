@@ -1756,6 +1756,20 @@ check("large palette fits narrow parent", zoomPanel.frame.width <= win.frame.wid
 zoomPalette.hide()
 Markdown.zoom = 1
 
+// Growing an already-open full menu must stay inside a taller host.
+let tallHost = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 560, height: 640), styleMask: .borderless, backing: .buffered, defer: false)
+let tallPalette = ActionPalette(actions: (0..<25).map {
+  PaletteAction(title: "Action \($0)", keys: "", symbol: "plus", command: "action-\($0)")
+}) { _ in }
+Markdown.zoom = 1
+tallPalette.show(over: tallHost)
+Markdown.zoom = 2
+tallPalette.updateZoom()
+let tallMenu = tallHost.childWindows!.first { $0 is PalettePanel }!
+check("enlarging an open palette keeps it within its host", tallHost.frame.insetBy(dx: 20, dy: 20).contains(tallMenu.frame), "\(tallMenu.frame) inside \(tallHost.frame)")
+tallPalette.hide()
+Markdown.zoom = 1
+
 // Repeated zoom announcements replace the previous timer and stay above chrome.
 let hudParent = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 240))
 let hudWindow = NSWindow(contentRect: hudParent.frame, styleMask: .borderless, backing: .buffered, defer: false)
