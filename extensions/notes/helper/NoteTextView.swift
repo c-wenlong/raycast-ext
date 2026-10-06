@@ -1560,6 +1560,10 @@ final class NoteTextView: NSTextView {
   /// Checking a task changes only its mark, without moving the reader's
   /// selection or lifting the clicked line into the typing band.
   func toggleTaskMark(at location: Int) {
+    setTaskMark(at: location, restoring: nil)
+  }
+
+  private func setTaskMark(at location: Int, restoring restoredMark: String?) {
     let text = string as NSString
     guard location >= 0, location + 3 <= text.length,
       ["[ ]", "[x]", "[X]"].contains(text.substring(with: NSRange(location: location, length: 3)))
@@ -1577,7 +1581,8 @@ final class NoteTextView: NSTextView {
       }
     }
     let range = NSRange(location: location + 1, length: 1)
-    let mark = text.substring(with: range).lowercased() == "x" ? " " : "x"
+    let originalMark = text.substring(with: range)
+    let mark = restoredMark ?? (originalMark.lowercased() == "x" ? " " : "x")
     // AppKit's text undo selects the edited marker and scrolls to it.
     // Register the same position-preserving toggle for undo and redo instead.
     let manager = undoManager
@@ -1586,7 +1591,7 @@ final class NoteTextView: NSTextView {
       selectionLength: selection.length))
     manager?.enableUndoRegistration()
     if (string as NSString).substring(with: range) == mark {
-      manager?.registerUndo(withTarget: self) { $0.toggleTaskMark(at: location) }
+      manager?.registerUndo(withTarget: self) { $0.setTaskMark(at: location, restoring: originalMark) }
     }
   }
 
