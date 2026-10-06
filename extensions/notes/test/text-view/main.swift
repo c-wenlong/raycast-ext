@@ -1596,9 +1596,9 @@ check("socket commands pick each setting",
     && NoteSettings.change(forCommand: "font-comic") == nil)
 check("light and dark force their appearance, system follows", NoteAppearance.system.nsAppearance == nil && NoteAppearance.light.nsAppearance?.name == .aqua && NoteAppearance.dark.nsAppearance?.name == .darkAqua)
 
-let settingRows = NoteSettings.paletteActions(appearance: .dark, font: .serif)
-check("the palette lists three appearances and three fonts", settingRows.map(\.title) == ["Appearance: System", "Appearance: Light", "Appearance: Dark", "Font: Sans Serif", "Font: Serif", "Font: Mono"], "\(settingRows.map(\.title))")
-check("the current choices are checked", settingRows.filter(\.checked).map(\.title) == ["Appearance: Dark", "Font: Serif"])
+let settingRows = NoteSettings.paletteActions(appearance: .dark, font: .serif, attachment: .floating)
+check("the palette lists three appearances, three fonts and three attachments", settingRows.map(\.title) == ["Appearance: System", "Appearance: Light", "Appearance: Dark", "Font: Sans Serif", "Font: Serif", "Font: Mono", "Attach: Floating Window", "Attach: Menu Bar", "Attach: Notch"], "\(settingRows.map(\.title))")
+check("the current choices are checked", settingRows.filter(\.checked).map(\.title) == ["Appearance: Dark", "Font: Serif", "Attach: Floating Window"])
 check("every setting row runs its own command", settingRows.allSatisfy { NoteSettings.change(forCommand: $0.command) != nil })
 check("every setting row has a symbol", settingRows.allSatisfy { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: nil) != nil })
 func found(_ query: String) -> [String] { settingRows.filter { $0.matches(query) }.map(\.title) }
@@ -1705,11 +1705,11 @@ liveSettings.palette = livePalette
 livePalette.show(over: win)
 func liveChecked() -> [String] { livePalette.shownRows.filter(\.checked).map(\.title) }
 func liveBadge() -> [CGFloat] { livePalette.badgeColor(atRow: 0)?.components ?? [] }
-check("the open palette starts on the stored choices", liveChecked() == ["Appearance: Light", "Font: Sans Serif"], "\(liveChecked())")
+check("the open palette starts on the stored choices", liveChecked() == ["Appearance: Light", "Font: Sans Serif", "Attach: Floating Window"], "\(liveChecked())")
 let lightBadge = liveBadge()
 check("the open palette's rows have key badges", !lightBadge.isEmpty)
-check("a font command moves the open palette's checkmark", liveSettings.handle("font-mono") && liveChecked() == ["Appearance: Light", "Font: Mono"], "\(liveChecked())")
-check("an appearance command moves it too", liveSettings.handle("appearance-dark") && liveChecked() == ["Appearance: Dark", "Font: Mono"], "\(liveChecked())")
+check("a font command moves the open palette's checkmark", liveSettings.handle("font-mono") && liveChecked() == ["Appearance: Light", "Font: Mono", "Attach: Floating Window"], "\(liveChecked())")
+check("an appearance command moves it too", liveSettings.handle("appearance-dark") && liveChecked() == ["Appearance: Dark", "Font: Mono", "Attach: Floating Window"], "\(liveChecked())")
 check("the open palette's key badges change colour", pollUntil { !liveBadge().isEmpty && liveBadge() != lightBadge }, "\(liveBadge())")
 let refreshedBadge = liveBadge()
 livePalette.hide()

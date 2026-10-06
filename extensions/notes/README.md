@@ -24,6 +24,15 @@ the way the Raycast Notes window works. Bind it to `⌥⌘N` in Raycast
 Settings → Extensions → Notes (and clear the same hotkey on Raycast Notes).
 `⌘⇧F` in Browse Notes opens the selected note there.
 
+Use `⌘K` and choose **Attach: Floating Window**, **Attach: Menu Bar**, or **Attach: Notch**.
+The same editor moves between them, preserving the note and undo history. The
+notch card uses a compact half-height layout. Hover opens it temporarily;
+clicking or using the shortcut keeps it open. `Esc` and `⌘W` collapse it.
+
+When Focus uses the notch, its timer and controls share the card with Notes.
+If the running Focus helper is too old to share safely, Notes keeps the editor
+visible in a floating window and returns it to the notch after Focus updates.
+
 Inside the window:
 
 | Keys | Action |
@@ -136,6 +145,9 @@ npm run dev
 `npm test` runs three suites: the library tests in `test/lib.test.ts`
 against a stubbed `@raycast/api`, the pure editing rules in
 `test/list-editing`, and the headless text view harness in
-`test/text-view`. `npm run build-helper` rebuilds the window binary
+`test/text-view`, plus attachment and bridge checks in `test/attachments`.
+`npm run build-helper` rebuilds the window binary
 (`assets/notes-panel`, committed) after any change under `helper/`.
 See the root `AGENTS.md` for how the window is verified live.
+
+Checkbox toggles, undo, and redo preserve the selection and reading position. Switching attachment mode keeps an open note open; a closed note stays closed. The compact Focus tab scrolls when the display is too short for its controls.

@@ -138,6 +138,10 @@ final class ChromeButton: NSButton {
 final class FadeOverlay: NSView {
   enum Edge { case top, bottom }
   private let edge: Edge
+  /// A solid region at the window edge before the gradient begins.
+  /// Nil preserves the footer's proportional fade.
+  var opaqueHeight: CGFloat? { didSet { needsDisplay = true } }
+  private var heightConstraint: NSLayoutConstraint?
   var color: NSColor = .textBackgroundColor { didSet { needsDisplay = true } }
 
   init(edge: Edge) {
@@ -158,22 +162,28 @@ final class FadeOverlay: NSView {
   }
 
   override func draw(_ dirtyRect: NSRect) {
-    // Opaque for the outer third, then eased to clear.
+    let solid = opaqueHeight.map { min(1, max(0, $0 / max(1, bounds.height))) } ?? 0.35
+    let midpoint = opaqueHeight == nil ? 0.65 : solid + (1 - solid) * 0.5
     let opaque = color
     let clear = color.withAlphaComponent(0)
-    guard let gradient = NSGradient(colorsAndLocations: (opaque, 0), (opaque, 0.35), (color.withAlphaComponent(0.6), 0.65), (clear, 1)) else { return }
+    guard let gradient = NSGradient(colorsAndLocations: (opaque, 0), (opaque, solid), (color.withAlphaComponent(0.6), midpoint), (clear, 1)) else { return }
     gradient.draw(in: bounds, angle: edge == .top ? 270 : 90)
   }
 
   /// Pins the overlay to `parent`'s top or bottom edge with `height`.
   func install(in parent: NSView, height: CGFloat) {
     parent.addSubview(self)
+    let heightConstraint = heightAnchor.constraint(equalToConstant: height)
+    self.heightConstraint = heightConstraint
     NSLayoutConstraint.activate([
       leadingAnchor.constraint(equalTo: parent.leadingAnchor),
       trailingAnchor.constraint(equalTo: parent.trailingAnchor),
-      heightAnchor.constraint(equalToConstant: height),
+      heightConstraint,
       edge == .top ? topAnchor.constraint(equalTo: parent.topAnchor) : bottomAnchor.constraint(equalTo: parent.bottomAnchor),
     ])
+  }
+  func setHeight(_ height: CGFloat) {
+    heightConstraint?.constant = height
   }
 }
 

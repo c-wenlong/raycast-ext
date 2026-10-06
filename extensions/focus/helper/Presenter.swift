@@ -34,6 +34,16 @@ protocol SessionPresenter: AnyObject {
   func showEndSheet(_ view: SessionView)
   /// The session finished or was abandoned; hide any sheet.
   func dismissEndSheet()
+  /// Another helper (Notes) holds a live claim on the notch, so the native
+  /// island stays hidden even though the display is still "notch". Only the
+  /// notch is affected; the menu bar item, the panel and the end card are not.
+  func setNotchHosted(_ hosted: Bool)
+}
+
+/// UIPresenter implements hosting; presenters that have no notch (tests,
+/// headless) ignore it.
+extension SessionPresenter {
+  func setNotchHosted(_ hosted: Bool) {}
 }
 
 /// Used when no UI is attached (tests, headless runs).
@@ -42,9 +52,12 @@ final class NullPresenter: SessionPresenter {
   private(set) var views: [SessionView?] = []
   private(set) var endSheets: [SessionView] = []
   private(set) var dismissals = 0
+  /// Every setNotchHosted value Core sent, in order.
+  private(set) var hostedFlags: [Bool] = []
   func update(_ view: SessionView?) { views.append(view) }
   func showEndSheet(_ view: SessionView) { endSheets.append(view) }
   func dismissEndSheet() { dismissals += 1 }
+  func setNotchHosted(_ hosted: Bool) { hostedFlags.append(hosted) }
 }
 
 /// Anything that can be handed a presenter; FocusCore conforms so the UI can attach without knowing it.

@@ -21,9 +21,14 @@ if let flag = arguments.firstIndex(of: "--dir"), flag + 1 < arguments.count {
 }
 let requestedCommand = arguments.isEmpty ? "toggle" : arguments.joined(separator: " ")
 
-let supportDir = NSString(string: "~/Library/Application Support/notes-panel")
-  .expandingTildeInPath
+let environment = ProcessInfo.processInfo.environment
+let supportDir = NSString(
+  string: environment["NOTES_PANEL_SUPPORT_DIR"] ?? "~/Library/Application Support/notes-panel"
+).expandingTildeInPath
 let socketPath = supportDir + "/notes-panel.sock"
+let userDefaults = environment["NOTES_PANEL_DEFAULTS_SUITE"].flatMap { UserDefaults(suiteName: $0) }
+  ?? .standard
+let debugEnabled = environment["NOTES_PANEL_DEBUG"] == "1"
 
 // MARK: - Unix socket plumbing
 
@@ -82,7 +87,7 @@ final class CommandServer {
     }
   }
 
-  func run(_ handler: @escaping (String) -> Void) {
+  func run(_ handler: @escaping (String) -> String?) {
     DispatchQueue.global(qos: .userInitiated).async { [fd] in
       while true {
         let client = accept(fd, nil, nil)
@@ -99,10 +104,13 @@ final class CommandServer {
         let parts = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
         DispatchQueue.main.async {
           if parts.count == 2, !parts[1].isEmpty { notesDir = parts[1] }
-          handler(parts.first ?? "")
+          let reply = handler(parts.first ?? "")
+          if let reply {
+            _ = (reply + "\n").withCString { send(client, $0, strlen($0), 0) }
+          }
+          _ = "ok\n".withCString { send(client, $0, 3, 0) }
+          close(client)
         }
-        _ = "ok\n".withCString { send(client, $0, 3, 0) }
-        close(client)
       }
     }
   }
@@ -165,5 +173,9 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let controller = PanelController(initialCommand: requestedCommand == "hide" ? "show" : requestedCommand)
 app.delegate = controller
-server.run { command in controller.handle(command) }
+server.run { command in
+  if command == "debug-status", debugEnabled { return controller.debugStatus() }
+  controller.handle(command)
+  return nil
+}
 app.run()

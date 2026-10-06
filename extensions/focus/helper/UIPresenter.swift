@@ -57,6 +57,10 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
   /// "Pause for N minutes": resumes the session when it fires.
   private(set) var timedPause: (sessionId: Int, task: ScheduledTask, seenPaused: Bool, armedAt: Date)?
   private var positionWrite: ScheduledTask?
+  /// True while another helper (Notes) holds the notch: the island hides
+  /// even though the display is still "notch". The menu bar item, the
+  /// floating panel and the end card are unaffected.
+  private var notchHosted = false
   private var cachedConfig = FocusConfig()
   private var cachedStamp: [FileAttributeKey: AnyHashable]?
 
@@ -179,7 +183,7 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
     } else {
       floating.hide()
     }
-    if display == .notch && live { notch.show(view) } else { notch.hide() }
+    if display == .notch && live && !notchHosted { notch.show(view) } else { notch.hide() }
     // Back to running or paused (extended from the menu, say): the
     // question is answered.
     if endSheet.isVisible, endSheet.session?.id == view.id, view.state != "ending", view.remainingSeconds > 0 {
@@ -212,6 +216,16 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
 
   func dismissEndSheet() {
     onMain { [self] in endSheet.dismiss() }
+  }
+
+  /// Core calls this with the bridge's claim state before every update;
+  /// only a change triggers a refresh so the island follows the lease.
+  func setNotchHosted(_ hosted: Bool) {
+    onMain { [self] in
+      guard hosted != notchHosted else { return }
+      notchHosted = hosted
+      refresh(lastView)
+    }
   }
 
   // MARK: End card (auto-finish)
