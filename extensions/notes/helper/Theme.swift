@@ -3,7 +3,7 @@ import Foundation
 
 // MARK: - Appearance and font settings
 //
-// Window settings picked from the settings popover (or sent over the socket
+// Two window settings picked from the ⌘K palette (or sent over the socket
 // as `appearance-dark`, `font-serif`, ...) and remembered in UserDefaults
 // next to the zoom: the appearance (follow the system, or force light or
 // dark) and the note's typeface (the system sans serif, its serif design
@@ -147,15 +147,42 @@ enum NoteSettings {
     return nil
   }
 
-
+  /// The palette rows for all settings, the current choice of each
+  /// checked. Found by "theme", "dark", "light", "font", "serif", "mono",
+  /// "attachment", "menu bar", "notch".
+  static func paletteActions(
+    appearance current: NoteAppearance, font currentFont: NoteFont, attachment currentAttachment: NoteAttachment
+  ) -> [PaletteAction] {
+    NoteAppearance.allCases.map {
+      PaletteAction(
+        title: "Appearance: \($0.title)", keys: "", symbol: $0.symbol, command: $0.command,
+        keywords: "theme mode colour color", checked: $0 == current)
+    }
+      + NoteFont.allCases.map {
+        PaletteAction(
+          title: "Font: \($0.title)", keys: "", symbol: $0.symbol, command: $0.command,
+          keywords: "typeface " + $0.keywords, checked: $0 == currentFont)
+      }
+      + NoteAttachment.allCases.map {
+        PaletteAction(
+          title: "Attach: \($0.title)", keys: "", symbol: $0.symbol, command: $0.command,
+          keywords: $0.keywords, checked: $0 == currentAttachment)
+      }
+  }
 }
 
-/// Loads, applies and saves settings from the popover or socket.
+/// Owns both settings while the window runs: loads them at launch,
+/// applies setting commands from any path (⌘K, the socket), saves them,
+/// and keeps the palette's checkmarks current, including while it is
+/// open.
 final class SettingsController {
   private let defaults: UserDefaults
   private(set) var appearance: NoteAppearance
   private(set) var attachment: NoteAttachment
-  var onChange: () -> Void = {}
+  /// The palette whose setting rows follow the current choices.
+  weak var palette: ActionPalette?
+  /// The palette's other rows, listed before the settings.
+  var commandActions: [PaletteAction] = []
   /// Called after a change is applied: restyle, relayout, announce.
   var onAppearance: (NoteAppearance) -> Void = { _ in }
   var onFont: (NoteFont) -> Void = { _ in }
@@ -171,6 +198,13 @@ final class SettingsController {
     attachment = NoteSettings.attachment(in: defaults)
     Markdown.font = NoteSettings.font(in: defaults)
     NSApp.appearance = appearance.nsAppearance
+  }
+
+  /// Every palette row: the commands, then all settings with the
+  /// current choice of each checked.
+  var paletteActions: [PaletteAction] {
+    commandActions + NoteSettings.paletteActions(
+      appearance: appearance, font: Markdown.font, attachment: attachment)
   }
 
   /// Applies `command` if it is a setting command; false otherwise.
@@ -195,7 +229,7 @@ final class SettingsController {
       attachment = value
       NoteSettings.save(value, in: defaults)
     }
-    onChange()
+    palette?.actions = paletteActions
     return true
   }
 }
