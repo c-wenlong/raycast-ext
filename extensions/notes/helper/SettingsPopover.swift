@@ -106,10 +106,31 @@ final class SettingsPopover: NSObject {
 /// Keep AppKit's selection, keyboard handling and accessibility, while painting
 /// each row as one continuous glass pill instead of standard segmented chrome.
 final class SettingsPillControl: NSSegmentedControl {
+  var pillBounds: NSRect { bounds.insetBy(dx: 2 * Markdown.zoom, dy: 2 * Markdown.zoom) }
+
+  func segment(at point: NSPoint) -> Int? {
+    let row = pillBounds
+    guard segmentCount > 0, row.width > 0, row.height > 0,
+      NSBezierPath(roundedRect: row, xRadius: row.height / 2, yRadius: row.height / 2).contains(point)
+    else { return nil }
+    return min(segmentCount - 1, Int((point.x - row.minX) / (row.width / CGFloat(segmentCount))))
+  }
+
+  // The cell's native bezel padding differs from our shared pill. Route
+  // pointer selection through the same bounds that draw the dividers.
+  override func mouseDown(with event: NSEvent) {
+    guard isEnabled, let index = segment(at: convert(event.locationInWindow, from: nil)),
+      isEnabled(forSegment: index) else { return }
+    window?.makeFirstResponder(self)
+    selectedSegment = index
+    needsDisplay = true
+    sendAction(action, to: target)
+  }
+
   override func draw(_ dirtyRect: NSRect) {
     guard segmentCount > 0 else { return }
     let scale = Markdown.zoom
-    let row = bounds.insetBy(dx: 2 * scale, dy: 2 * scale)
+    let row = pillBounds
     let shape = NSBezierPath(roundedRect: row, xRadius: row.height / 2, yRadius: row.height / 2)
     let slotWidth = row.width / CGFloat(segmentCount)
     NSGraphicsContext.saveGraphicsState()

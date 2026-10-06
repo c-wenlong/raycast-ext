@@ -1805,5 +1805,27 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.5))
 check("repeated zoom restarts the announcement lifetime", hud.isShowing && hud.text == "Zoomed to 90%")
 check("zoom pill disappears one second after last change", pollUntil(timeout: 0.7) { !hud.isShowing && hud.view.isHidden })
 
+// The drawn pill and pointer selection share their exact divider geometry.
+let hitPill = SettingsPillControl(labels: ["One", "Two", "Three"], trackingMode: .selectOne, target: nil, action: nil)
+hudParent.addSubview(hitPill)
+for zoom: CGFloat in [0.8, 1, 2] {
+  Markdown.zoom = zoom
+  hitPill.frame = NSRect(x: 0, y: 0, width: 268 * zoom, height: 30 * zoom)
+  let row = hitPill.pillBounds
+  for boundary in 1..<3 {
+    let x = row.minX + row.width * CGFloat(boundary) / 3
+    for (offset, expected) in [(CGFloat(-0.1), boundary - 1), (CGFloat(0.1), boundary)] {
+      let point = NSPoint(x: x + offset, y: row.midY)
+      let event = NSEvent.mouseEvent(with: .leftMouseDown, location: hitPill.convert(point, to: nil),
+        modifierFlags: [], timestamp: 0, windowNumber: hudWindow.windowNumber, context: nil,
+        eventNumber: 0, clickCount: 1, pressure: 1)!
+      hitPill.mouseDown(with: event)
+      check("\(zoom) pill divider \(boundary) side \(offset) selects painted option", hitPill.selectedSegment == expected)
+    }
+  }
+  check("\(zoom) pill ignores clicks outside its rounded edge", hitPill.segment(at: row.origin) == nil)
+}
+Markdown.zoom = 1
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
