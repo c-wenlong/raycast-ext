@@ -3,7 +3,7 @@ import Foundation
 
 // MARK: - Window chrome, as in the Raycast Notes window
 //
-// A pill of three icon buttons at the right of the title bar (⌘K actions,
+// A pill of four icon buttons at the right of the title bar (⌘K actions,
 // Browse Notes, New Note), and at the bottom of the note a character count
 // with a round "T" button that opens the formatting picker.
 
@@ -206,8 +206,10 @@ final class PillView: NSView {
 /// the traffic lights, title and pill on one centred row.
 final class TitlebarChrome: NSObject, NSToolbarDelegate {
   private let run: (String) -> Void
+  var onSettings: ((NSView) -> Void)?
   private let titleLabel = PassThroughLabel(labelWithString: "")
   private let pill: PillView
+  var settingsAnchor: NSView { pill.subviews.first { $0.toolTip == "Settings" }! }
 
   static let buttonSize: CGFloat = 28
   static let spacing: CGFloat = 4
@@ -216,8 +218,9 @@ final class TitlebarChrome: NSObject, NSToolbarDelegate {
   private static let titleItem = NSToolbarItem.Identifier("notes.title")
   private static let pillItem = NSToolbarItem.Identifier("notes.pill")
 
-  private static let buttons: [(symbol: String, label: String, command: String)] = [
+  private static let buttons: [(symbol: String, label: String, command: String?)] = [
     ("command", "Actions (⌘K)", "palette"),
+    ("gearshape", "Settings", nil),
     ("square.on.square", "Browse Notes (⌘P)", "browse"),
     ("plus", "New Note (⌘N)", "new"),
   ]
@@ -272,7 +275,11 @@ final class TitlebarChrome: NSObject, NSToolbarDelegate {
   }
 
   @objc private func clicked(_ sender: NSButton) {
-    run(Self.buttons[sender.tag].command)
+    if let command = Self.buttons[sender.tag].command {
+      run(command)
+    } else {
+      onSettings?(sender)
+    }
   }
 
   // NSToolbarDelegate

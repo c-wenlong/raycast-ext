@@ -18,6 +18,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   private var pendingCommand: String
   private var palette: ActionPalette!
   private var settings: SettingsController!
+  private var settingsPopover: SettingsPopover!
   private var zoomHUD: ZoomHUD!
   private var codeBlocks: CodeBlockOverlay!
   private var links: LinkController!
@@ -76,6 +77,9 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let main = NSMenu()
     let appItem = NSMenuItem()
     appItem.submenu = NSMenu()
+    let preferences = appItem.submenu?.addItem(withTitle: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+    preferences?.target = self
+    appItem.submenu?.addItem(.separator())
     appItem.submenu?.addItem(withTitle: "Quit Notes Window", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     main.addItem(appItem)
 
@@ -150,6 +154,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     userDefaults.set(Double(value), forKey: Self.zoomDefaultsKey)
     relayout()
     palette.updateZoom()
+    settingsPopover.refresh()
     zoomHUD.showZoom(value)
   }
 
@@ -170,7 +175,6 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// built, so the first show already has them.
   private func loadTheme() {
     settings = SettingsController(defaults: userDefaults)
-    settings.commandActions = Self.commandActions
     settings.onAppearance = { [weak self] value in
       guard let self else { return }
       self.restyle()
@@ -277,6 +281,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     zoomHUD.setTopInset(headerHeight + 8)
 
     titlebarChrome = TitlebarChrome { [weak self] command in self?.handle(command) }
+    titlebarChrome.onSettings = { [weak self] anchor in self?.toggleSettings(relativeTo: anchor) }
     titlebarChrome.install(in: panel)
     // Fades under the header and footer so text scrolling beneath them
     // dissolves instead of being clipped.
@@ -292,10 +297,12 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     statusBar = StatusBar { [weak self] in self?.handle("format") }
     statusBar.install(in: panel.contentView!)
 
-    palette = ActionPalette(actions: settings.paletteActions) { [weak self] command in
+    palette = ActionPalette(actions: Self.commandActions) { [weak self] command in
       self?.handle(command)
     }
-    settings.palette = palette
+    settingsPopover = SettingsPopover(settings: settings)
+    settingsPopover.run = { [weak self] command in self?.handle(command) }
+    settings.onChange = { [weak self] in self?.settingsPopover.refresh() }
 
     editorRoot = panel.contentView
 
@@ -310,6 +317,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   }
 
   private static let commandActions: [PaletteAction] = [
+    PaletteAction(title: "Open Settings", keys: "⌘,", symbol: "gearshape", command: "settings"),
     PaletteAction(title: "New Note", keys: "⌘N", symbol: "plus", command: "new"),
     PaletteAction(title: "Open Today's Note", keys: "", symbol: "calendar", command: "today"),
     PaletteAction(title: "Duplicate Note", keys: "⌘D", symbol: "doc.on.doc", command: "duplicate"),
@@ -363,13 +371,17 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       NSWorkspace.shared.open(URL(string: "raycast://extensions/c-wenlong/notes/browseNotes")!)
     case "toggle-task":
       toggleTaskOnCurrentLine()
+    case "settings":
+      openSettings(nil)
     case "palette":
+      settingsPopover.close()
       if palette.isVisible {
         palette.hide()
       } else {
         palette.show(over: activePanel)
       }
     case "format":
+      settingsPopover.close()
       palette.hide()
       if statusBar.isFormatBarVisible {
         statusBar.hideFormatBar()
@@ -437,7 +449,31 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     panel.makeFirstResponder(textView)
   }
 
+  @objc private func openSettings(_ sender: Any?) {
+    let anchor: NSView
+    if let attached, !bridgeDegraded, attachment != .floating {
+      if !attached.expanded { show() }
+      anchor = attached.header.settingsAnchor
+    } else {
+      if !panel.isVisible { show() }
+      anchor = titlebarChrome.settingsAnchor
+    }
+    toggleSettings(relativeTo: anchor)
+  }
+
+  private func toggleSettings(relativeTo anchor: NSView) {
+    if let attached, anchor.window === attached.window {
+      attached.select(tab: attached.tab, pinned: true)
+    }
+    palette.hide()
+    codeBlocks.closePicker()
+    links.close()
+    statusBar.hideFormatBar()
+    settingsPopover.toggle(relativeTo: anchor)
+  }
+
   private func hide() {
+    settingsPopover.close()
     palette.hide()
     codeBlocks.closePicker()
     links.close()
@@ -466,6 +502,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     let previous = attachment
     let editorWasOpen = (panel.isVisible && !panel.isMiniaturized) || attached?.expanded == true
     guard value != previous || attached == nil else { return true }
+    settingsPopover?.close()
     // Child panels out of the way before their parent changes hands.
     palette.hide()
     codeBlocks.closePicker()
@@ -495,6 +532,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       }
     case .menuBar, .notch:
       let host = AttachedPanel(mode: value)
+      host.onSettings = { [weak self] anchor in self?.toggleSettings(relativeTo: anchor) }
       host.run = { [weak self] command in self?.handle(command) }
       host.onFocusAction = { [weak self] action, seconds in self?.focusAction(action, seconds: seconds) }
       host.onResign = { [weak self] in self?.hide() }
@@ -553,6 +591,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// island from overlapping ours.
   private func enterFallback(_ message: String) {
     guard !bridgeDegraded else { return }
+    settingsPopover.close()
     let wasVisible = (panel.isVisible && !panel.isMiniaturized) || attached?.expanded == true
     let wasForeground = panel.isKeyWindow || attached?.window.isKeyWindow == true
       || (attached?.expanded == true && attached?.pinned == true)
@@ -577,6 +616,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
   /// The daemon speaks the bridge again: sharing or a Notes-only notch is safe.
   private func exitFallback() {
     guard bridgeDegraded, let attached, attachment == .notch else { return }
+    settingsPopover.close()
     let editorWasOpen = panel.isVisible && !panel.isMiniaturized
     bridgeDegraded = false
     fallbackHUDShown = false

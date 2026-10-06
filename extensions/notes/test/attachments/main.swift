@@ -65,13 +65,6 @@ do {
       && NoteSettings.change(forCommand: "attachment-menuBar") == .attachment(.menuBar)
       && NoteSettings.change(forCommand: "attachment-notch") == .attachment(.notch)
       && NoteSettings.change(forCommand: "attachment-cloud") == nil)
-  let rows = NoteSettings.paletteActions(appearance: .system, font: .sans, attachment: .menuBar)
-  check("the attachment rows check the current one",
-    rows.filter { $0.command.hasPrefix("attachment-") && $0.checked }.map(\.command) == ["attachment-menuBar"])
-  check("attachment rows match 'notch' and 'attach'",
-    rows.first { $0.command == "attachment-notch" }?.matches("notch") == true
-      && rows.first { $0.command == "attachment-floating" }?.matches("attach window") == true)
-
   // The controller persists through its callback and refuses a refusal.
   let settings = SettingsController(defaults: defaults)
   var moved: NoteAttachment?
@@ -279,6 +272,13 @@ do {
   host.pointerMoved(inside: false)
   spin(0.4)
   check("a pinned card stays open", host.expanded && host.tab == .notes)
+  let editorClip = rootView.superview!.superview!
+  let editorMask = editorClip.layer?.mask as? CAShapeLayer
+  check("the editor clips both bottom corners to the notch outline",
+    editorMask?.path?.contains(NSPoint(x: 1, y: 1)) == false
+      && editorMask?.path?.contains(NSPoint(x: editorClip.bounds.maxX - 1, y: 1)) == false
+      && editorMask?.path?.contains(NSPoint(x: editorClip.bounds.midX, y: 1)) == true)
+
 
   // Commands through the window: ⌘K, Esc, ⌘W all route.
   var commands: [String] = []
@@ -322,10 +322,21 @@ do {
   let controller = PanelController(initialCommand: "hide")
   controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
   controller.handle("attachment-floating")
+  controller.handle("palette")
+  let actions = Mirror(reflecting: controller).children.first { $0.label == "palette" }!.value as! ActionPalette
+  check("command palette excludes appearance font and attachment choices",
+    actions.shownRows.contains { $0.command == "settings" && $0.keys == "⌘," } && actions.shownRows.allSatisfy { NoteSettings.change(forCommand: $0.command) == nil })
+  controller.handle("palette")
   let notePath = notesDir + "/Floating geometry.md"
   try! FileManager.default.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
   try! "# Floating geometry\nPreserve this text".write(toFile: notePath, atomically: true, encoding: .utf8)
   controller.handle("open " + notePath)
+  let preferences = NSApp.mainMenu!.items.first!.submenu!.items.first { $0.keyEquivalent == "," }!
+  check("settings has a command-comma menu action", preferences.title == "Settings…" && preferences.target === controller)
+  let settingsUI = Mirror(reflecting: controller).children.first { $0.label == "settingsPopover" }!.value as! SettingsPopover
+  controller.handle("settings")
+  check("keyboard settings command opens the popover", settingsUI.popover.isShown)
+  settingsUI.close()
   let panel = NSApp.windows.first { $0 is NSPanel && $0.styleMask.contains(.titled) }!
   panel.setFrameAutosaveName("")
   panel.setContentSize(NSSize(width: 420, height: 240))
@@ -434,6 +445,27 @@ do {
   check("top fade dissolves only below the command bar",
     bitmap.colorAt(x: 4, y: 66)!.alphaComponent < 0.8
       && bitmap.colorAt(x: 4, y: 79)!.alphaComponent < 0.1)
+}
+
+// Settings gear routes the anchor in both hosts, apart from the action menu.
+do {
+  let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 240), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+  let chrome = TitlebarChrome { _ in }
+  var clicked: NSView?
+  chrome.onSettings = { clicked = $0 }
+  chrome.install(in: window)
+  let pill = window.toolbar!.items.compactMap(\.view).first { $0.subviews.contains { $0.toolTip == "Settings" } }!
+  let gear = pill.subviews.first { $0.toolTip == "Settings" } as! NSButton
+  let command = pill.subviews.first { $0.toolTip == "Actions (⌘K)" }!
+  gear.performClick(nil)
+  check("floating settings gear follows command and passes its anchor", clicked === gear && gear.frame.minX > command.frame.maxX)
+  let host = AttachedPanel(mode: .menuBar)
+  host.onSettings = { clicked = $0 }
+  host.header.frame = NSRect(x: 0, y: 0, width: 420, height: 40)
+  host.header.layout()
+  let attachedGear = host.header.subviews.first { $0.toolTip == "Settings" } as! NSButton
+  attachedGear.performClick(nil)
+  check("attached settings gear passes its anchor", clicked === attachedGear)
 }
 
 runBridgeReviewRegressions()

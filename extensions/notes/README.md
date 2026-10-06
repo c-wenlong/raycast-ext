@@ -24,7 +24,7 @@ the way the Raycast Notes window works. Bind it to `⌥⌘N` in Raycast
 Settings → Extensions → Notes (and clear the same hotkey on Raycast Notes).
 `⌘⇧F` in Browse Notes opens the selected note there.
 
-Use `⌘K` and choose **Attach: Floating Window**, **Attach: Menu Bar**, or **Attach: Notch**.
+Use the settings popover with green glass buttons from the gear beside `⌘K` (or press `⌘,`), then choose **Floating**, **Menu Bar**, or **Notch** under **Attach**.
 The same editor moves between them, preserving the note and undo history. The
 notch card uses a compact half-height layout. Hover opens it temporarily;
 clicking or using the shortcut keeps it open. `Esc` and `⌘W` collapse it.
@@ -37,7 +37,7 @@ Inside the window:
 
 | Keys | Action |
 |---|---|
-| `⌘K` | action palette (New Note, Open Today's Note, Duplicate, Browse, zoom, appearance, font…): type to filter, `↑` `↓` to move, `↩` to run |
+| `⌘K` | action palette (New Note, Open Today's Note, Duplicate, Browse, zoom, formatting…): type to filter, `↑` `↓` to move, `↩` to run |
 | `/` at a line start or after a space | block menu under the caret: Text, Heading 1 to 4, bulleted, numbered and to-do lists, quote, toggle, callout, code block; type to filter, `↑` `↓`, `↩` to apply, `Esc` to keep the slash |
 | `:` and two letters, as in `:cla` | emoji picker under the caret, searched by GitHub/Slack shortcode (about 780 common emoji, built in): type to filter, `↑` `↓`, `↩` to insert the emoji in place of `:cla`, `Esc` or a space to keep the text. A closing colon on an exact name (`:clap:`) converts at once (`⌘Z` gives the name back). Only at a line start or after a space or punctuation, so `10:30`, `key:value` and `std::string` stay text, as does anything in code or a link address |
 | `⌘[` / `⌘]` | previous / next note, in last-edit order as of when the window was shown |
@@ -49,8 +49,8 @@ Inside the window:
 | `⌃X` | move the note to the Trash (no confirmation; restore it from the Trash) |
 | `⌘P` | jump to Browse Notes in Raycast |
 | `⌘+` / `⌘-` / `⌘0` | zoom in, out, reset (remembered); the action menu scales with the note, and a green pill shows the percentage for one second |
-| `⌘K` then "Appearance: …" | System (follows macOS), Light or Dark, for the window and its menus and popovers; remembered, the current one checked (search "theme", "dark", "light") |
-| `⌘K` then "Font: …" | Sans Serif (the system font), Serif (New York) or Mono (SF Mono) for the note's text and headings; code spans and code blocks stay monospaced; remembered, the current one checked (search "font", "serif", "mono") |
+| Gear → Appearance | System (follows macOS), Light or Dark, for the window and its menus and popovers; remembered, the current option selected |
+| Gear → Font | Sans Serif (the system font), Serif (New York) or Mono (SF Mono) for the note's text and headings; code spans and code blocks stay monospaced; remembered, the current option selected |
 | `⌘M` | minimise the window |
 | `⌘W` or `Esc` | hide |
 | `⌘B` / `⌘I` / `⇧⌘S` / `⌘E` | bold / italic / strikethrough / inline code; again with the caret or selection inside to remove |
