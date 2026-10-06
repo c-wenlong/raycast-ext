@@ -154,10 +154,12 @@ final class AttachedHeaderView: NSView {
   private let focusTab = ChromeButton(glyph: "Focus", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Focus tab")
   private let notesTab = ChromeButton(glyph: "Notes", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Notes tab")
   private let actionsButton = ChromeButton(symbol: "command", pointSize: 13, label: "Actions (⌘K)")
+  private let settingsButton = ChromeButton(symbol: "gearshape", pointSize: 13, label: "Settings")
   private let browseButton = ChromeButton(symbol: "square.on.square", pointSize: 13, label: "Browse Notes (⌘P)")
   private let newButton = ChromeButton(symbol: "plus", pointSize: 13, label: "New Note (⌘N)")
   private let tabUnderline = NSView()
   var onTab: ((Tab) -> Void)?
+  var onSettings: ((NSView) -> Void)?
   var run: ((String) -> Void)?
 
   private(set) var tab: Tab = .notes
@@ -198,6 +200,11 @@ final class AttachedHeaderView: NSView {
       button.tag = command == "palette" ? 0 : command == "browse" ? 1 : 2
       addSubview(button)
     }
+    settingsButton.cornerRadius = 7
+    settingsButton.fill = ChromeColors.pill
+    settingsButton.target = self
+    settingsButton.action = #selector(settingsClicked(_:))
+    addSubview(settingsButton)
     addSubview(titleLabel)
     addSubview(clockLabel)
     addSubview(goalLabel)
@@ -205,6 +212,7 @@ final class AttachedHeaderView: NSView {
 
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+  @objc private func settingsClicked(_ sender: ChromeButton) { onSettings?(sender) }
   @objc private func focusClicked() { onTab?(.focus) }
   @objc private func notesClicked() { onTab?(.notes) }
   @objc private func command(_ sender: ChromeButton) {
@@ -249,6 +257,8 @@ final class AttachedHeaderView: NSView {
   override func layout() {
     super.layout()
     let pad: CGFloat = 12
+    // Leave a gap before all four controls, including Settings.
+    let contentRight = max(pad, bounds.width - pad - (4 * 28 + 3 * 6) - 10)
     var x = pad
     let tabY = (bounds.height - 24) / 2
     if tabsVisible {
@@ -260,7 +270,7 @@ final class AttachedHeaderView: NSView {
     } else {
       titleLabel.isHidden = false
       titleLabel.sizeToFit()
-      let width = min(titleLabel.frame.width, bounds.width * 0.4)
+      let width = max(0, min(titleLabel.frame.width, bounds.width * 0.4, contentRight - x))
       titleLabel.frame = NSRect(x: x, y: (bounds.height - 17) / 2, width: width, height: 17)
       x += width + 10
     }
@@ -269,14 +279,14 @@ final class AttachedHeaderView: NSView {
     goalLabel.isHidden = goalLabel.stringValue.isEmpty
     clockLabel.sizeToFit()
     goalLabel.sizeToFit()
-    clockLabel.frame = NSRect(x: x, y: (bounds.height - 15) / 2, width: clockLabel.frame.width, height: 15)
-    x += clockLabel.frame.width + (goalLabel.stringValue.isEmpty ? 0 : 6)
-    var goalWidth = min(goalLabel.frame.width, bounds.maxX - 3 * 36 - pad - x)
-    if goalWidth < 0 { goalWidth = 0 }
+    let clockWidth = max(0, min(clockLabel.frame.width, contentRight - x))
+    clockLabel.frame = NSRect(x: x, y: (bounds.height - 15) / 2, width: clockWidth, height: 15)
+    x += clockWidth + (goalLabel.stringValue.isEmpty ? 0 : 6)
+    let goalWidth = max(0, min(goalLabel.frame.width, contentRight - x))
     goalLabel.frame = NSRect(x: x, y: (bounds.height - 15) / 2, width: goalWidth, height: 15)
 
     var right = bounds.width - pad
-    for button in [newButton, browseButton, actionsButton] {
+    for button in [newButton, browseButton, settingsButton, actionsButton] {
       button.frame = NSRect(x: right - 28, y: (bounds.height - 28) / 2, width: 28, height: 28)
       right -= 28 + 6
     }
@@ -402,6 +412,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   var anchor: () -> NSRect? = { nil }
   /// Commands to PanelController ("hide", "palette", "browse", "new", ...).
   var run: (String) -> Void = { _ in }
+  var onSettings: ((NSView) -> Void)?
   /// Focus controls to PanelController ("pause", "resume", "stop", "extend").
   var onFocusAction: (String, Int?) -> Void = { _, _ in }
   /// An outside click asks the controller to collapse.
@@ -474,6 +485,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     content.addSubview(header)
     header.onTab = { [weak self] tab in self?.select(tab: tab, pinned: true) }
     header.run = { [weak self] command in self?.run(command) }
+    header.onSettings = { [weak self] sender in self?.onSettings?(sender) }
     focusScroll.drawsBackground = false
     focusScroll.hasVerticalScroller = true
     focusScroll.autohidesScrollers = true

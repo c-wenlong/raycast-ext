@@ -1596,16 +1596,6 @@ check("socket commands pick each setting",
     && NoteSettings.change(forCommand: "font-comic") == nil)
 check("light and dark force their appearance, system follows", NoteAppearance.system.nsAppearance == nil && NoteAppearance.light.nsAppearance?.name == .aqua && NoteAppearance.dark.nsAppearance?.name == .darkAqua)
 
-let settingRows = NoteSettings.paletteActions(appearance: .dark, font: .serif, attachment: .floating)
-check("the palette lists three appearances, three fonts and three attachments", settingRows.map(\.title) == ["Appearance: System", "Appearance: Light", "Appearance: Dark", "Font: Sans Serif", "Font: Serif", "Font: Mono", "Attach: Floating Window", "Attach: Menu Bar", "Attach: Notch"], "\(settingRows.map(\.title))")
-check("the current choices are checked", settingRows.filter(\.checked).map(\.title) == ["Appearance: Dark", "Font: Serif", "Attach: Floating Window"])
-check("every setting row runs its own command", settingRows.allSatisfy { NoteSettings.change(forCommand: $0.command) != nil })
-check("every setting row has a symbol", settingRows.allSatisfy { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: nil) != nil })
-func found(_ query: String) -> [String] { settingRows.filter { $0.matches(query) }.map(\.title) }
-check("\"theme\" finds the appearances", found("theme") == ["Appearance: System", "Appearance: Light", "Appearance: Dark"], "\(found("theme"))")
-check("\"dark\" and \"light\" find their appearance", found("dark") == ["Appearance: Dark"] && found("light") == ["Appearance: Light"], "\(found("dark")) \(found("light"))")
-check("\"font\" finds the fonts", found("font") == ["Font: Sans Serif", "Font: Serif", "Font: Mono"], "\(found("font"))")
-check("\"serif\" and \"mono\" find their fonts", found("serif") == ["Font: Sans Serif", "Font: Serif"] && found("mono") == ["Font: Mono"] && found("monospace") == ["Font: Mono"], "\(found("serif")) \(found("mono"))")
 check("keys still match by title", PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "x", command: "zoom-in").matches("zoom in"))
 
 // Each typeface: body and headings change, code stays mono, lists keep the grid.
@@ -1699,17 +1689,14 @@ let liveSuite = "notes-theme-live-\(getpid())"
 let liveDefaults = UserDefaults(suiteName: liveSuite)!
 NoteSettings.save(.light, in: liveDefaults)
 let liveSettings = SettingsController(defaults: liveDefaults)
-liveSettings.commandActions = [PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "plus.magnifyingglass", command: "zoom-in")]
-let livePalette = ActionPalette(actions: liveSettings.paletteActions) { _ in }
-liveSettings.palette = livePalette
+let liveCommands = [PaletteAction(title: "Zoom In", keys: "⌘+", symbol: "plus.magnifyingglass", command: "zoom-in")]
+let livePalette = ActionPalette(actions: liveCommands) { _ in }
 livePalette.show(over: win)
-func liveChecked() -> [String] { livePalette.shownRows.filter(\.checked).map(\.title) }
 func liveBadge() -> [CGFloat] { livePalette.badgeColor(atRow: 0)?.components ?? [] }
-check("the open palette starts on the stored choices", liveChecked() == ["Appearance: Light", "Font: Sans Serif", "Attach: Floating Window"], "\(liveChecked())")
 let lightBadge = liveBadge()
 check("the open palette's rows have key badges", !lightBadge.isEmpty)
-check("a font command moves the open palette's checkmark", liveSettings.handle("font-mono") && liveChecked() == ["Appearance: Light", "Font: Mono", "Attach: Floating Window"], "\(liveChecked())")
-check("an appearance command moves it too", liveSettings.handle("appearance-dark") && liveChecked() == ["Appearance: Dark", "Font: Mono", "Attach: Floating Window"], "\(liveChecked())")
+_ = liveSettings.handle("font-mono")
+_ = liveSettings.handle("appearance-dark")
 check("the open palette's key badges change colour", pollUntil { !liveBadge().isEmpty && liveBadge() != lightBadge }, "\(liveBadge())")
 let refreshedBadge = liveBadge()
 livePalette.hide()
@@ -1718,6 +1705,31 @@ check("they match a palette opened in dark", pollUntil { liveBadge() == refreshe
 check("other commands are left to the window", !liveSettings.handle("zoom-in"))
 check("the changes are saved", NoteSettings.appearance(in: liveDefaults) == .dark && NoteSettings.font(in: liveDefaults) == .mono)
 livePalette.hide()
+NSApp.appearance = nil
+Markdown.font = .sans
+let settingsUI = SettingsPopover(settings: liveSettings)
+settingsUI.run = { _ = liveSettings.handle($0) }
+liveSettings.onChange = { settingsUI.refresh() }
+settingsUI.refresh()
+check("settings controls reflect saved choices", settingsUI.appearanceControl.selectedSegment == 2 && settingsUI.fontControl.selectedSegment == 0)
+settingsUI.fontControl.selectedSegment = 1
+settingsUI.fontControl.sendAction(settingsUI.fontControl.action!, to: settingsUI.fontControl.target)
+check("font toggle applies and saves its exclusive choice", Markdown.font == .serif && NoteSettings.font(in: liveDefaults) == .serif && settingsUI.fontControl.selectedSegment == 1)
+_ = liveSettings.handle("appearance-light")
+check("external setting changes refresh the controls", settingsUI.appearanceControl.selectedSegment == 1)
+liveSettings.onAttachment = { _ in false }
+settingsUI.attachmentControl.selectedSegment = 2
+settingsUI.attachmentControl.sendAction(settingsUI.attachmentControl.action!, to: settingsUI.attachmentControl.target)
+check("refused attachment restores the selected option", settingsUI.attachmentControl.selectedSegment == 0)
+liveSettings.onAttachment = { _ in true }
+settingsUI.attachmentControl.selectedSegment = 1
+settingsUI.attachmentControl.sendAction(settingsUI.attachmentControl.action!, to: settingsUI.attachmentControl.target)
+check("attachment toggle saves its choice", NoteSettings.attachment(in: liveDefaults) == .menuBar)
+let fullSettingsWidth = settingsUI.contentView.frame.width
+Markdown.zoom = 0.8
+settingsUI.refresh()
+check("settings follow note zoom", abs(settingsUI.contentView.frame.width - fullSettingsWidth * 0.8) < 0.01)
+Markdown.zoom = 1
 NSApp.appearance = nil
 Markdown.font = .sans
 liveDefaults.removePersistentDomain(forName: liveSuite)
