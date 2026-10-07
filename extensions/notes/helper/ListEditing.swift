@@ -684,6 +684,18 @@ enum ListEditing {
     }
 
     let column = cursor - all[index].range.location
+    if case .task = item.marker, let prefix = listMarkerRange(in: all[index].text),
+      column <= prefix.length
+    {
+      // Enter at a task's content start pushes an empty unchecked
+      // sibling in above it: the line itself, checked state, spacing
+      // and children all stay byte-for-byte.
+      let lineStart = all[index].range.location
+      let inserted = Item(indent: item.indent, marker: item.marker.next, content: "").line + eol
+      return Edit(
+        range: NSRange(location: lineStart, length: 0), replacement: inserted,
+        cursor: lineStart + (inserted as NSString).length + prefix.length)
+    }
     let ns = all[index].text as NSString
     let head = ns.substring(to: min(column, ns.length))
     let tail = ns.substring(from: min(column, ns.length))
@@ -1039,17 +1051,29 @@ enum ListEditing {
   }
 
   /// Backspace with the caret right after a list marker removes the
-  /// marker (nested items step out one level first).
+  /// marker: a task prefix is one unit at any depth, other nested items
+  /// step out one level first.
   static func backspace(in text: String, cursor: Int) -> Edit? {
-    // Every marker ends in a space or tab; skip the line scan otherwise.
+    // Every marker ends in a space or tab; a rendered checkbox with no
+    // separator or body after it ends in "]", so that counts too.
     let ns = text as NSString
-    guard cursor > 0, cursor <= ns.length, [0x20, 0x09].contains(ns.character(at: cursor - 1)) else { return nil }
+    guard cursor > 0, cursor <= ns.length,
+      [0x20, 0x09, 0x5D].contains(ns.character(at: cursor - 1))
+    else { return nil }
     let all = lines(of: text)
     guard let index = lineIndex(of: cursor, in: all),
       let item = parse(line: all[index].text),
-      cursor - all[index].range.location == listMarkerRange(in: all[index].text)?.length,
+      let prefix = listMarkerRange(in: all[index].text),
+      cursor - all[index].range.location == prefix.length,
       !insideFence(text, cursor: all[index].range.location)
     else { return nil }
+
+    if case .task = item.marker {
+      // A task prefix is one unit: indent, bullet, box and spacing come
+      // off in one edit at any depth, leaving the body text.
+      let lineStart = all[index].range.location
+      return Edit(range: NSRange(location: lineStart, length: prefix.length), replacement: "", cursor: lineStart)
+    }
 
     let blockRange = block(around: index, in: all)
     var newLines = all[blockRange].map(\.text)
