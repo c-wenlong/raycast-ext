@@ -1,21 +1,5 @@
 import Foundation
 
-/// What the UI shows for the current session. `nil` means idle.
-struct SessionView: Equatable {
-  var id: Int
-  var goal: String
-  var state: String              // "running", "paused", "ending"
-  var startedAt: Date
-  var plannedEnd: Date           // extended end, if extended
-  var remainingSeconds: Int      // never negative; 0 while ending
-  var pausedSeconds: Int         // total time spent paused so far
-  var calendarTitle: String
-  var extendOptions: [Int]       // seconds, e.g. [300, 600, 900, 1500]
-  /// True for an ad-hoc session: a pause holds `remainingSeconds` and moves
-  /// `plannedEnd` on (Session.swift), so its fill freezes while paused.
-  var pauseStopsClock = false
-}
-
 /// The UI calls back into the session logic through this.
 protocol SessionPresenterDelegate: AnyObject {
   func presenterPause()
@@ -38,12 +22,20 @@ protocol SessionPresenter: AnyObject {
   /// island stays hidden even though the display is still "notch". Only the
   /// notch is affected; the menu bar item, the panel and the end card are not.
   func setNotchHosted(_ hosted: Bool)
+  /// True when this presenter can arm a "pause for N seconds" timer for a
+  /// session the hosting helper paused through the bridge (`pauseFor`).
+  var supportsHostedTimedPause: Bool { get }
+  /// Arms a timed resume for session `sessionId`, already paused via the
+  /// bridge. Called on the main thread after the pause lands.
+  func scheduleHostedPause(sessionId: Int, seconds: Int)
 }
 
-/// UIPresenter implements hosting; presenters that have no notch (tests,
-/// headless) ignore it.
+/// UIPresenter implements hosting and timed pauses; presenters that have
+/// no UI (tests, headless) ignore both.
 extension SessionPresenter {
   func setNotchHosted(_ hosted: Bool) {}
+  var supportsHostedTimedPause: Bool { false }
+  func scheduleHostedPause(sessionId: Int, seconds: Int) {}
 }
 
 /// Used when no UI is attached (tests, headless runs).
@@ -54,10 +46,17 @@ final class NullPresenter: SessionPresenter {
   private(set) var dismissals = 0
   /// Every setNotchHosted value Core sent, in order.
   private(set) var hostedFlags: [Bool] = []
+  /// Tests opt into timed-pause support to exercise the hosted path.
+  var supportsHostedTimedPause = false
+  /// Every scheduleHostedPause(sessionId, seconds) Core sent, in order.
+  private(set) var scheduledPauses: [(sessionId: Int, seconds: Int)] = []
   func update(_ view: SessionView?) { views.append(view) }
   func showEndSheet(_ view: SessionView) { endSheets.append(view) }
   func dismissEndSheet() { dismissals += 1 }
   func setNotchHosted(_ hosted: Bool) { hostedFlags.append(hosted) }
+  func scheduleHostedPause(sessionId: Int, seconds: Int) {
+    scheduledPauses.append((sessionId, seconds))
+  }
 }
 
 /// Anything that can be handed a presenter; FocusCore conforms so the UI can attach without knowing it.

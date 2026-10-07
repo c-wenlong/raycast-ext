@@ -311,9 +311,14 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
     bridge.onActionProblem = { [weak self] message in
       self?.zoomHUD.show(text: message)
     }
-    bridgeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+    // .common keeps the notch lease alive while a native menu tracks the
+    // pointer: eventTracking would starve a default-mode timer for as long
+    // as the menu is open, which outlives the daemon's 3-second TTL.
+    let bridgeTickTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
       self?.bridgeTick()
     }
+    RunLoop.main.add(bridgeTickTimer, forMode: .common)
+    bridgeTimer = bridgeTickTimer
   }
 
   private static let commandActions: [PaletteAction] = [
@@ -538,7 +543,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       host.onResign = { [weak self] in self?.hide() }
       attached = host
       host.windowTitle = panel.title
-      host.update(session: bridge.last.display == "notch" ? bridge.last.session : nil)
+      host.update(session: bridge.last.display == "notch" ? bridge.last.session : nil, actions: bridge.last.actions)
       if value == .menuBar {
         if menuBarItem == nil {
           menuBarItem = MenuBarItem()
@@ -648,7 +653,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       return
     }
     if status.present, status.compatible { exitFallback() }
-    attached?.update(session: status.display == "notch" ? status.session : nil)
+    attached?.update(session: status.display == "notch" ? status.session : nil, actions: status.actions)
   }
 
   /// Once a second: renew the lease while the notch is ours and healthy,

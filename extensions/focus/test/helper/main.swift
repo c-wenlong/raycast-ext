@@ -2673,7 +2673,6 @@ do {
   check("updateSession: an abandoned session still never gets a log event", relaunched.send("pending")["waiting"] == [] && relaunched.fake.creates == 0)
 }
 
-
 // MARK: - Notch bridge: the shared-notch lease
 
 do {
@@ -2767,6 +2766,90 @@ do {
     && panelClaim["display"] == "panel", panelClaim.serialized())
   check("notchAction: refused off the notch display", hosted.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(1), "action": "pause"])["ok"] == false
     && hosted.send("status")["session"]?["state"] == "running")
+}
+
+// MARK: - Notch bridge: additive native controls
+
+do {
+  let clock = Clock(at(9, 0))
+  let h = Harness(config: #"{"countdownDisplay": "notch", "futureKey": {"keep": [1, 2]}}"#, clock: clock)
+  let bridge: [String: JSONValue] = ["version": 1]
+  _ = h.send("startAdhoc", ["goal": "Hosted", "durationSeconds": 1500, "calendarId": "work"])
+  let sessionId = h.send("status")["session"]?["id"]?.intValue ?? 0
+
+  func action(_ name: String, _ fields: [String: JSONValue] = [:]) -> JSONValue {
+    var all: [String: JSONValue] = ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": .string(name)]
+    fields.forEach { all[$0.key] = $0.value }
+    return h.send("notchAction", all)
+  }
+
+  // Replies advertise the controls this daemon accepts: the legacy four
+  // plus edit/cancel/move; pauseFor waits on a UI that can arm it.
+  let advertised = h.send("notchBridge", bridge.merging(["op": "status"]) { _, n in n })["actions"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+  check("bridge: replies advertise the native controls",
+    Set(advertised) == ["pause", "resume", "stop", "extend", "edit", "cancel", "moveToPanel", "moveToMenuBar"],
+    advertised.joined(separator: ","))
+  check("bridge: pauseFor hidden until supported", !advertised.contains("pauseFor"))
+
+  _ = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+
+  // Every validation gate applies to the new verbs before anything moves.
+  check("pauseFor: missing seconds refused", action("pauseFor")["ok"] == false)
+  check("pauseFor: zero refused", action("pauseFor", ["seconds": 0])["ok"] == false)
+  check("pauseFor: over a day refused", action("pauseFor", ["seconds": 86401])["ok"] == false)
+  check("pauseFor: a string refused",
+    h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId), "action": "pauseFor", "seconds": "five"])["ok"] == false)
+  check("pauseFor: unsupported refuses before the pause", action("pauseFor", ["seconds": 60])["ok"] == false
+    && h.send("status")["session"]?["state"] == "running")
+  check("new action: bad version refused", h.send("notchAction", ["version": 2, "owner": "owner-a", "sessionId": .int(sessionId), "action": "edit"])["ok"] == false && h.opened.isEmpty)
+  check("new action: a non-owner refused", h.send("notchAction", ["version": 1, "owner": "owner-b", "sessionId": .int(sessionId), "action": "edit"])["ok"] == false && h.opened.isEmpty)
+  check("new action: a stale session id refused", h.send("notchAction", ["version": 1, "owner": "owner-a", "sessionId": .int(sessionId + 1), "action": "cancel"])["ok"] == false
+    && h.send("status")["session"]?["state"] == "running")
+  clock.now = at(9, 0, 30)
+  check("new action: an expired lease refuses", action("edit")["ok"] == false && h.opened.isEmpty)
+  _ = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+
+  // edit opens the Focus Today command and leaves the session alone.
+  let edit = action("edit")
+  check("notchAction edit: opens Focus Today", edit["ok"] == true
+    && h.opened.last == URL(string: "raycast://extensions/c-wenlong/focus/focusToday")
+    && h.send("status")["session"]?["state"] == "running", "\(h.opened)")
+
+  // pauseFor: the daemon pauses, then arms the presenter's resume timer.
+  h.presenter.supportsHostedTimedPause = true
+  let advertisedNow = h.send("notchBridge", bridge.merging(["op": "status"]) { _, n in n })["actions"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+  check("bridge: pauseFor advertised once supported", advertisedNow.contains("pauseFor"))
+  let timed = action("pauseFor", ["seconds": 60])
+  check("notchAction pauseFor: paused and the timer scheduled", timed["ok"] == true
+    && timed["session"]?["state"] == "paused" && h.presenter.scheduledPauses.count == 1
+    && h.presenter.scheduledPauses.first?.sessionId == sessionId && h.presenter.scheduledPauses.first?.seconds == 60,
+    timed.serialized() + " \(h.presenter.scheduledPauses)")
+  _ = action("resume")
+
+  // move writes only countdownDisplay, drops the claim, keeps the session.
+  let moved = action("moveToMenuBar")
+  check("notchAction move: the display writes and the claim ends", moved["ok"] == true
+    && moved["display"] == "menuBar" && moved["claimed"] == false, moved.serialized())
+  check("notchAction move: the session keeps running", h.send("status")["session"]?["state"] == "running")
+  let writtenConfig = (try? String(contentsOfFile: h.core.config.path, encoding: .utf8)) ?? ""
+  check("notchAction move: only the display key moved",
+    writtenConfig.contains("\"countdownDisplay\" : \"menuBar\"") && writtenConfig.contains("futureKey") && writtenConfig.contains("keep"),
+    writtenConfig)
+  // Reclaiming is refused now: the display is no longer the notch.
+  check("bridge: no claim after the move", h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })["claimed"] == false)
+  _ = action("resume")
+
+  // Actions off the notch stay refused; back on the notch for cancel.
+  check("notchAction: refused once moved off the notch", action("resume")["ok"] == false
+    && h.send("status")["session"]?["state"] == "running")
+  // cancel ends the session: no rating, no note, no end sheet.
+  try! #"{"countdownDisplay": "notch", "futureKey": {"keep": [1, 2]}}"#.write(toFile: h.core.config.path, atomically: true, encoding: .utf8)
+  _ = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
+  let sheetsBefore = h.presenter.endSheets.count
+  let cancelled = action("cancel")
+  check("notchAction cancel: finished, no rating, no end sheet", cancelled["ok"] == true
+    && h.send("status")["session"]?.isNull == true && h.presenter.endSheets.count == sheetsBefore,
+    cancelled.serialized())
 }
 
 print("\(count - failures)/\(count) passed")

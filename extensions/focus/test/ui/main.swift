@@ -897,6 +897,36 @@ ui.update(session(id: 99, state: "running"))
 check("another session drops the timer", ui.timedPause == nil)
 ui.update(session(remaining: 1500, started: -1500))
 
+// A hosted timed pause (the bridge's pauseFor): same timer, same resume,
+// armed only when the session is really paused.
+fake.calls.removeAll()
+ui.update(session(state: "paused", remaining: 1440, started: -1560, paused: 60))
+check("hosted pause support", ui.supportsHostedTimedPause)
+ui.scheduleHostedPause(sessionId: 7, seconds: 60)
+check("hosted pauseFor arms the timer", ui.timedPause?.sessionId == 7, "\(String(describing: ui.timedPause))")
+scheduler.advance(59)
+check("nothing before the hosted minute", fake.calls == [])
+scheduler.advance(1)
+check("hosted pauseFor resumes on time", fake.calls == ["resume"], "\(fake.calls)")
+check("the hosted timer is gone", ui.timedPause == nil)
+
+// A stale scheduled call (another session, or not paused) arms nothing
+// and never cancels a newer session's timer.
+ui.update(session(remaining: 1500, started: -1500))  // back to running id 7
+ui.scheduleHostedPause(sessionId: 7, seconds: 10)
+check("a hosted call while running arms nothing", ui.timedPause == nil, "\(String(describing: ui.timedPause))")
+scheduler.advance(10)
+check("it never resumes", fake.calls == ["resume"], "\(fake.calls)")
+ui.update(session(id: 99, state: "paused", remaining: 200, started: -100, paused: 10))
+ui.scheduleHostedPause(sessionId: 99, seconds: 60)
+ui.scheduleHostedPause(sessionId: 7, seconds: 10)  // stale: id 7 is gone
+check("the stale call leaves the live timer", ui.timedPause?.sessionId == 99, "\(String(describing: ui.timedPause))")
+scheduler.advance(60)
+check("the live timer resumes at its own time", fake.calls == ["resume", "resume"], "\(fake.calls)")
+check("and the timer is done", ui.timedPause == nil)
+ui.update(session(id: 99, remaining: 200, started: -100))
+ui.update(session(remaining: 1500, started: -1500))
+
 // Complete and the "…" menu.
 fake.calls.removeAll()
 floating.completeButton.performClick(nil)

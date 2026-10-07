@@ -47,8 +47,16 @@ final class NotchBridge {
     }
   }
 
-  /// The fields every bridge reply shares.
-  func fields(display: CountdownDisplay, session: JSONValue) -> [String: JSONValue] {
+  /// The actions v1 clients always support; replies advertise these plus
+  /// any extras the daemon can do (`pauseFor`, `edit`, `cancel`,
+  /// `moveToPanel`, `moveToMenuBar`), so an old or headless daemon still
+  /// offers the original controls.
+  static let legacyActions = ["pause", "resume", "stop", "extend"]
+
+  /// The fields every bridge reply shares. `actions` lists the `notchAction`
+  /// verbs this daemon accepts; missing or malformed, the host keeps the
+  /// legacy four.
+  func fields(display: CountdownDisplay, session: JSONValue, actions: [String] = NotchBridge.legacyActions) -> [String: JSONValue] {
     expireIfNeeded(display: display)
     return [
       "bridgeVersion": .int(NotchBridge.version),
@@ -56,13 +64,17 @@ final class NotchBridge {
       "claimed": .bool(hosted(display: display)),
       "ttlSeconds": .int(NotchBridge.ttlSeconds),
       "session": session,
+      "actions": .array(actions.map { .string($0) }),
     ]
   }
 
   /// `notchBridge`: lease bookkeeping, never touches the session itself.
   /// `claimed(owner:)` reports whether the claim moved, so the core can
   /// refresh the UI exactly when hosting changed.
-  func handle(_ request: Request, display: CountdownDisplay, session: JSONValue) throws -> Reply {
+  func handle(
+    _ request: Request, display: CountdownDisplay, session: JSONValue,
+    actions: [String] = NotchBridge.legacyActions
+  ) throws -> Reply {
     try version(request)
     expireIfNeeded(display: display)
     let op = try request.requiredString("op")
@@ -75,7 +87,7 @@ final class NotchBridge {
     default:
       throw FocusError("unknown bridge op: \(op)")
     }
-    return .ok(fields(display: display, session: session))
+    return .ok(fields(display: display, session: session, actions: actions))
   }
 
   /// claim, renew or release. Only the current owner renews or releases;
@@ -104,12 +116,27 @@ final class NotchBridge {
     }
   }
 
-  /// `notchAction`: a session control from the hosting helper. Returns the
-  /// session input to dispatch, or throws before anything mutates: the
-  /// lease must be valid, the display the notch, the session id the current
-  /// one and the action supported.
+  /// What a validated `notchAction` asks the core to do. `session` is an
+  /// ordinary session input; the rest are the additive v1 controls the
+  /// core answers itself (timed pause, edit, cancel, display move).
+  enum Action: Equatable {
+    case session(SessionInput)
+    /// "Pause for N seconds": pause now, resume when the timer fires.
+    case pauseFor(Int)
+    /// Open the Focus Today command (the panel's Edit menu item).
+    case edit
+    /// End the session now: no rating, no note, no end sheet.
+    case cancel
+    /// Move the countdown to another display.
+    case move(CountdownDisplay)
+  }
+
+  /// `notchAction`: a session control from the hosting helper. Returns what
+  /// to do, or throws before anything mutates: the lease must be valid, the
+  /// display the notch, the session id the current one and the action
+  /// supported.
   func action(_ request: Request, display: CountdownDisplay, session: SessionView?, at now: Date) throws
-    -> SessionInput
+    -> Action
   {
     try version(request)
     guard display == .notch else { throw FocusError("countdown display is not the notch") }
@@ -123,12 +150,20 @@ final class NotchBridge {
       throw FocusError("session \(sessionId.map(String.init) ?? "missing") is not the current session")
     }
     switch try request.requiredString("action") {
-    case "pause": return .pause(at: now)
-    case "resume": return .resume(at: now)
-    case "stop": return .stop(at: now)
+    case "pause": return .session(.pause(at: now))
+    case "resume": return .session(.resume(at: now))
+    case "stop": return .session(.stop(at: now))
     case "extend":
       guard let seconds = try request.int("seconds") else { throw FocusError("seconds is required") }
-      return .extend(seconds: seconds, at: now)
+      return .session(.extend(seconds: seconds, at: now))
+    case "pauseFor":
+      guard let seconds = try request.int("seconds") else { throw FocusError("seconds is required") }
+      guard (1...86400).contains(seconds) else { throw FocusError("seconds out of range") }
+      return .pauseFor(seconds)
+    case "edit": return .edit
+    case "cancel": return .cancel
+    case "moveToPanel": return .move(.panel)
+    case "moveToMenuBar": return .move(.menuBar)
     case let other:
       throw FocusError("unknown bridge action: \(other)")
     }

@@ -29,6 +29,8 @@ if ProcessInfo.processInfo.environment["NOTES_ATTACHMENT_TEST_CHILD"] != "1" {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
+// Test daemons close sockets mid-run; SIGPIPE must not kill the harness.
+signal(SIGPIPE, SIG_IGN)
 
 var failures = 0
 var count = 0
@@ -238,6 +240,7 @@ do {
   let scroll = NSScrollView(frame: rootView.bounds)
   let tv = NSTextView(frame: scroll.bounds)
   tv.string = "# Scratch\nbody"
+  tv.allowsUndo = true
   scroll.documentView = tv
   rootView.addSubview(scroll)
   host.attach(root: rootView)
@@ -279,13 +282,192 @@ do {
       && editorMask?.path?.contains(NSPoint(x: editorClip.bounds.maxX - 1, y: 1)) == false
       && editorMask?.path?.contains(NSPoint(x: editorClip.bounds.midX, y: 1)) == true)
 
-
   // Commands through the window: ⌘K, Esc, ⌘W all route.
   var commands: [String] = []
   host.run = { commands.append($0) }
   host.window.onCommand?("hide")
   check("window commands route", commands == ["hide"])
   host.collapse()
+
+  // Hovering a tab switches panes: no click, no pin, no first responder.
+  host.update(session: session)
+  host.expand(tab: .notes, pinned: false)
+  let notesCardHeight = host.window.frame.height
+  let keyBefore = host.window.firstResponder
+  hoverTab(host.header.focusTab, in: host) { pointer = $0 }
+  check("hovering the Focus tab switches to it", host.tab == .focus && !host.pinned)
+  check("hover keeps the first responder", host.window.firstResponder === keyBefore)
+  check("the Focus card is compact", host.window.frame.height < notesCardHeight,
+    "\(host.window.frame.height) vs \(notesCardHeight)")
+  let focusCardHeight = host.window.frame.height
+  hoverTab(host.header.focusTab, in: host) { pointer = $0 }
+  check("re-entering the selected tab is a no-op", host.tab == .focus && host.window.frame.height == focusCardHeight)
+  // A pass-through (in and out inside the dwell) never switches.
+  host.header.notesTab.mouseEntered(with: NSEvent())
+  host.header.notesTab.mouseExited(with: NSEvent())
+  spin(0.2)
+  check("in and out inside the dwell never switches", host.tab == .focus)
+  // A pending switch is cancelled by leaving, and entering the other tab
+  // supersedes it: on Notes, enter Focus (pending), leave Focus, enter
+  // Notes (the current tab), dwell: the pending Focus switch never fires.
+  hoverTab(host.header.notesTab, in: host) { pointer = $0 }
+  check("back on Notes for the supersession case", host.tab == .notes)
+  host.header.focusTab.mouseEntered(with: NSEvent())
+  host.header.focusTab.mouseExited(with: NSEvent())
+  host.header.notesTab.mouseEntered(with: NSEvent())
+  spin(0.2)
+  check("a superseding entry wins the dwell", host.tab == .notes)
+  // The shared top nav does not move: same global x and y while the card
+  // shrinks and grows under it.
+  func headerGlobal() -> NSPoint {
+    let p = host.header.convert(host.header.bounds.origin, to: nil)
+    return NSPoint(x: p.x + host.window.frame.minX, y: p.y + host.window.frame.minY)
+  }
+  hoverTab(host.header.focusTab, in: host) { pointer = $0 }
+  let headerBefore = headerGlobal()
+  hoverTab(host.header.notesTab, in: host) { pointer = $0 }
+  check("hovering the Notes tab switches back", host.tab == .notes && !host.pinned
+    && host.window.frame.height == notesCardHeight && headerGlobal() == headerBefore,
+    "\(host.window.frame.height) \(headerGlobal())")
+  hoverTab(host.header.focusTab, in: host) { pointer = $0 }
+  check("the header keeps its global spot after a compact resize", headerGlobal() == headerBefore)
+  hoverTab(host.header.notesTab, in: host) { pointer = $0 }
+
+  // Hidden tabs never switch on hover.
+  host.update(session: nil)
+  dwellOn(host.header.focusTab)
+  check("no tabs, no hover switch", host.tab == .notes)
+  host.update(session: session)
+  host.collapse()
+  dwellOn(host.header.focusTab)
+  check("a collapsed card ignores tab hover", host.tab == .notes && !host.expanded)
+
+  // A pinned card stays pinned through hover switches.
+  host.expand(tab: .notes, pinned: true)
+  hoverTab(host.header.focusTab, in: host) { pointer = $0 }
+  check("hover preserves an existing pin", host.pinned && host.tab == .focus)
+  hoverTab(host.header.notesTab, in: host) { pointer = $0 }
+
+  // Editor continuity across hover switches, on a real long document the
+  // user has scrolled and selected inside.
+  let longScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 600))
+  longScroll.hasVerticalScroller = true
+  longScroll.drawsBackground = false
+  let longTV = NoteTextView(frame: longScroll.bounds)
+  longTV.textContainer?.replaceLayoutManager(TaskBoxLayoutManager())
+  longTV.isRichText = false
+  longTV.font = Markdown.baseFont
+  longTV.allowsUndo = true
+  longTV.minSize = .zero
+  longTV.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+  longTV.isVerticallyResizable = true
+  longTV.textContainer?.widthTracksTextView = true
+  longTV.textContainer?.containerSize = NSSize(width: 524, height: CGFloat.greatestFiniteMagnitude)
+  longScroll.documentView = longTV
+  let longRoot = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 600))
+  longRoot.addSubview(longScroll)
+  longScroll.autoresizingMask = [.width, .height]
+  let longHost = AttachedPanel(mode: .notch)
+  longHost.screen = { screen }
+  var longPointer = NSPoint(x: -1000, y: -1000)
+  longHost.pointerLocation = { longPointer }
+  longHost.attach(root: longRoot)
+  longTV.string = (1...100).map { "line \($0) of the long note body" }.joined(separator: "\n")
+  longTV.textStorage.map { Markdown.apply(to: $0) }
+  longHost.update(session: session)
+  longHost.expand(tab: .notes, pinned: false)
+  // Let the real layout settle (the document size at this width) before
+  // the fixture scrolls and captures its expectations.
+  longHost.window.display()
+  longTV.layoutManager?.ensureLayout(for: longTV.textContainer!)
+  spin(0.05)
+  longTV.setSelectedRange(NSRange(location: 1200, length: 25))
+  longScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, longTV.frame.height - 250)))
+  longScroll.reflectScrolledClipView(longScroll.contentView)
+  let savedFrame = longRoot.frame
+  let savedOrigin = longScroll.contentView.bounds.origin
+  let savedSel = longTV.selectedRange()
+  check("the long editor is really scrolled", savedOrigin.y > 10, "\(savedOrigin)")
+  hoverTab(longHost.header.focusTab, in: longHost) { longPointer = $0 }
+  check("Focus tab up: editor frozen", longHost.tab == .focus
+    && longRoot.frame == savedFrame && longScroll.contentView.bounds.origin == savedOrigin
+    && longTV.selectedRange() == savedSel && longRoot.autoresizingMask == [],
+    "\(longRoot.frame) \(longScroll.contentView.bounds.origin)")
+  // Snapshot updates while on the Focus tab must not touch the editor.
+  longHost.update(session: session)
+  check("a Focus tick leaves the frozen editor alone",
+    longRoot.frame == savedFrame && longScroll.contentView.bounds.origin == savedOrigin
+    && longTV.selectedRange() == savedSel)
+  for _ in 0..<3 {
+    hoverTab(longHost.header.notesTab, in: longHost) { longPointer = $0 }
+    hoverTab(longHost.header.focusTab, in: longHost) { longPointer = $0 }
+  }
+  hoverTab(longHost.header.notesTab, in: longHost) { longPointer = $0 }
+  check("hover round trips keep the editor exactly", longHost.editorRoot === longRoot
+    && longRoot.frame == savedFrame && longScroll.contentView.bounds.origin == savedOrigin
+    && longTV.selectedRange() == savedSel && longTV.string.hasPrefix("line 1"),
+    "\(longScroll.contentView.bounds.origin) \(longTV.selectedRange())")
+  longTV.insertText("x", replacementRange: longTV.selectedRange())
+  hoverTab(longHost.header.focusTab, in: longHost) { longPointer = $0 }
+  hoverTab(longHost.header.notesTab, in: longHost) { longPointer = $0 }
+  longTV.undoManager?.undo()
+  check("undo still works after hover switches",
+    longTV.string == (1...100).map { "line \($0) of the long note body" }.joined(separator: "\n"), longTV.string)
+
+  // Collapse while on Focus, then reopen on Notes: the editor must never
+  // see the compact Focus frame. The undo above legitimately moved the
+  // viewport to its edit, so the expectations are captured fresh here.
+  let postEditFrame = longRoot.frame
+  let postEditOrigin = longScroll.contentView.bounds.origin
+  let postEditSel = longTV.selectedRange()
+  hoverTab(longHost.header.focusTab, in: longHost) { longPointer = $0 }
+  check("still on Focus after the pin-free switch", longHost.tab == .focus)
+  longHost.collapse()
+  longHost.expand(tab: .notes, pinned: true)
+  check("collapse on Focus, reopen on Notes: editor exact",
+    longHost.editorRoot === longRoot && longRoot.frame == postEditFrame
+      && longScroll.contentView.bounds.origin == postEditOrigin
+      && longTV.selectedRange() == postEditSel && !longRoot.isHidden,
+    "\(longRoot.frame) \(longScroll.contentView.bounds.origin)")
+
+  // Same shape via the session vanishing while collapsed on Focus.
+  hoverTab(longHost.header.focusTab, in: longHost) { longPointer = $0 }
+  longHost.collapse()
+  longHost.update(session: nil)
+  longHost.update(session: session)
+  longHost.expand(tab: .notes, pinned: true)
+  check("session lost while collapsed: editor still exact",
+    longHost.editorRoot === longRoot && longRoot.frame == postEditFrame
+      && longScroll.contentView.bounds.origin == postEditOrigin
+      && longTV.selectedRange() == postEditSel,
+    "\(longRoot.frame) \(longScroll.contentView.bounds.origin)")
+  longHost.collapse()
+  longHost.window.orderOut(nil)
+
+  // A display too short for the compact card: the viewport shrinks, the
+  // document keeps its full 98 and every control scrolls into reach.
+  let tinyScreen = NotesNotchScreen(
+    frame: NSRect(x: 0, y: 0, width: 1512, height: 150),
+    notch: NSRect(x: 656, y: 118, width: 200, height: 32), barHeight: 32)
+  let tinyHost = AttachedPanel(mode: .notch)
+  tinyHost.screen = { tinyScreen }
+  tinyHost.update(session: session)
+  tinyHost.expand(tab: .focus, pinned: true)
+  let tinyScroll = tinyHost.focusView.enclosingScrollView!
+  tinyScroll.layoutSubtreeIfNeeded()
+  let tinyViewport = tinyScroll.contentView.bounds.height
+  check("tiny display: viewport under 98, document full", tinyViewport < FocusTabView.naturalHeight
+    && tinyHost.focusView.frame.height == FocusTabView.naturalHeight,
+    "\(tinyViewport) \(tinyHost.focusView.frame.height)")
+  tinyScroll.contentView.scroll(to: NSPoint(x: 0, y: FocusTabView.naturalHeight - tinyViewport))
+  tinyScroll.reflectScrolledClipView(tinyScroll.contentView)
+  check("tiny display: the upper pill scrolls into reach",
+    tinyScroll.documentVisibleRect.maxY >= tinyHost.focusView.frame.maxY - 1)
+  tinyScroll.contentView.scroll(to: .zero)
+  tinyScroll.reflectScrolledClipView(tinyScroll.contentView)
+  check("tiny display: the lower controls scroll into reach", tinyScroll.documentVisibleRect.minY <= 8)
+  tinyHost.collapse()
+  tinyHost.window.orderOut(nil)
 
   // Losing the session returns the Focus tab to Notes.
   host.update(session: session)
@@ -470,6 +652,516 @@ do {
 
 runBridgeReviewRegressions()
 runAttachmentReviewRegressions()
+
+/// Performs a menu item's action the way NSMenu does (honouring isEnabled).
+func perform(_ item: NSMenuItem) {
+  guard item.isEnabled, item.submenu == nil, let action = item.action else { return }
+  _ = item.target?.perform(action, with: item)
+}
+
+/// A tab's centre in screen coordinates, for the fake pointer.
+func tabCenter(_ host: AttachedPanel, _ button: ChromeButton) -> NSPoint {
+  let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+  return host.window.convertToScreen(NSRect(origin: center, size: .zero)).origin
+}
+
+/// Moves the fake pointer onto a tab (via `movePointer`, so the caller's
+/// pointer location updates), then lets the 0.15 s dwell fire.
+func hoverTab(_ button: ChromeButton, in host: AttachedPanel, movePointer: (NSPoint) -> Void) {
+  movePointer(tabCenter(host, button))
+  host.pointerMoved(inside: true)
+  button.mouseEntered(with: NSEvent())
+  spin(0.2)
+}
+
+/// Enters a hidden or unreachable tab: the pointer stays put, the dwell
+/// fires anyway, and nothing should happen.
+func dwellOn(_ button: ChromeButton) {
+  button.mouseEntered(with: NSEvent())
+  spin(0.2)
+}
+
+// MARK: - The hosted Focus card's native controls
+
+do {
+  let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+  var fakeNow = t0
+  func makeSession(state: String, pauseStopsClock: Bool, remaining: Int = 1500, started: String = "2026-10-07T00:00:00Z", end: String = "2026-10-07T00:25:00Z", extend: [Int] = [300, 600, 900, 1500]) -> FocusSession {
+    FocusSession(json: .object([
+      "id": 3, "goal": "Deep Work", "state": .string(state), "startedAt": .string(started),
+      "plannedEnd": .string(end), "remainingSeconds": .int(remaining), "pausedSeconds": 60,
+      "calendarTitle": "", "extendOptions": .array(extend.map { .int($0) }), "pauseStopsClock": .bool(pauseStopsClock),
+    ]), at: fakeNow)!
+  }
+
+  // remaining(): a paused calendar session keeps ticking to its planned
+  // end; only an ad-hoc pause freezes.
+  let calPaused = makeSession(state: "paused", pauseStopsClock: false)
+  let adPaused = makeSession(state: "paused", pauseStopsClock: true)
+  check("paused calendar session still ticks", calPaused.remaining(at: fakeNow.addingTimeInterval(30)) == 1470)
+  check("paused ad-hoc session freezes", adPaused.remaining(at: fakeNow.addingTimeInterval(30)) == 1500)
+  let running = makeSession(state: "running", pauseStopsClock: false)
+  check("a clock skew never adds time", running.remaining(at: fakeNow.addingTimeInterval(-30)) == 1500)
+
+  // The hosted card: the real pill, slab and controls, top-aligned.
+  let card = FocusTabView(frame: NSRect(x: 0, y: 0, width: 560, height: FocusTabView.naturalHeight))
+  var sent: [(String, Int?)] = []
+  card.onAction = { action, seconds in sent.append((action, seconds)) }
+  var menus: [NSMenu] = []
+  card.popUpMenu = { menu, _ in menus.append(menu) }
+  var engaged = 0
+  card.onEngage = { engaged += 1 }
+  card.now = { fakeNow }
+  let allCaps: Set<String> = ["pause", "resume", "stop", "extend", "pauseFor", "edit", "cancel", "moveToPanel", "moveToMenuBar"]
+  card.update(session: running, actions: allCaps, at: fakeNow)
+  card.layout()
+  check("the Focus card uses the shared pill", card.subviews.contains { $0 is CountdownPillView })
+  check("the card body is compact", FocusTabView.naturalHeight == 98)
+
+  // Pause on a running session opens the original choices; each timed item
+  // sends pauseFor seconds; Indefinitely sends the legacy pause.
+  card.pauseButton.performClick(nil)
+  check("Pause pops the original menu", menus.count == 1 && engaged == 1)
+  let pauseTitles = menus.last!.items.map { $0.isSeparatorItem ? "---" : $0.title }
+  check("the pause choices are the panel's",
+    pauseTitles == ["1 minute", "2 minutes", "5 minutes", "10 minutes", "---", "Indefinitely"], "\(pauseTitles)")
+  perform(menus.last!.items[2])
+  check("5 minutes sends pauseFor 300", sent.last?.0 == "pauseFor" && sent.last?.1 == 300, "\(sent)")
+  perform(menus.last!.items[5])
+  check("Indefinitely sends the legacy pause", sent.last?.0 == "pause" && sent.last?.1 == nil)
+
+  // Paused: the button is Resume and dispatches resume, no menu.
+  card.update(session: calPaused, actions: allCaps, at: fakeNow)
+  card.pauseButton.performClick(nil)
+  check("paused: Resume dispatches and no menu", sent.last?.0 == "resume" && menus.count == 1, "\(sent) \(menus.count)")
+  card.update(session: running, actions: allCaps, at: fakeNow)
+
+  // Complete and the … menu.
+  card.completeButton.performClick(nil)
+  check("Complete dispatches stop", sent.last?.0 == "stop")
+  card.moreButton.performClick(nil)
+  check("More pops its menu and engages", menus.count == 2 && engaged == 2)
+  let more = menus.last!
+  let moreTitles = more.items.map { $0.isSeparatorItem ? "---" : $0.title }
+  check("the more menu is the panel's",
+    moreTitles == ["Edit", "Cancel", "---", "Move to Floating Panel", "Move to Menu Bar", "---", "Extend"], "\(moreTitles)")
+  let extendItem = more.items.last!
+  check("Extend carries the live options",
+    extendItem.submenu?.items.map(\.title) == ["+5 min", "+10 min", "+15 min", "+25 min"]
+      && extendItem.submenu?.items.map(\.tag) == [300, 600, 900, 1500],
+    "\(extendItem.submenu?.items ?? [])")
+  perform(more.items[0])
+  check("Edit dispatches", sent.last?.0 == "edit")
+  perform(more.items[1])
+  check("Cancel dispatches", sent.last?.0 == "cancel")
+  perform(more.items[3])
+  check("Move to Floating Panel dispatches", sent.last?.0 == "moveToPanel")
+  perform(more.items[4])
+  check("Move to Menu Bar dispatches", sent.last?.0 == "moveToMenuBar")
+  perform(extendItem.submenu!.items[0])
+  check("Extend dispatches its seconds", sent.last?.0 == "extend" && sent.last?.1 == 300)
+
+  // Capability gating: an old daemon advertises nothing new; legacy verbs
+  // stay live, extras stay disabled and never dispatch.
+  card.update(session: running, actions: [], at: fakeNow)
+  card.pauseButton.performClick(nil)
+  let oldPause = menus.last!
+  check("old daemon: timed pause items disabled, Indefinitely live",
+    oldPause.items.filter { !$0.isSeparatorItem && $0.tag > 0 }.allSatisfy { !$0.isEnabled }
+      && oldPause.items.last?.isEnabled == true)
+  sent.removeAll()
+  perform(oldPause.items[0])
+  check("a disabled pause choice never dispatches", sent.isEmpty)
+  perform(oldPause.items.last!)
+  check("Indefinitely still dispatches", sent.last?.0 == "pause")
+  card.moreButton.performClick(nil)
+  let oldMore = menus.last!
+  check("old daemon: new items disabled", !oldMore.items[0].isEnabled && !oldMore.items[1].isEnabled
+    && !oldMore.items[3].isEnabled && !oldMore.items[4].isEnabled && oldMore.items.last?.isEnabled == true)
+  sent.removeAll()
+  perform(oldMore.items[0])
+  perform(oldMore.items[3])
+  check("disabled items never dispatch", sent.isEmpty)
+
+  // A menu outlives the session it was built for: every item is bound to
+  // that session's id and re-checks its capability, so a stale click
+  // reaches neither the card nor the bridge.
+  let id3 = running
+  let id4 = FocusSession(json: .object([
+    "id": 4, "goal": "Other", "state": "running", "startedAt": "2026-10-07T00:00:00Z",
+    "plannedEnd": "2026-10-07T00:25:00Z", "remainingSeconds": 1500, "pausedSeconds": 0,
+    "calendarTitle": "", "extendOptions": .array([300, 600, 900, 1500].map { .int($0) }),
+    "pauseStopsClock": false,
+  ]), at: fakeNow)!
+
+  // Through a real host so the bridge callback path is covered too.
+  let staleHost = AttachedPanel(mode: .notch)
+  var bridged: [(String, Int?)] = []
+  staleHost.onFocusAction = { action, seconds in bridged.append((action, seconds)) }
+  staleHost.focusView.now = { fakeNow }
+  staleHost.focusView.popUpMenu = { menu, _ in menus.append(menu) }
+  staleHost.update(session: id3, actions: allCaps)
+  staleHost.focusView.pauseButton.performClick(nil)
+  staleHost.focusView.moreButton.performClick(nil)
+  let stalePause = menus[menus.count - 2]
+  let staleMore = menus[menus.count - 1]
+  staleHost.update(session: id4, actions: allCaps)
+  for item in stalePause.items + staleMore.items + (staleMore.items.last?.submenu?.items ?? []) {
+    perform(item)
+  }
+  check("stale menus never dispatch after the session changed", bridged.isEmpty, "\(bridged)")
+  // Same id, capability revoked while the menu is open: still refused.
+  staleHost.update(session: id4, actions: [])
+  staleHost.focusView.pauseButton.performClick(nil)
+  staleHost.focusView.moreButton.performClick(nil)
+  let capPause = menus[menus.count - 2]
+  let capMore = menus[menus.count - 1]
+  staleHost.update(session: id4, actions: allCaps)
+  for item in capMore.items { perform(item) }
+  check("a menu built without capabilities never dispatches extras", bridged.isEmpty, "\(bridged)")
+  for item in capPause.items.filter({ !$0.isSeparatorItem }) { perform(item) }
+  check("legacy verbs still dispatch from a revoked menu", bridged.last?.0 == "pause", "\(bridged)")
+  bridged.removeAll()
+  // Session gone entirely: nothing acts.
+  staleHost.update(session: id4, actions: allCaps)
+  staleHost.focusView.moreButton.performClick(nil)
+  let liveMore = menus.last!
+  staleHost.update(session: nil, actions: allCaps)
+  for item in liveMore.items { perform(item) }
+  check("a menu outliving the session never dispatches", bridged.isEmpty)
+  // A menu built for the live session still works.
+  staleHost.update(session: id4, actions: allCaps)
+  staleHost.focusView.moreButton.performClick(nil)
+  perform(menus.last!.items[0])
+  check("a fresh menu for the current session dispatches", bridged.last?.0 == "edit", "\(bridged)")
+  bridged.removeAll()
+  // Capability withdrawn mid-menu, same session id: new verbs refuse.
+  staleHost.focusView.moreButton.performClick(nil)
+  let revMore = menus.last!
+  staleHost.update(session: id4, actions: [])
+  for item in revMore.items { perform(item) }
+  check("a capability removed while open refuses the new verbs", bridged.isEmpty, "\(bridged)")
+
+  // A session ending stops the sweep and disables the controls.
+  let deadCard = FocusTabView(frame: NSRect(x: 0, y: 0, width: 560, height: FocusTabView.naturalHeight))
+  deadCard.now = { fakeNow }
+  deadCard.update(session: running, actions: allCaps, at: fakeNow)
+  deadCard.setActive(true)
+  check("sweep runs while active", deadCard.sweepRunning)
+  deadCard.update(session: nil, actions: [], at: fakeNow)
+  check("a nil session stops the sweep and disables controls",
+    !deadCard.sweepRunning && !deadCard.pauseButton.isEnabled
+      && !deadCard.completeButton.isEnabled && !deadCard.moreButton.isEnabled)
+  // A card moved off its window stops too.
+  let win = NSWindow()
+  let winCard = FocusTabView(frame: NSRect(x: 0, y: 0, width: 560, height: FocusTabView.naturalHeight))
+  win.contentView = winCard
+  winCard.now = { fakeNow }
+  winCard.update(session: running, actions: allCaps, at: fakeNow)
+  winCard.setActive(true)
+  check("attached card sweeps", winCard.sweepRunning)
+  winCard.removeFromSuperview()
+  check("detaching the card stops the sweep", !winCard.sweepRunning)
+  win.orderOut(nil)
+
+  // Ordered-out host: the active predicate reads window visibility.
+  staleHost.screen = {
+    NotesNotchScreen(frame: NSRect(x: 0, y: 0, width: 1512, height: 982),
+      notch: NSRect(x: 656, y: 950, width: 200, height: 32), barHeight: 32)
+  }
+  staleHost.update(session: running, actions: allCaps)
+  staleHost.expand(tab: .focus, pinned: true)
+  staleHost.updateChrome()
+  check("expanded Focus tab sweeps while visible", staleHost.focusView.sweepRunning || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+  staleHost.window.orderOut(nil)
+  staleHost.updateChrome()
+  check("an ordered-out host stops the sweep", !staleHost.focusView.sweepRunning)
+  staleHost.collapse()
+
+  // advanceSweep interpolates only: the model's clock is anchored on
+  // snapshots, never re-anchored by the 30 Hz path, even when the session's
+  // absolute timestamps disagree with its whole-second remaining.
+  let skewed = FocusSession(json: .object([
+    "id": 3, "goal": "Deep Work", "state": "running", "startedAt": "2026-10-07T00:00:00Z",
+    "plannedEnd": "2026-10-07T00:26:40Z", "remainingSeconds": 1500, "pausedSeconds": 0,
+    "calendarTitle": "", "extendOptions": .array([300, 600].map { .int($0) }),
+    "pauseStopsClock": false,
+  ]), at: fakeNow)!
+  let skewCard = FocusTabView(frame: NSRect(x: 0, y: 0, width: 560, height: FocusTabView.naturalHeight))
+  skewCard.now = { fakeNow }
+  skewCard.update(session: skewed, actions: allCaps, at: fakeNow)
+  var refSweep = PanelSweep()
+  refSweep.update(FocusTabView.adapter(skewed, at: fakeNow), at: fakeNow)
+  let anchorBefore = skewCard.sweep.clock
+  fakeNow += 0.75
+  skewCard.advanceSweep()
+  check("advanceSweep keeps the snapshot's clock", skewCard.sweep.clock == anchorBefore)
+  check("advanceSweep follows the original sweep math",
+    abs(skewCard.sweep.progress(at: fakeNow) - refSweep.progress(at: fakeNow)) < 0.0001)
+  fakeNow += 1.25
+  skewCard.update(session: skewed, actions: allCaps, at: fakeNow)
+  refSweep.update(FocusTabView.adapter(skewed, at: fakeNow), at: fakeNow)
+  check("a snapshot update still behaves like the model",
+    abs(skewCard.sweep.progress(at: fakeNow) - refSweep.progress(at: fakeNow)) < 0.0001)
+
+  // The sweep follows the shared PanelSweep across pause and extend.
+  var reference = PanelSweep()
+  card.update(session: running, actions: allCaps, at: fakeNow)
+  reference.update(FocusTabView.adapter(running, at: fakeNow), at: fakeNow)
+  check("sweep matches the original math running",
+    abs(card.sweep.progress(at: fakeNow) - reference.progress(at: fakeNow)) < 0.001)
+  fakeNow += 5
+  card.update(session: adPaused, actions: allCaps, at: fakeNow)
+  reference.update(FocusTabView.adapter(adPaused, at: fakeNow), at: fakeNow)
+  check("sweep matches during an ad-hoc pause",
+    abs(card.sweep.progress(at: fakeNow) - reference.progress(at: fakeNow)) < 0.001)
+  card.setActive(true)
+  check("the sweep timer stops on a frozen session", !card.sweepRunning)
+  let extended = makeSession(state: "running", pauseStopsClock: true, remaining: 1800, end: "2026-10-07T00:30:00Z")
+  card.update(session: extended, actions: allCaps, at: fakeNow)
+  reference.update(FocusTabView.adapter(extended, at: fakeNow), at: fakeNow)
+  check("sweep matches after an extend",
+    abs(card.sweep.progress(at: fakeNow) - reference.progress(at: fakeNow)) < 0.001)
+  check("the sweep timer runs while active and moving", card.sweepRunning)
+  card.setActive(false)
+  check("the sweep timer stops when hidden", !card.sweepRunning)
+
+  // Widths at both ends: pill and controls inside the card, none overlap.
+  for width: CGFloat in [280, 560] {
+    let narrow = FocusTabView(frame: NSRect(x: 0, y: 0, width: width, height: FocusTabView.naturalHeight))
+    narrow.update(session: running, actions: allCaps, at: fakeNow)
+    narrow.layout()
+    let controls = narrow.subviews.filter { $0 is CountdownPillView || $0 is PanelButton }
+    check("controls inside a \(Int(width))-wide card", controls.allSatisfy { narrow.bounds.contains($0.frame) },
+      controls.map { "\($0.frame)" }.joined(separator: "; "))
+  }
+}
+
+
+// MARK: - The bridge lease survives menu tracking
+
+/// A tiny fake daemon on a private socket: real JSON lines, a real 3 s
+/// lease, renewals after expiry refused, every request recorded under a
+/// lock and read back through a snapshot.
+final class MenuTrackingDaemon {
+  struct Stats {
+    var claims = 0
+    var renews = 0
+    var refused = 0
+    var acceptedActionNames: [String] = []
+  }
+
+  private let listener: Int32
+  private let lock = NSLock()
+  private var stop = false
+  private var leaseUntil = Date.distantPast
+  private var stats = Stats()
+  private let served = DispatchSemaphore(value: 0)
+  private(set) var bound = false
+
+  init(path: String) {
+    listener = socket(AF_UNIX, SOCK_STREAM, 0)
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8CString)
+    if bytes.count <= 104 {
+      withUnsafeMutablePointer(to: &address.sun_path) { field in
+        field.withMemoryRebound(to: CChar.self, capacity: 104) { destination in
+          for (offset, byte) in bytes.enumerated() { destination[offset] = byte }
+        }
+      }
+      let rc = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+          Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+      }
+      bound = rc == 0 && listen(listener, 4) == 0
+    }
+  }
+
+  func statsSnapshot() -> Stats {
+    lock.lock(); defer { lock.unlock() }
+    return stats
+  }
+
+  private func snapshot() -> String {
+    "{\"id\":3,\"goal\":\"Deep Work\",\"state\":\"running\","
+      + "\"startedAt\":\"2026-10-07T00:00:00Z\",\"plannedEnd\":\"2026-10-07T00:25:00Z\","
+      + "\"remainingSeconds\":1500,\"pausedSeconds\":0,\"calendarTitle\":\"\","
+      + "\"extendOptions\":[300,600,900,1500],\"pauseStopsClock\":true}"
+  }
+
+  func serve() {
+    defer { served.signal() }
+    guard bound else { return }
+    while true {
+      let client = accept(listener, nil, nil)
+      lock.lock()
+      let stopping = stop
+      lock.unlock()
+      if stopping { if client >= 0 { Darwin.close(client) }; break }
+      if client < 0 { continue }
+      handle(client)
+    }
+  }
+
+  private func handle(_ client: Int32) {
+    defer { Darwin.close(client) }
+    var timeout = timeval(tv_sec: 2, tv_usec: 0)
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    var yes: Int32 = 1
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+    // Newline-framed: read until the request's line ends, bounded.
+    var bytes = [UInt8]()
+    var chunk = [UInt8](repeating: 0, count: 4096)
+    let deadline = Date().addingTimeInterval(2)
+    while !bytes.contains(0x0A), bytes.count < 4096, Date() < deadline {
+      let n = chunk.withUnsafeMutableBytes { recv(client, $0.baseAddress, min($0.count, 4096 - bytes.count), 0) }
+      guard n > 0 else { return }
+      bytes.append(contentsOf: chunk.prefix(n))
+    }
+    guard let newline = bytes.firstIndex(of: 0x0A) else { return }
+    let line = String(decoding: bytes.prefix(newline), as: UTF8.self)
+    guard let request = try? BridgeValue.parse(line) else { return }
+
+    let now = Date()
+    lock.lock()
+    let live = leaseUntil >= now
+    let claimed: Bool
+    let body: String
+    if request["cmd"]?.stringValue == "notchBridge" {
+      switch request["op"]?.stringValue {
+      case "claim":
+        stats.claims += 1
+        leaseUntil = now.addingTimeInterval(3)
+        claimed = true
+        body = replyBody(claimed: true)
+      case "renew":
+        if live {
+          leaseUntil = now.addingTimeInterval(3)
+          stats.renews += 1
+          claimed = true
+          body = replyBody(claimed: true)
+        } else {
+          stats.refused += 1
+          claimed = false
+          body = "{\"ok\":false,\"bridgeVersion\":1,\"error\":\"no live claim for this owner\"}"
+        }
+      case "release":
+        leaseUntil = .distantPast
+        claimed = false
+        body = "{\"ok\":true,\"bridgeVersion\":1,\"display\":\"notch\",\"claimed\":false,\"ttlSeconds\":3,\"session\":null}"
+      default:
+        claimed = live
+        body = replyBody(claimed: claimed)
+      }
+    } else if request["cmd"]?.stringValue == "notchAction" {
+      if live {
+        stats.acceptedActionNames.append(request["action"]?.stringValue ?? "")
+        claimed = true
+        body = replyBody(claimed: true)
+      } else {
+        stats.refused += 1
+        claimed = false
+        body = "{\"ok\":false,\"bridgeVersion\":1,\"error\":\"no live claim for this owner\"}"
+      }
+    } else {
+      claimed = live
+      body = replyBody(claimed: claimed)
+    }
+    lock.unlock()
+    (body + "\n").withCString { pointer in
+      var offset = 0
+      let size = strlen(pointer)
+      while offset < size {
+        let sent = send(client, pointer + offset, size - offset, 0)
+        guard sent > 0 else { return }
+        offset += sent
+      }
+    }
+  }
+
+  private func replyBody(claimed: Bool) -> String {
+    "{\"ok\":true,\"bridgeVersion\":1,\"display\":\"notch\",\"claimed\":\(claimed),\"ttlSeconds\":3,"
+      + "\"session\":\(snapshot()),\"actions\":[\"pause\",\"resume\",\"stop\",\"extend\"]}"
+  }
+
+  /// Stops the server: the accept loop exits once the listener is gone.
+  /// Returns false if it did not exit inside the bound.
+  @discardableResult
+  func closeOwned() -> Bool {
+    lock.lock(); stop = true; lock.unlock()
+    Darwin.shutdown(listener, SHUT_RDWR)
+    Darwin.close(listener)
+    return served.wait(timeout: .now() + 2) == .success
+  }
+}
+
+do {
+  // Synthetic menu tracking only: the run loop is driven in eventTracking
+  // mode (the same mode a tracked NSMenu uses), never the real pointer.
+  let focusDir = ProcessInfo.processInfo.environment["FOCUS_DIR"]!
+  try! FileManager.default.createDirectory(atPath: focusDir, withIntermediateDirectories: true)
+  let socketPath = focusDir + "/focus.sock"
+  try? FileManager.default.removeItem(atPath: socketPath)
+  let daemon = MenuTrackingDaemon(path: socketPath)
+  check("the menu-tracking fake daemon binds", daemon.bound)
+  DispatchQueue.global().async { daemon.serve() }
+
+  let controller = PanelController(initialCommand: "show")
+  controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+  controller.handle("attachment-notch")
+  let mirror = Mirror(reflecting: controller)
+  let leaseTimer = mirror.children.first { $0.label == "bridgeTimer" }!.value as! Timer
+  check("the bridge timer is scheduled", leaseTimer.isValid)
+  let bridge = mirror.children.first { $0.label == "bridge" }!.value as! FocusBridgeClient
+  var actionProblems: [String] = []
+  bridge.onActionProblem = { actionProblems.append($0) }
+
+  // Establish the claim on the ordinary run loop first.
+  let claimedDeadline = Date().addingTimeInterval(2)
+  while !bridge.last.claimed && Date() < claimedDeadline { spin(0.05) }
+  check("the controller claimed the notch lease", bridge.last.claimed)
+
+  // Now only eventTracking turns, as inside a tracked native menu, for
+  // longer than the daemon's 3 s TTL.
+  let before = daemon.statsSnapshot()
+  let trackingDeadline = Date().addingTimeInterval(4.2)
+  while Date() < trackingDeadline {
+    RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.2))
+  }
+  spin(0.2)
+  let after = daemon.statsSnapshot()
+  check("the lease kept renewing inside event tracking", after.renews - before.renews >= 3,
+    "\(after.renews - before.renews) renews in 4.2 s")
+  check("no renewal arrived after expiry, no reclaim",
+    after.refused == before.refused && after.claims == before.claims,
+    "refused \(after.refused - before.refused) claims \(after.claims - before.claims)")
+  check("the controller still reports the claim", controller.debugStatus().contains("\"claimed\": true"))
+
+  // A control still reaches the daemon after the tracked interval.
+  if let session = bridge.last.session {
+    let actionsBefore = after.acceptedActionNames.count
+    bridge.action("pause", session: session)
+    let actionDeadline = Date().addingTimeInterval(2)
+    while daemon.statsSnapshot().acceptedActionNames.count == actionsBefore && Date() < actionDeadline {
+      spin(0.05)
+    }
+    let final = daemon.statsSnapshot()
+    check("a pause action succeeded after menu tracking",
+      final.acceptedActionNames.last == "pause" && actionProblems.isEmpty && final.refused == before.refused,
+      "\(final.acceptedActionNames) \(actionProblems)")
+  } else {
+    check("a pause action succeeded after menu tracking", false, "session lost with the lease")
+  }
+
+  bridge.release()
+  leaseTimer.invalidate()
+  controller.handle("attachment-floating")
+  controller.handle("hide")
+  check("the fake daemon exited", daemon.closeOwned())
+}
 
 print("\(count - failures)/\(count) passed")
 if failures == 0 { print("all passed") }

@@ -522,24 +522,57 @@ final class FocusCore: SessionPresenterDelegate {
     ])
   }
 
+  /// The `notchAction` verbs this daemon accepts: the legacy four plus the
+  /// additive controls; `pauseFor` only when the presenter can arm a timed
+  /// pause (the real UI can, a headless one cannot).
+  private func advertisedActions() -> [String] {
+    var actions = NotchBridge.legacyActions + ["edit", "cancel", "moveToPanel", "moveToMenuBar"]
+    if storedPresenter.supportsHostedTimedPause { actions.append("pauseFor") }
+    return actions
+  }
+
   /// `{cmd:"notchBridge"}`: status, claim, renew, release. A change in
   /// claim ownership refreshes the UI so the native island follows it.
   private func notchBridge(_ request: Request) throws -> Reply {
     let claimedBefore = bridge.claim != nil
     let reply = try bridge.handle(
-      request, display: config.load().countdownDisplay, session: bridgeSessionJSON())
+      request, display: config.load().countdownDisplay, session: bridgeSessionJSON(),
+      actions: advertisedActions())
     if (bridge.claim != nil) != claimedBefore { publish(.keep) }
     return reply
   }
 
-  /// `{cmd:"notchAction"}`: pause, resume, stop (Complete) or extend from
-  /// the hosting helper, validated against the lease and the current
-  /// session before it reaches `change`, so stale controls never mutate.
+  /// `{cmd:"notchAction"}`: pause, resume, stop (Complete), extend and the
+  /// additive controls (timed pause, edit, cancel, move) from the hosting
+  /// helper, validated against the lease and the current session before
+  /// they reach `change`, so stale controls never mutate.
   private func notchAction(_ request: Request) throws -> Reply {
-    let input = try bridge.action(
+    let action = try bridge.action(
       request, display: config.load().countdownDisplay, session: sessionView(), at: now)
-    _ = try change(input)
-    return .ok(bridge.fields(display: config.load().countdownDisplay, session: bridgeSessionJSON()))
+    switch action {
+    case .session(let input):
+      _ = try change(input)
+    case .pauseFor(let seconds):
+      guard storedPresenter.supportsHostedTimedPause else {
+        throw FocusError("timed pause is not supported by this daemon's UI")
+      }
+      _ = try change(.pause(at: now))
+      if let id = sessionView()?.id {
+        let presenter = storedPresenter
+        runOnMain { presenter.scheduleHostedPause(sessionId: id, seconds: seconds) }
+      }
+    case .edit:
+      runOnMain { self.openURL(URL(string: "raycast://extensions/c-wenlong/focus/focusToday")!) }
+    case .cancel:
+      _ = try finishSession(rating: nil, note: nil, reason: nil)
+    case .move(let target):
+      try config.update(["countdownDisplay": .string(target.rawValue)])
+      // Leaving the notch drops the lease at once; only the display key moves.
+      if target != .notch { _ = bridge.expireIfNeeded(display: target) }
+      publish(.keep)
+    }
+    return .ok(bridge.fields(
+      display: config.load().countdownDisplay, session: bridgeSessionJSON(), actions: advertisedActions()))
   }
 
   // MARK: Calendars and today

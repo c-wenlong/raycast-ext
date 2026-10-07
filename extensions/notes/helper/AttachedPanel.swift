@@ -151,8 +151,8 @@ final class AttachedHeaderView: NSView {
   private let titleLabel = NSTextField(labelWithString: "Notes")
   private let clockLabel = NSTextField(labelWithString: "")
   private let goalLabel = NSTextField(labelWithString: "")
-  private let focusTab = ChromeButton(glyph: "Focus", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Focus tab")
-  private let notesTab = ChromeButton(glyph: "Notes", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Notes tab")
+  let focusTab = ChromeButton(glyph: "Focus", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Focus tab")
+  let notesTab = ChromeButton(glyph: "Notes", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Notes tab")
   private let actionsButton = ChromeButton(symbol: "command", pointSize: 13, label: "Actions (⌘K)")
   var settingsAnchor: NSView { settingsButton }
   private let settingsButton = ChromeButton(symbol: "gearshape", pointSize: 13, label: "Settings")
@@ -187,9 +187,9 @@ final class AttachedHeaderView: NSView {
     }
     focusTab.target = self
     focusTab.action = #selector(focusClicked)
-    focusTab.onHover = { [weak self] entered in self?.tabHover(.focus, entered: entered) }
     notesTab.target = self
     notesTab.action = #selector(notesClicked)
+    focusTab.onHover = { [weak self] entered in self?.tabHover(.focus, entered: entered) }
     notesTab.onHover = { [weak self] entered in self?.tabHover(.notes, entered: entered) }
 
     tabUnderline.wantsLayer = true
@@ -229,7 +229,7 @@ final class AttachedHeaderView: NSView {
   /// still closes on its own; only a click pins it.
   private func tabHover(_ hovered: Tab, entered: Bool) {
     if entered {
-      guard hovered != tab else { return }
+      guard tabsVisible, hovered != tab else { return }
       pendingHoverTab = hovered
       NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(commitHoverTab), object: nil)
       perform(#selector(commitHoverTab), with: nil, afterDelay: 0.15)
@@ -241,7 +241,7 @@ final class AttachedHeaderView: NSView {
   }
 
   @objc private func commitHoverTab() {
-    guard let hovered = pendingHoverTab else { return }
+    guard tabsVisible, let hovered = pendingHoverTab else { return }
     pendingHoverTab = nil
     if hovered != tab { onTab?(hovered, false) }
   }
@@ -324,100 +324,302 @@ final class AttachedHeaderView: NSView {
   }
 }
 
-/// The Focus tab's content: the goal and a big countdown over the
-/// session's controls. Everything dispatches through the bridge; the
-/// daemon keeps the rules.
+/// The Focus tab's content: the original countdown card shared with the
+/// floating panel and the native island: the glass pill with its green
+/// sweep over the dark green slab, then Pause/Resume, Complete and More.
+/// Session state stays with the daemon; every control dispatches through
+/// the bridge. The card is always dark, whatever the Notes theme.
 final class FocusTabView: NSView {
-  private let clockLabel = NSTextField(labelWithString: "")
-  private let goalLabel = NSTextField(labelWithString: "")
-  private let pauseButton = ChromeButton(glyph: "Pause", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Pause")
-  private let completeButton = ChromeButton(glyph: "Complete", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Complete")
-  private var extendButtons: [ChromeButton] = []
+  /// gap 8 + pill 40 + gap 8 + controls 28 + bottom 14.
+  static let naturalHeight: CGFloat = 98
+
+  /// The dark green slab under the pill (the card's black background
+  /// cannot show the window server's glass, so the tint is painted).
+  private final class SlabView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+      GlassStyle.tint.setFill()
+      NSBezierPath(roundedRect: bounds, xRadius: PanelStyle.radius, yRadius: PanelStyle.radius).fill()
+    }
+  }
+
+  private let slab = SlabView()
+  private let pill = CountdownPillView()
+  private let edges = GlassEdgesView()
+  let pauseButton = PanelButton(title: "Pause", symbol: "pause", label: "Pause")
+  let completeButton = PanelButton(title: "Complete", symbol: "checkmark", label: "Complete")
+  let moreButton = PanelButton(title: "", symbol: "ellipsis", label: "More")
+  private(set) var sweep = PanelSweep()
+  private var sweepTimer: Timer?
+  /// The host's word on visibility: the card is expanded, on the Focus
+  /// tab and showing.
+  private var active = false
+  /// True while the 30 Hz sweep timer runs (tests).
+  var sweepRunning: Bool { sweepTimer != nil }
+  /// The verbs the daemon advertised in its last reply.
+  private(set) var actions: Set<String> = []
+  private(set) var session: FocusSession?
+
+  /// Bridge verbs ("pause", "resume", "stop", "extend", "pauseFor",
+  /// "edit", "cancel", "moveToPanel", "moveToMenuBar") and seconds.
   var onAction: ((String, Int?) -> Void)?
+  /// A menu is opening: pin the card so leaving the hover cannot close it.
+  var onEngage: () -> Void = {}
+  /// Tests record the menu instead of popping it.
+  var popUpMenu: (NSMenu, NSView) -> Void = { menu, view in
+    menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.maxY + 4), in: view)
+  }
+  var now: () -> Date = Date.init
 
   override init(frame: NSRect) {
     super.init(frame: frame)
-    clockLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 34, weight: .semibold)
-    clockLabel.textColor = NotchMetrics.focusGreen
-    clockLabel.alignment = .center
-    goalLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
-    goalLabel.textColor = .labelColor
-    goalLabel.alignment = .center
-    goalLabel.lineBreakMode = .byTruncatingTail
-    for button in [pauseButton, completeButton] {
-      button.cornerRadius = 8
-      button.fill = ChromeColors.pill
-      button.stroke = ChromeColors.border
-      button.target = self
-      button.action = #selector(control(_:))
-      addSubview(button)
-    }
-    pauseButton.tag = 0
-    completeButton.tag = 1
-    let extendTitle = NSTextField(labelWithString: "Extend")
-    extendTitle.font = NSFont.systemFont(ofSize: 11)
-    extendTitle.textColor = .tertiaryLabelColor
-    extendTitle.frame = NSRect(x: 0, y: 8, width: bounds.width, height: 14)
-    extendTitle.alignment = .center
-    extendTitle.autoresizingMask = [.width, .maxYMargin]
-    addSubview(extendTitle)
-    addSubview(clockLabel)
-    addSubview(goalLabel)
+    // The Focus card is always dark, even under a light Notes theme.
+    appearance = NSAppearance(named: .darkAqua)
+    for view in [slab, pill, edges, pauseButton, completeButton, moreButton] { addSubview(view) }
+    pill.wantsLayer = true
+    pill.setAccessibilityElement(true)
+    pill.setAccessibilityRole(.staticText)
+    edges.radius = PanelStyle.radius
+    pauseButton.target = self
+    pauseButton.action = #selector(pauseClicked)
+    completeButton.target = self
+    completeButton.action = #selector(completeClicked)
+    moreButton.target = self
+    moreButton.action = #selector(moreClicked)
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-  @objc private func control(_ sender: ChromeButton) {
-    if sender === pauseButton { onAction?("togglePause", nil) }
-    if sender === completeButton { onAction?("stop", nil) }
+  deinit { sweepTimer?.invalidate() }
+
+  /// Detached from its window: the sweep stops (the host re-arms it).
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window == nil { setActive(false) }
   }
 
-  @objc private func extend(_ sender: ChromeButton) { onAction?("extend", sender.tag) }
+  override func draw(_ dirtyRect: NSRect) {
+    // The Focus card's fixed dark canvas (independent of the Notes theme).
+    NSColor(white: 0.10, alpha: 1).setFill()
+    dirtyRect.fill()
+  }
 
-  /// Rebuilds the labels and the Extend row for `session`.
-  func update(session: FocusSession?, at now: Date) {
-    guard let session else { return }
-    clockLabel.stringValue = session.clock(at: now)
-    clockLabel.textColor = session.state == "paused" ? NotchMetrics.clockPaused : NotchMetrics.focusGreen
-    goalLabel.stringValue = session.goal
-    pauseButton.attributedTitle = NSAttributedString(
-      string: session.state == "paused" ? "Resume" : "Pause",
-      attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
-    extendButtons.forEach { $0.removeFromSuperview() }
-    extendButtons = session.extendOptions.map { seconds in
-      let button = ChromeButton(
-        glyph: "+\(seconds / 60)", font: NSFont.systemFont(ofSize: 11, weight: .medium),
-        label: "Extend by \(seconds / 60) minutes")
-      button.cornerRadius = 6
-      button.fill = ChromeColors.pill
-      button.tag = seconds
-      button.target = self
-      button.action = #selector(extend(_:))
-      addSubview(button)
-      return button
+  /// A button width for `title`, matching PanelButton.preferredWidth.
+  private static func width(ofTitle title: String) -> CGFloat {
+    let text = NSAttributedString(string: title, attributes: [.font: PanelStyle.buttonFont])
+    return ceil(text.size().width) + PanelButton.iconGap + PanelButton.iconSide + PanelButton.padding * 2
+  }
+
+  /// The Pause slot is as wide as the wider of Pause and Resume, so the
+  /// row does not shift when the state flips.
+  static var pauseSlot: CGFloat { max(width(ofTitle: "Pause"), width(ofTitle: "Resume")) }
+
+  /// The controls row's width.
+  private var rowWidth: CGFloat {
+    Self.pauseSlot + PanelStyle.buttonGap + completeButton.preferredWidth
+      + PanelStyle.buttonGap + moreButton.preferredWidth
+  }
+
+  /// The daemon's session as a SessionView for the shared model views.
+  static func adapter(_ session: FocusSession, at now: Date) -> SessionView {
+    SessionView(
+      id: session.id, goal: session.goal, state: session.state,
+      startedAt: session.startedAt, plannedEnd: session.plannedEnd,
+      remainingSeconds: session.remaining(at: now), pausedSeconds: session.pausedSeconds,
+      calendarTitle: session.calendarTitle, extendOptions: session.extendOptions,
+      pauseStopsClock: session.pauseStopsClock)
+  }
+
+  /// The bridge's latest session and capabilities: the pill content and
+  /// the sweep update; buttons keep their identity (never rebuilt).
+  func update(session: FocusSession?, actions: Set<String>, at now: Date) {
+    self.session = session
+    self.actions = actions
+    for button in [pauseButton, completeButton, moreButton] { button.isEnabled = session != nil }
+    guard let session else {
+      sweep = PanelSweep()
+      pill.content = PanelContent(clock: "00:00", paused: false, progress: 0, goal: "")
+      pill.progress = 0
+      pill.setAccessibilityLabel("")
+      updateSweepTimer()
+      needsLayout = true
+      return
     }
+    let view = Self.adapter(session, at: now)
+    sweep.update(view, at: now)
+    var content = PanelContent(view)
+    content.progress = sweep.progress(at: now)
+    pill.content = content
+    pill.progress = content.progress
+    pill.setAccessibilityLabel(content.titleText)
+    let paused = session.state == "paused"
+    pauseButton.set(
+      title: paused ? "Resume" : "Pause", symbol: paused ? "play" : "pause",
+      label: paused ? "Resume" : "Pause")
+    updateSweepTimer()
     needsLayout = true
   }
 
   override func layout() {
     super.layout()
-    // Keep the controls above the fixed Extend row on short screens.
-    let controlY = max(68, bounds.height * 0.58 - 78)
-    let goalY = controlY + 48
-    let clockY = goalY + 30
-    clockLabel.sizeToFit()
-    clockLabel.frame = NSRect(
-      x: (bounds.width - clockLabel.frame.width) / 2, y: clockY, width: clockLabel.frame.width, height: clockLabel.frame.height)
-    goalLabel.frame = NSRect(x: 24, y: goalY, width: bounds.width - 48, height: 18)
-    let rowWidth: CGFloat = 96 * 2 + 10
-    pauseButton.frame = NSRect(x: (bounds.width - rowWidth) / 2, y: controlY, width: 96, height: 30)
-    completeButton.frame = NSRect(x: (bounds.width - rowWidth) / 2 + 106, y: controlY, width: 96, height: 30)
-    var x = (bounds.width - CGFloat(extendButtons.count) * 44 - CGFloat(max(0, extendButtons.count - 1)) * 6) / 2
-    for button in extendButtons {
-      button.frame = NSRect(x: x, y: 34, width: 44, height: 24)
-      x += 50
+    let pad: CGFloat = 16
+    // Pill and controls sit at the top, left-aligned as one compact card
+    // even when the scroll view is taller (a tiny screen scrolls).
+    let width = min(max(rowWidth, 300), max(0, bounds.width - pad * 2))
+    let x = (bounds.width - width) / 2
+    let pillY = bounds.height - CGFloat(8) - PanelStyle.idleHeight
+    slab.frame = NSRect(x: x, y: pillY, width: width, height: PanelStyle.idleHeight)
+    pill.frame = slab.frame
+    edges.frame = slab.frame
+    let rowY = pillY - CGFloat(8) - PanelStyle.buttonHeight
+    var bx = x + (width - rowWidth) / 2
+    pauseButton.frame = NSRect(x: bx, y: rowY, width: Self.pauseSlot, height: PanelStyle.buttonHeight)
+    bx += Self.pauseSlot + PanelStyle.buttonGap
+    completeButton.frame = NSRect(x: bx, y: rowY, width: completeButton.preferredWidth, height: PanelStyle.buttonHeight)
+    bx += completeButton.preferredWidth + PanelStyle.buttonGap
+    moreButton.frame = NSRect(x: bx, y: rowY, width: moreButton.preferredWidth, height: PanelStyle.buttonHeight)
+  }
+
+  // MARK: Sweep
+
+  /// The host calls this when the tab's visibility or selection changes:
+  /// the sweep interpolates at 30 Hz only while the card can be seen and
+  /// the fill is actually moving. Under Reduce Motion the timer stays off
+  /// and the 1 Hz updates still refresh the digits and fill.
+  func setActive(_ active: Bool) {
+    self.active = active
+    updateSweepTimer()
+  }
+
+  private func updateSweepTimer() {
+    let wantsTimer = active && session != nil && sweep.moving
+      && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    if !wantsTimer {
+      sweepTimer?.invalidate()
+      sweepTimer = nil
+      return
+    }
+    if sweepTimer == nil {
+      let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.advanceSweep() }
+      RunLoop.main.add(timer, forMode: .common)
+      sweepTimer = timer
     }
   }
+
+  /// Moves the pill's fill on with the shared sweep math. Snapshots only
+  /// come from `update`, like the native panel: this just advances to now.
+  func advanceSweep() {
+    guard session != nil else { sweepTimer?.invalidate(); sweepTimer = nil; return }
+    let t = now()
+    pill.progress = sweep.progress(at: t)
+    if !sweep.moving { sweepTimer?.invalidate(); sweepTimer = nil }
+  }
+
+  // MARK: Controls
+
+  @objc private func pauseClicked() {
+    guard let session, session.state == "running" || session.state == "paused" else { return }
+    if session.state == "paused" {
+      onAction?("resume", nil)
+    } else {
+      onEngage()
+      popUpMenu(pauseMenu(), pauseButton)
+    }
+  }
+
+  @objc private func completeClicked() {
+    guard session != nil else { return }
+    onAction?("stop", nil)
+  }
+
+  @objc private func moreClicked() {
+    guard session != nil else { return }
+    onEngage()
+    popUpMenu(moreMenu(), moreButton)
+  }
+
+  /// The panel's Pause choices: a timed pause per item (pauseFor), a
+  /// separator, then Indefinitely (the legacy pause verb). Timed items are
+  /// disabled when the daemon does not advertise them.
+  private func pauseMenu() -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    menu.appearance = NSAppearance(named: .darkAqua)
+    let timedOK = actions.contains("pauseFor")
+    for (title, seconds) in CountdownModel.pauseChoices {
+      if seconds < 0 {
+        menu.addItem(.separator())
+        continue
+      }
+      let item = NSMenuItem(title: title, action: #selector(pauseChosen(_:)), keyEquivalent: "")
+      item.target = self
+      item.tag = seconds
+      item.representedObject = session?.id
+      item.isEnabled = seconds == 0 || timedOK
+      menu.addItem(item)
+    }
+    return menu
+  }
+
+  /// A menu item only acts for the session the menu was built for, and a
+  /// new verb only while the daemon still advertises it.
+  private func allowed(_ sender: NSMenuItem, verb: String? = nil) -> Bool {
+    guard sender.isEnabled, (sender.representedObject as? Int) == session?.id else { return false }
+    return verb.map { actions.contains($0) } ?? true
+  }
+
+  @objc private func pauseChosen(_ sender: NSMenuItem) {
+    guard session?.state == "running" else { return }
+    if sender.tag > 0 {
+      guard allowed(sender, verb: "pauseFor") else { return }
+      onAction?("pauseFor", sender.tag)
+    } else {
+      guard allowed(sender) else { return }
+      onAction?("pause", nil)
+    }
+  }
+
+  /// The panel's "…" menu: Edit and Cancel, the display moves, then the
+  /// Extend submenu from the live session's options. New verbs are
+  /// disabled when the daemon did not advertise them.
+  private func moreMenu() -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    menu.appearance = NSAppearance(named: .darkAqua)
+    func add(_ title: String, _ symbol: String, _ sel: Selector, _ verb: String, legacy: Bool = false) {
+      let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+      item.target = self
+      item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+      item.representedObject = session?.id
+      item.isEnabled = legacy || actions.contains(verb)
+      menu.addItem(item)
+    }
+    add("Edit", "pencil", #selector(editChosen(_:)), "edit")
+    add("Cancel", "xmark.circle", #selector(cancelChosen(_:)), "cancel")
+    menu.addItem(.separator())
+    add("Move to Floating Panel", "macwindow", #selector(movePanelChosen(_:)), "moveToPanel")
+    add("Move to Menu Bar", "menubar.rectangle", #selector(moveMenuBarChosen(_:)), "moveToMenuBar")
+    menu.addItem(.separator())
+    let extend = NSMenuItem(title: "Extend", action: nil, keyEquivalent: "")
+    let submenu = NSMenu()
+    submenu.autoenablesItems = false
+    for seconds in session?.extendOptions ?? [] {
+      let item = NSMenuItem(title: "+\(seconds / 60) min", action: #selector(extendChosen(_:)), keyEquivalent: "")
+      item.target = self
+      item.tag = seconds
+      item.representedObject = session?.id
+      submenu.addItem(item)
+    }
+    extend.submenu = submenu
+    extend.isEnabled = !(session?.extendOptions.isEmpty ?? true)
+    menu.addItem(extend)
+    return menu
+  }
+
+  @objc private func editChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "edit") { onAction?("edit", nil) } }
+  @objc private func cancelChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "cancel") { onAction?("cancel", nil) } }
+  @objc private func movePanelChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "moveToPanel") { onAction?("moveToPanel", nil) } }
+  @objc private func moveMenuBarChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "moveToMenuBar") { onAction?("moveToMenuBar", nil) } }
+  @objc private func extendChosen(_ sender: NSMenuItem) { if allowed(sender) { onAction?("extend", sender.tag) } }
 }
 
 // MARK: - The panel
@@ -459,6 +661,8 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   /// Click, tab pick or shortcut pins the card open; hover does not.
   private(set) var pinned = false
   private(set) var session: FocusSession?
+  /// The verbs the daemon advertised; the Focus tab enables extras by it.
+  private(set) var actions: Set<String> = []
   private var expansion: CGFloat = 0
   private var stripRect = NSRect.zero
   private var cardRect = NSRect.zero
@@ -515,7 +719,15 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     clip.addSubview(content)
 
     content.addSubview(header)
-    header.onTab = { [weak self] tab, pinned in self?.select(tab: tab, pinned: pinned) }
+    header.onTab = { [weak self] tab, pinned in
+      guard let self else { return }
+      // Hover selection only acts on a live session while expanded; the
+      // click path keeps its pin and works collapsed as the fallback.
+      if !pinned {
+        guard self.expanded, self.session != nil else { return }
+      }
+      self.select(tab: tab, pinned: pinned)
+    }
     header.run = { [weak self] command in self?.run(command) }
     header.onSettings = { [weak self] sender in self?.onSettings?(sender) }
     focusScroll.drawsBackground = false
@@ -524,6 +736,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     focusScroll.documentView = focusView
     content.addSubview(focusScroll)
     focusView.onAction = { [weak self] action, seconds in self?.focusAction(action, seconds: seconds) }
+    focusView.onEngage = { [weak self] in self?.pinned = true }
 
     if mode == .menuBar {
       // The card under the status item: a plain rounded dark panel.
@@ -551,6 +764,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
 
   /// Stop pending host animations from laying out an editor that moved away.
   func detachEditor() {
+    focusView.setActive(false)
     editorRoot?.removeFromSuperview()
     editorRoot = nil
   }
@@ -564,16 +778,24 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     header.frame = NSRect(
       x: 0, y: content.bounds.height - AttachedHeaderView.height, width: content.bounds.width,
       height: AttachedHeaderView.height)
-    editorRoot?.frame = editorRect
-    editorRoot?.autoresizingMask = [.width, .height]
     focusScroll.frame = editorRect
     // Keep the compact controls usable even when the screen leaves less
     // room than their minimum layout; only Focus scrolls, not the card.
     focusView.frame = NSRect(x: 0, y: 0, width: focusScroll.contentSize.width,
-      height: max(194, editorRect.height))
+      height: max(FocusTabView.naturalHeight, editorRect.height))
     focusView.autoresizingMask = [.width]
-    editorRoot?.isHidden = tab == .focus
+    if tab == .focus {
+      // Hidden and off autoresizing: the host can resize without the
+      // editor's frame, scroll position or selection moving at all.
+      editorRoot?.isHidden = true
+      editorRoot?.autoresizingMask = []
+    } else {
+      editorRoot?.frame = editorRect
+      editorRoot?.autoresizingMask = [.width, .height]
+      editorRoot?.isHidden = false
+    }
     focusScroll.isHidden = tab != .focus || session == nil
+    focusView.setActive(expanded && tab == .focus && !focusScroll.isHidden && window.isVisible)
   }
 
   // MARK: Session
@@ -581,9 +803,10 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   /// The bridge's latest session: drives the strip clock, the tabs, the
   /// header readout and the Focus tab. Losing the session returns the
   /// Focus tab to Notes.
-  func update(session: FocusSession?) {
+  func update(session: FocusSession?, actions: Set<String> = []) {
     let hadSession = self.session != nil
     self.session = session
+    self.actions = actions
     if session == nil, hadSession, tab == .focus { select(tab: .notes, pinned: pinned) }
     updateChrome()
   }
@@ -593,7 +816,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     let now = self.now()
     strip.clockText = session?.clock(at: now)
     strip.paused = session?.state == "paused"
-    focusView.update(session: session, at: now)
+    focusView.update(session: session, actions: actions, at: now)
     let shared = mode == .notch && session != nil
     header.update(
       tabs: shared, title: windowTitle, clock: shared ? session?.clock(at: now) : nil,
@@ -614,9 +837,19 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     let visible = NSScreen.screens.first(where: { NSRect(origin: $0.frame.origin, size: $0.frame.size) == screen.frame })?.visibleFrame
       ?? screen.frame.insetBy(dx: 0, dy: screen.barHeight)
     // Halve the full expanded island, including its menu bar band.
+    let width = min(Self.contentSize.width, visible.width - 8)
+    if tab == .focus {
+      // The Focus card is compact: header plus the countdown's natural
+      // height (the card's own height includes the menu bar band), never
+      // taller than the screen leaves. A shorter screen still fits the
+      // card; its Focus body scrolls.
+      let natural = AttachedHeaderView.height + FocusTabView.naturalHeight - screen.barHeight
+      let height = min(natural, visible.height - 8 - screen.barHeight)
+      return NSSize(width: width, height: max(8, height))
+    }
+    // Halve the full expanded island, including its menu bar band.
     let fullHeight = min(Self.contentSize.height + AttachedHeaderView.height, visible.height - 8)
     let height = (fullHeight - screen.barHeight) / 2
-    let width = min(Self.contentSize.width, visible.width - 8)
     return NSSize(width: width, height: height)
   }
 
@@ -655,7 +888,9 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   /// Lays the menu bar card under the status item.
   private func relayoutMenuBar() {
     guard let anchor = anchor() ?? topAnchor() else { return }
-    let size = Self.contentSize
+    let size = NSSize(
+      width: Self.contentSize.width,
+      height: tab == .focus ? AttachedHeaderView.height + FocusTabView.naturalHeight : Self.contentSize.height)
     var frame = NSRect(x: anchor.midX - size.width / 2, y: anchor.minY - size.height, width: size.width, height: size.height)
     if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: anchor.midX, y: anchor.midY)) }) ?? NSScreen.main {
       let visible = screen.visibleFrame
@@ -700,6 +935,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     exitTask = nil
     pinned = false
     pointerInside = false
+    focusView.setActive(false)
     guard expanded else { return }
     expanded = false
     if mode == .notch {
@@ -769,8 +1005,19 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   func select(tab requested: AttachedHeaderView.Tab, pinned: Bool) {
     let tab = requested == .focus && session == nil ? .notes : requested
     self.pinned = self.pinned || pinned
+    guard tab != self.tab else { header.set(tab: tab); return }
+    // The editor freezes before the host resizes, and unfreezes only after
+    // the host is back at the Notes size, so the hidden shrink never moves
+    // its frame, scroll position, caret or undo.
+    if tab == .focus {
+      editorRoot?.isHidden = true
+      editorRoot?.autoresizingMask = []
+    }
     self.tab = tab
     header.set(tab: tab)
+    // Relayout even collapsed: the card's geometry tracks the tab, so a
+    // later expand must not hand the editor the stale compact frame first.
+    if mode == .notch { relayout() } else { relayoutMenuBar() }
     layoutContent()
   }
 

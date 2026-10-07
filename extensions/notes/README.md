@@ -30,8 +30,15 @@ notch card uses a compact half-height layout. Hover opens it temporarily;
 clicking or using the shortcut keeps it open. `Esc` and `⌘W` collapse it.
 
 When Focus uses the notch, its timer and controls share the card with Notes.
-If the running Focus helper is too old to share safely, Notes keeps the editor
-visible in a floating window and returns it to the notch after Focus updates.
+The card shows Focus and Notes tabs: hovering a tab switches panes (no click
+needed), and the Focus tab is the original countdown card: the glass pill
+with its green sweep, Pause/Resume, Complete and a More menu with Edit,
+Cancel, moves and Extend, all dispatched through the daemon. The Focus card
+is compact (the countdown's natural height); Notes keeps the half-height
+editor. If the running Focus helper is too old to share safely, Notes keeps
+the editor visible in a floating window and returns it to the notch after
+Focus updates; an older daemon still offers Pause, Resume, Complete and
+Extend, with the newer controls dimmed.
 
 Inside the window:
 

@@ -46,26 +46,31 @@ func runAttachmentReviewRegressions() {
   shortHost.expand(tab: .focus, pinned: true)
   let scroll = shortHost.focusView.enclosingScrollView!
   scroll.layoutSubtreeIfNeeded()
-  check("a 150-point Focus viewport keeps the full controls scrollable",
-    scroll.frame.height == 150 && shortHost.focusView.frame.height == 194
-      && scroll.hasVerticalScroller)
-  scroll.contentView.scroll(to: NSPoint(x: 0, y: shortHost.focusView.frame.height - 150))
+  check("a 98-point Focus viewport keeps the full controls scrollable",
+    scroll.frame.height == 98 && shortHost.focusView.frame.height == FocusTabView.naturalHeight
+      && scroll.hasVerticalScroller,
+    "scroll \(scroll.frame.height) document \(shortHost.focusView.frame.height)")
+  scroll.contentView.scroll(to: NSPoint(x: 0, y: shortHost.focusView.frame.height - 98))
   scroll.reflectScrolledClipView(scroll.contentView)
   check("the short Focus viewport can reach its upper controls",
     scroll.documentVisibleRect.maxY >= shortHost.focusView.frame.maxY - 1)
   shortHost.collapse()
   shortHost.window.orderOut(nil)
 
-  for height: CGFloat in [194, 600] {
+  for height: CGFloat in [98, 150, 600] {
     let focus = FocusTabView(frame: NSRect(x: 0, y: 0, width: 560, height: height))
-    focus.update(session: session, at: Date())
+    focus.update(session: session, actions: [], at: Date())
     focus.layout()
     let views = focus.subviews.filter { !$0.isHidden }
     check("Focus controls fit in a \(Int(height))-point body",
       views.allSatisfy { focus.bounds.contains($0.frame) })
-    let overlaps = views.enumerated().contains { index, view in
-      views.dropFirst(index + 1).contains { view.frame.intersects($0.frame) }
+    // The slab and edges underlay the pill; only the interactive controls
+    // (pill, Pause, Complete, More) must not overlap each other.
+    let controls = views.filter { $0 is CountdownPillView || $0 is PanelButton }
+    let overlaps = controls.enumerated().contains { index, view in
+      controls.dropFirst(index + 1).contains { view.frame.intersects($0.frame) }
     }
-    check("Focus controls do not overlap in a \(Int(height))-point body", !overlaps)
+    check("Focus controls do not overlap in a \(Int(height))-point body", !overlaps,
+      controls.map { "\(type(of: $0))\($0.frame)" }.joined(separator: "; "))
   }
 }

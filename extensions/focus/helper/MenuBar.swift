@@ -73,15 +73,7 @@ final class MenuBar: NSObject {
   // MARK: Text
 
   /// "mm:ss" under an hour, "h:mm:ss" from an hour up; never negative.
-  static func clock(_ seconds: Int) -> String {
-    let total = max(0, seconds)
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    let rest = total % 60
-    return hours > 0
-      ? String(format: "%d:%02d:%02d", hours, minutes, rest)
-      : String(format: "%02d:%02d", minutes, rest)
-  }
+  static func clock(_ seconds: Int) -> String { CountdownModel.clock(seconds) }
 
   static let goalLimit = 24
 
