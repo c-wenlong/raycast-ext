@@ -64,6 +64,81 @@ do {
 }
 check("enter on plain text is nil", ListEditing.newline(in: "hello", cursor: 5) == nil)
 
+// Enter at a task's content start inserts an empty unchecked sibling
+// above instead of appending below, keeping the line byte-for-byte.
+
+do {
+  let edit = ListEditing.newline(in: "- [ ] Task", cursor: 6)!
+  check("task start insertion is zero-length", edit.range == NSRange(location: 0, length: 0), "\(edit.range)")
+  let (text, cursor) = applied("- [ ] Task", edit)!
+  check("enter at task start pushes above", text == "- [ ] \n- [ ] Task", text)
+  check("caret lands at original content start", cursor == 13, "\(cursor)")
+}
+do {
+  let (text, cursor) = applied("- [X] Task", ListEditing.newline(in: "- [X] Task", cursor: 6))!
+  check("enter at checked task start keeps the mark", text == "- [ ] \n- [X] Task" && cursor == 13, text)
+}
+do {
+  let (text, cursor) = applied("- [x] Task", ListEditing.newline(in: "- [x] Task", cursor: 3))!
+  check("enter inside the marker also pushes above", text == "- [ ] \n- [x] Task" && cursor == 13, "\(text) \(cursor)")
+}
+do {
+  let src = "- [ ] one\n  - [x] child"
+  let (text, cursor) = applied(src, ListEditing.newline(in: src, cursor: 17))!
+  check("enter at nested task start keeps indent and child bytes", text == "- [ ] one\n  - [ ] \n  - [x] child" && cursor == 27, "\(text) \(cursor)")
+}
+do {
+  let (text, cursor) = applied("-\t[ ]\tTask", ListEditing.newline(in: "-\t[ ]\tTask", cursor: 6))!
+  check("enter at tab-spaced task start pushes above", text == "- [ ] \n-\t[ ]\tTask" && cursor == 13, "\(text.debugDescription) \(cursor)")
+}
+do {
+  let (text, cursor) = applied("- [ ] \u{2615} ok", ListEditing.newline(in: "- [ ] \u{2615} ok", cursor: 6))!
+  check("enter at task start before emoji keeps the body", text == "- [ ] \n- [ ] \u{2615} ok" && cursor == 13, "\(text) \(cursor)")
+}
+do {
+  let src = "top\n- [ ] Task\nbottom"
+  let (text, cursor) = applied(src, ListEditing.newline(in: src, cursor: 10))!
+  check("enter at task start mid-note pushes above", text == "top\n- [ ] \n- [ ] Task\nbottom" && cursor == 17, "\(text) \(cursor)")
+}
+do {
+  let src = "- [ ] a\r\n- [ ] b"
+  let (text, cursor) = applied(src, ListEditing.newline(in: src, cursor: 6))!
+  check("enter at task start keeps CRLF breaks", text == "- [ ] \r\n- [ ] a\r\n- [ ] b" && cursor == 14, "\(text.debugDescription) \(cursor)")
+}
+do {
+  // Bullets and numbers keep the append-below behaviour at content start.
+  let (text, _) = applied("- one", ListEditing.newline(in: "- one", cursor: 0))!
+  check("enter at bullet line start still appends below", text == "- one\n- ", text)
+  let (numbered, _) = applied("1. one", ListEditing.newline(in: "1. one", cursor: 0))!
+  check("enter at number line start still appends below", numbered == "1. one\n2. ", numbered)
+}
+do {
+  // A caret inside a task's indent also pushes above.
+  let (text, cursor) = applied("  - [ ] A", ListEditing.newline(in: "  - [ ] A", cursor: 2))!
+  check("enter in task indent pushes above", text == "  - [ ] \n  - [ ] A" && cursor == 17, "\(text) \(cursor)")
+}
+do {
+  let (text, cursor) = applied("-  [ ]   Task", ListEditing.newline(in: "-  [ ]   Task", cursor: 9))!
+  check("enter at wide-spaced task start pushes above", text == "- [ ] \n-  [ ]   Task" && cursor == 16, "\(text.debugDescription) \(cursor)")
+}
+do {
+  // A parent task with a following child keeps both lines byte-for-byte.
+  let src = "- [ ] A\n  - [ ] child"
+  let (text, cursor) = applied(src, ListEditing.newline(in: src, cursor: 6))!
+  check("enter at parent task start keeps the child line", text == "- [ ] \n- [ ] A\n  - [ ] child" && cursor == 13, "\(text) \(cursor)")
+}
+do {
+  // Astral emoji: one character but two UTF-16 units.
+  let (text, cursor) = applied("- [ ] \u{1F680} go", ListEditing.newline(in: "- [ ] \u{1F680} go", cursor: 6))!
+  check("enter at task start before astral emoji keeps the body", text == "- [ ] \n- [ ] \u{1F680} go" && cursor == 13, "\(text) \(cursor)")
+}
+do {
+  // An astral emoji on an earlier line still gives the right line start.
+  let src = "\u{1F680} x\n- [ ] t"
+  let (text, cursor) = applied(src, ListEditing.newline(in: src, cursor: 11))!
+  check("enter at task start after an astral line", text == "\u{1F680} x\n- [ ] \n- [ ] t" && cursor == 18, "\(text) \(cursor)")
+}
+
 // Tab nests, Shift-Tab unnests, numbers restart per level
 
 do {
@@ -164,6 +239,37 @@ do {
   check("backspace outdents nested number", text == "1. a\n2. b", text)
 }
 check("backspace mid-content is nil", ListEditing.backspace(in: "- one", cursor: 4) == nil)
+
+// Backspace at a task prefix end removes the whole prefix, indent
+// included, in one edit, at any depth, leaving the body bytes.
+
+do {
+  let edit = ListEditing.backspace(in: "  - [ ] b", cursor: 8)!
+  check("nested task prefix removed whole", edit.range == NSRange(location: 0, length: 8), "\(edit.range)")
+  let (text, cursor) = applied("  - [ ] b", edit)!
+  check("nested task keeps only its body", text == "b" && cursor == 0, "\(text.debugDescription) \(cursor)")
+}
+do {
+  let src = "  - [ ] a\n    - [X] b\n  - [ ] c"
+  let edit = ListEditing.backspace(in: src, cursor: 20)!  // end of "    - [X] "
+  check("depth-4 checked task prefix is one range", edit.range == NSRange(location: 10, length: 10), "\(edit.range)")
+  let (text, cursor) = applied(src, edit)!
+  check("depth-4 checked task keeps neighbours", text == "  - [ ] a\nb\n  - [ ] c" && cursor == 10, "\(text.debugDescription) \(cursor)")
+}
+do {
+  let (text, cursor) = applied("  - [ ] ", ListEditing.backspace(in: "  - [ ] ", cursor: 8))!
+  check("nested empty task leaves a blank line", text == "" && cursor == 0, "\(text.debugDescription) \(cursor)")
+}
+do {
+  let edit = ListEditing.backspace(in: "- [ ]", cursor: 5)!
+  check("bare checkbox prefix is one range", edit.range == NSRange(location: 0, length: 5), "\(edit.range)")
+  check("bare checkbox backspace empties the line", applied("- [ ]", edit)?.0 == "")
+}
+check("bare checked box backspace empties the line", applied("  - [X]", ListEditing.backspace(in: "  - [X]", cursor: 7))?.0 == "")
+check("backspace handles nested task tab spacing", applied("  -\t[x]\tTask", ListEditing.backspace(in: "  -\t[x]\tTask", cursor: 8))?.0 == "Task")
+check("backspace handles nested wide task spacing", applied("    -  [ ]   Task", ListEditing.backspace(in: "    -  [ ]   Task", cursor: 13))?.0 == "Task")
+check("unrendered bracket list stays literal", ListEditing.backspace(in: "- [ ]x", cursor: 6) == nil)
+check("backspace inside a fence is nil", ListEditing.backspace(in: "```\n- [ ] \n```", cursor: 10) == nil)
 
 // inline wrap
 
