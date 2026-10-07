@@ -535,7 +535,16 @@ final class FocusCore: SessionPresenterDelegate {
   // MARK: UI callbacks (SessionPresenterDelegate); called on the main thread
 
   func presenterPause() { fromUI("pause") { try self.change(.pause(at: self.now)) } }
-  func presenterResume() { fromUI("resume") { try self.change(.resume(at: self.now)) } }
+  /// The UI Resume path (which is also the expired timed-pause callback)
+  /// only acts on an actual pause; a break answers to resumeBreak/Start now.
+  func presenterResume() {
+    fromUI("resume") {
+      guard let open = try self.current(), open.machine.state == .paused else {
+        throw FocusError("the session is not paused")
+      }
+      return try self.change(.resume(at: self.now))
+    }
+  }
   func presenterExtend(seconds: Int) { fromUI("extend") { try self.change(.extend(seconds: seconds, at: self.now)) } }
   func presenterStop() { fromUI("stop") { try self.change(.stop(at: self.now)) } }
 

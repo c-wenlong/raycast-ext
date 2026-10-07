@@ -2981,6 +2981,15 @@ do {
     PauseSpan(start: at(14, 27), end: nil, kind: "break"),
   ])
 
+  // An old timed-pause callback firing now must not end the break: the UI
+  // resume path only acts on a real pause.
+  h.core.presenterResume()
+  let stayed = h.send("status")
+  check("a stale timed-pause callback cannot resume a break", stayed["session"]?["state"] == "break"
+    && stayed["session"]?["id"] == .int(id) && stayed["session"]?["remainingSeconds"] == 300
+    && stayed["session"]?["nextFocusSeconds"] == 1500 && h.send("blocking")["active"] == false,
+    stayed.serialized())
+
   // A daemon restart inside the break keeps the plan; past its end the
   // ready state re-announces once.
   clock.now = at(14, 28)
@@ -3078,6 +3087,24 @@ do {
   check("finishBreak writes the review", finished["session"]?["rating"] == 3 && finished["session"]?["note"] == "done enough", finished.serialized())
   check("finishBreak wrote one event", h.fake.saved.count == 1 && h.fake.saved.first?.draft.end == at(14, 28))
   check("finishBreak for another task is refused", h.send("finishBreak", ["sessionId": .int(999)])["ok"] == false)
+}
+
+// The legacy socket `resume` deliberately accepts a break: that is what a
+// v1 hosted host (old Notes) sends for its "Start now" control.
+do {
+  let clock = Clock(at(14, 0))
+  let h = Harness(config: #"{"startableCalendars": ["work"]}"#, clock: clock, fake: FakeCalendar())
+  keepHarnesses.append(h)
+  h.fake.eventList = [event("B4", "legacy resume on break", at(14, 0), at(14, 25))]
+  let id = h.send("start", ["eventId": "B4"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(14, 25)
+  h.core.secondTick()
+  _ = h.send("startBreak", ["sessionId": .int(id), "seconds": 300, "focusSeconds": 900])
+  clock.now = at(14, 29)
+  let legacy = h.send("resume")
+  check("legacy resume ends the break into the chosen block", legacy["ok"] == true
+    && legacy["session"]?["state"] == "running"
+    && legacy["session"]?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(14, 44), legacy.serialized())
 }
 
 print("\(count - failures)/\(count) passed")
