@@ -935,6 +935,232 @@ do {
   }
 }
 
+
+// MARK: - The bridge lease survives menu tracking
+
+/// A tiny fake daemon on a private socket: real JSON lines, a real 3 s
+/// lease, renewals after expiry refused, every request recorded under a
+/// lock and read back through a snapshot.
+final class MenuTrackingDaemon {
+  struct Stats {
+    var claims = 0
+    var renews = 0
+    var refused = 0
+    var acceptedActionNames: [String] = []
+  }
+
+  private let listener: Int32
+  private let lock = NSLock()
+  private var stop = false
+  private var leaseUntil = Date.distantPast
+  private var stats = Stats()
+  private let served = DispatchSemaphore(value: 0)
+  private(set) var bound = false
+
+  init(path: String) {
+    listener = socket(AF_UNIX, SOCK_STREAM, 0)
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8CString)
+    if bytes.count <= 104 {
+      withUnsafeMutablePointer(to: &address.sun_path) { field in
+        field.withMemoryRebound(to: CChar.self, capacity: 104) { destination in
+          for (offset, byte) in bytes.enumerated() { destination[offset] = byte }
+        }
+      }
+      let rc = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+          Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+      }
+      bound = rc == 0 && listen(listener, 4) == 0
+    }
+  }
+
+  func statsSnapshot() -> Stats {
+    lock.lock(); defer { lock.unlock() }
+    return stats
+  }
+
+  private func snapshot() -> String {
+    "{\"id\":3,\"goal\":\"Deep Work\",\"state\":\"running\","
+      + "\"startedAt\":\"2026-10-07T00:00:00Z\",\"plannedEnd\":\"2026-10-07T00:25:00Z\","
+      + "\"remainingSeconds\":1500,\"pausedSeconds\":0,\"calendarTitle\":\"\","
+      + "\"extendOptions\":[300,600,900,1500],\"pauseStopsClock\":true}"
+  }
+
+  func serve() {
+    defer { served.signal() }
+    guard bound else { return }
+    while true {
+      let client = accept(listener, nil, nil)
+      lock.lock()
+      let stopping = stop
+      lock.unlock()
+      if stopping { if client >= 0 { Darwin.close(client) }; break }
+      if client < 0 { continue }
+      handle(client)
+    }
+  }
+
+  private func handle(_ client: Int32) {
+    defer { Darwin.close(client) }
+    var timeout = timeval(tv_sec: 2, tv_usec: 0)
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    var yes: Int32 = 1
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+    // Newline-framed: read until the request's line ends, bounded.
+    var bytes = [UInt8]()
+    var chunk = [UInt8](repeating: 0, count: 4096)
+    let deadline = Date().addingTimeInterval(2)
+    while !bytes.contains(0x0A), bytes.count < 4096, Date() < deadline {
+      let n = chunk.withUnsafeMutableBytes { recv(client, $0.baseAddress, min($0.count, 4096 - bytes.count), 0) }
+      guard n > 0 else { return }
+      bytes.append(contentsOf: chunk.prefix(n))
+    }
+    guard let newline = bytes.firstIndex(of: 0x0A) else { return }
+    let line = String(decoding: bytes.prefix(newline), as: UTF8.self)
+    guard let request = try? BridgeValue.parse(line) else { return }
+
+    let now = Date()
+    lock.lock()
+    let live = leaseUntil >= now
+    let claimed: Bool
+    let body: String
+    if request["cmd"]?.stringValue == "notchBridge" {
+      switch request["op"]?.stringValue {
+      case "claim":
+        stats.claims += 1
+        leaseUntil = now.addingTimeInterval(3)
+        claimed = true
+        body = replyBody(claimed: true)
+      case "renew":
+        if live {
+          leaseUntil = now.addingTimeInterval(3)
+          stats.renews += 1
+          claimed = true
+          body = replyBody(claimed: true)
+        } else {
+          stats.refused += 1
+          claimed = false
+          body = "{\"ok\":false,\"bridgeVersion\":1,\"error\":\"no live claim for this owner\"}"
+        }
+      case "release":
+        leaseUntil = .distantPast
+        claimed = false
+        body = "{\"ok\":true,\"bridgeVersion\":1,\"display\":\"notch\",\"claimed\":false,\"ttlSeconds\":3,\"session\":null}"
+      default:
+        claimed = live
+        body = replyBody(claimed: claimed)
+      }
+    } else if request["cmd"]?.stringValue == "notchAction" {
+      if live {
+        stats.acceptedActionNames.append(request["action"]?.stringValue ?? "")
+        claimed = true
+        body = replyBody(claimed: true)
+      } else {
+        stats.refused += 1
+        claimed = false
+        body = "{\"ok\":false,\"bridgeVersion\":1,\"error\":\"no live claim for this owner\"}"
+      }
+    } else {
+      claimed = live
+      body = replyBody(claimed: claimed)
+    }
+    lock.unlock()
+    _ = (body + "\n").withCString { pointer in
+      var offset = 0
+      let size = strlen(pointer)
+      while offset < size {
+        let sent = send(client, pointer + offset, size - offset, 0)
+        guard sent > 0 else { return }
+        offset += sent
+      }
+    }
+  }
+
+  private func replyBody(claimed: Bool) -> String {
+    "{\"ok\":true,\"bridgeVersion\":1,\"display\":\"notch\",\"claimed\":\(claimed),\"ttlSeconds\":3,"
+      + "\"session\":\(snapshot()),\"actions\":[\"pause\",\"resume\",\"stop\",\"extend\"]}"
+  }
+
+  /// Stops the server: the accept loop exits once the listener is gone.
+  /// Returns false if it did not exit inside the bound.
+  @discardableResult
+  func closeOwned() -> Bool {
+    lock.lock(); stop = true; lock.unlock()
+    Darwin.shutdown(listener, SHUT_RDWR)
+    Darwin.close(listener)
+    return served.wait(timeout: .now() + 2) == .success
+  }
+}
+
+do {
+  // Synthetic menu tracking only: the run loop is driven in eventTracking
+  // mode (the same mode a tracked NSMenu uses), never the real pointer.
+  let focusDir = ProcessInfo.processInfo.environment["FOCUS_DIR"]!
+  try! FileManager.default.createDirectory(atPath: focusDir, withIntermediateDirectories: true)
+  let socketPath = focusDir + "/focus.sock"
+  try? FileManager.default.removeItem(atPath: socketPath)
+  let daemon = MenuTrackingDaemon(path: socketPath)
+  check("the menu-tracking fake daemon binds", daemon.bound)
+  DispatchQueue.global().async { daemon.serve() }
+
+  let controller = PanelController(initialCommand: "show")
+  controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+  controller.handle("attachment-notch")
+  let mirror = Mirror(reflecting: controller)
+  let leaseTimer = mirror.children.first { $0.label == "bridgeTimer" }!.value as! Timer
+  check("the bridge timer is scheduled", leaseTimer.isValid)
+  let bridge = mirror.children.first { $0.label == "bridge" }!.value as! FocusBridgeClient
+  var actionProblems: [String] = []
+  bridge.onActionProblem = { actionProblems.append($0) }
+
+  // Establish the claim on the ordinary run loop first.
+  let claimedDeadline = Date().addingTimeInterval(2)
+  while !bridge.last.claimed && Date() < claimedDeadline { spin(0.05) }
+  check("the controller claimed the notch lease", bridge.last.claimed)
+
+  // Now only eventTracking turns, as inside a tracked native menu, for
+  // longer than the daemon's 3 s TTL.
+  let before = daemon.statsSnapshot()
+  let trackingDeadline = Date().addingTimeInterval(4.2)
+  while Date() < trackingDeadline {
+    RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.2))
+  }
+  spin(0.2)
+  let after = daemon.statsSnapshot()
+  check("the lease kept renewing inside event tracking", after.renews - before.renews >= 3,
+    "\(after.renews - before.renews) renews in 4.2 s")
+  check("no renewal arrived after expiry, no reclaim",
+    after.refused == before.refused && after.claims == before.claims,
+    "refused \(after.refused - before.refused) claims \(after.claims - before.claims)")
+  check("the controller still reports the claim", controller.debugStatus().contains("\"claimed\": true"))
+
+  // A control still reaches the daemon after the tracked interval.
+  if let session = bridge.last.session {
+    let actionsBefore = after.acceptedActionNames.count
+    bridge.action("pause", session: session)
+    let actionDeadline = Date().addingTimeInterval(2)
+    while daemon.statsSnapshot().acceptedActionNames.count == actionsBefore && Date() < actionDeadline {
+      spin(0.05)
+    }
+    let final = daemon.statsSnapshot()
+    check("a pause action succeeded after menu tracking",
+      final.acceptedActionNames.last == "pause" && actionProblems.isEmpty && final.refused == before.refused,
+      "\(final.acceptedActionNames) \(actionProblems)")
+  } else {
+    check("a pause action succeeded after menu tracking", false, "session lost with the lease")
+  }
+
+  bridge.release()
+  leaseTimer.invalidate()
+  controller.handle("attachment-floating")
+  controller.handle("hide")
+  check("the fake daemon exited", daemon.closeOwned())
+}
+
 print("\(count - failures)/\(count) passed")
 if failures == 0 { print("all passed") }
 exit(failures == 0 ? 0 : 1)
