@@ -1621,7 +1621,7 @@ final class NoteTextView: NSTextView {
     // Close the running typing group first so ⌘Z takes back just this rule,
     // and again after so the next keystrokes start a group of their own.
     breakUndoCoalescing()
-    replaceText(in: edit.range, with: NSAttributedString(string: edit.replacement), selectionAfter: selection)
+    replaceText(in: edit.range, with: NSAttributedString(string: edit.replacement), selectionBefore: selectedRange(), selectionAfter: selection)
     breakUndoCoalescing()
     return true
   }
@@ -1632,13 +1632,12 @@ final class NoteTextView: NSTextView {
   /// range (and a redo caret at its end). Used by `apply` and as the
   /// reciprocal action its undo registers; keeps attributed substrings
   /// so attributes like `Markdown.toggleCollapsed` survive undo/redo.
-  private func replaceText(in range: NSRange, with replacement: NSAttributedString, selectionAfter: NSRange) {
+  private func replaceText(in range: NSRange, with replacement: NSAttributedString, selectionBefore: NSRange, selectionAfter: NSRange) {
     guard let storage = textStorage,
       range.location >= 0, range.length >= 0,
       range.location <= storage.length, range.length <= storage.length - range.location
     else { return }
     let before = storage.attributedSubstring(from: range)
-    let selectionBefore = selectedRange()
     let manager = undoManager
     // Registration can already be disabled by a caller that manages its
     // own undo (setTaskMark); only balance the disable/enable we did.
@@ -1683,7 +1682,7 @@ final class NoteTextView: NSTextView {
       manager.beginUndoGrouping()
     }
     manager.registerUndo(withTarget: self) { view in
-      view.replaceText(in: replaced, with: before, selectionAfter: selectionBefore)
+      view.replaceText(in: replaced, with: before, selectionBefore: restored, selectionAfter: selectionBefore)
     }
   }
 }
