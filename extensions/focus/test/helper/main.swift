@@ -610,7 +610,8 @@ do {
   check("extend from the end sheet", applied(&machine, .extend(seconds: 300, at: at(14, 50))) == .extended(seconds: 300, fromEnding: true))
   check("extend from the end sheet returns to running", machine.state == .running && machine.endingReason == nil)
   check("an extension after the deadline counts from now", machine.plannedEnd == at(14, 55) && machine.extendedSeconds == 1200)
-  check("the same session carries on", machine.startedAt == at(14, 0) && machine.pauses.count == 2)
+  check("the same session carries on", machine.startedAt == at(14, 0) && machine.pauses.count == 3
+    && machine.pauses.last == PauseSpan(start: at(14, 45), end: at(14, 50), kind: "decision"), "\(machine.pauses)")
 
   // The deadline while running, then finish records the timer.
   check("the deadline while running reaches the end sheet", applied(&machine, .tick(at: at(14, 55))) == .reachedDeadline && machine.endingReason == .timer)
@@ -618,8 +619,9 @@ do {
   check(
     "finish closes the session", machine.state == .finished && !machine.state.isOpen && machine.endedAt == at(14, 56)
       && machine.endReason == .timer && machine.rating == 4 && machine.note == "ok" && machine.endingReason == nil)
-  // 56 min elapsed, paused 14:10-14:15 and 14:21-14:45 (29 min).
-  check("focused seconds after finish", machine.focusedSeconds(at: at(16, 0)) == 27 * 60 && machine.pausedSeconds(at: at(16, 0)) == 29 * 60)
+  // 56 min elapsed, 29 min paused and 5 min deciding before the extension.
+  check("focused seconds after finish", machine.focusedSeconds(at: at(16, 0)) == 22 * 60 && machine.pausedSeconds(at: at(16, 0)) == 34 * 60,
+    "focused \(machine.focusedSeconds(at: at(16, 0))) paused \(machine.pausedSeconds(at: at(16, 0)))")
   for input: SessionInput in [
     .pause(at: at(15, 0)), .resume(at: at(15, 0)), .extend(seconds: 300, at: at(15, 0)), .stop(at: at(15, 0)),
     .finish(at: at(15, 0), rating: nil, note: nil, reason: nil), .abandon(at: at(15, 0)),
@@ -1333,7 +1335,7 @@ do {
   let again = h.send("extend", ["seconds": 300])["session"]
   check("extend from the end sheet returns to running", again?["state"] == "running" && again?["endReason"] == .null && again?["extendedSeconds"] == 360, again?.serialized() ?? "")
   check("extend from the end sheet counts from now", again?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(10, 17))
-  check("extend from the end sheet dismisses it", h.presenter.dismissals == dismissals + 1)
+  check("extend from the end sheet only hides it (the review survives)", h.presenter.dismissals == dismissals)
   row = try! h.db.session(id: Int64(id))!
   check("the same row carries on", row.endReason == nil && row.extendedSeconds == 360 && row.extendedEnd == at(10, 17) && row.endedAt == nil)
 
@@ -1345,11 +1347,12 @@ do {
   clock.now = at(10, 14)
   let finished = h.send("finish", ["rating": 5, "note": "Good"])
   check("finish from a stop", finished["ok"] == true && finished["session"]?["state"] == "finished" && finished["session"]?["endReason"] == "manual", finished.serialized())
-  check("finish reports the totals", finished["session"]?["extendedSeconds"] == 360 && finished["session"]?["pausedSeconds"] == 180 && finished["logPending"] == false)
+  check("finish reports the totals", finished["session"]?["extendedSeconds"] == 360 && finished["session"]?["pausedSeconds"] == 240 && finished["logPending"] == false, finished.serialized())
   check("finish ends the tick and clears the view", !h.core.ticking && h.lastView == nil && h.presenter.views.last! == nil)
-  check("finish dismisses the sheet", h.presenter.dismissals == dismissals + 2)
+  check("finish dismisses the sheet", h.presenter.dismissals == dismissals + 1)
   let notes = h.fake.saved.last?.draft.notes ?? ""
-  check("the log event counts pauses and the extension", notes.contains("Focused: 11 min of 14 min") && notes.contains("Pauses: 1, 3 min in total") && notes.contains("Ended: manually, after extending 6 min"), notes)
+  check("the log event counts pauses and the extension", notes.contains("Focused: 10 min of 14 min") && notes.contains("Pauses: 1, 3 min in total")
+    && notes.contains("Waiting between blocks: 1 min") && notes.contains("Ended: manually, after extending 6 min"), notes)
   check("idle after finish", h.send("status")["session"] == .null && h.send("stop")["error"] == "no session is running")
   h.core.secondTick()
   check("a stray tick after finish does nothing", !h.core.ticking && h.lastView == nil)
@@ -2933,6 +2936,26 @@ do {
   check("restored break re-announces its end", applied(&restored, .tick(at: at(8, 41))) == .breakReady)
 }
 
+do {
+  // An extend's own wait at the first card counts too, before any break:
+  // frozen lead fixture, calendar and ad-hoc alike.
+  for pauseStopsClock in [false, true] {
+    var m = SessionMachine(pauseStopsClock: pauseStopsClock)
+    _ = m.apply(.start(at: at(14, 0), plannedEnd: at(14, 25)))
+    _ = m.apply(.tick(at: at(14, 25)))
+    _ = m.apply(.extend(seconds: 300, at: at(14, 27)))   // wait 14:25-14:27
+    _ = m.apply(.tick(at: at(14, 32)))
+    _ = m.apply(.startBreak(seconds: 300, focusSeconds: 1500, at: at(14, 32)))
+    _ = m.apply(.finish(at: at(14, 37), rating: nil, note: nil, reason: nil))
+    check("extend before a break: the first wait is a decision span", m.pauses == [
+      PauseSpan(start: at(14, 25), end: at(14, 27), kind: "decision"),
+      PauseSpan(start: at(14, 32), end: at(14, 37), kind: "break"),
+    ], "\(m.pauses)")
+    check("extend before a break: excluded and focused once", m.pausedSeconds(at: at(14, 37)) == 420
+      && m.focusedSeconds(at: at(14, 37)) == 1800, "\(m.pausedSeconds(at: at(14, 37))) \(m.focusedSeconds(at: at(14, 37)))")
+  }
+}
+
 // MARK: - Breaks: the core
 
 do {
@@ -3105,6 +3128,37 @@ do {
   check("legacy resume ends the break into the chosen block", legacy["ok"] == true
     && legacy["session"]?["state"] == "running"
     && legacy["session"]?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(14, 44), legacy.serialized())
+}
+
+// An extend's wait before the first break lands in the event too, and the
+// card only hides (its entered stars and note survive).
+do {
+  let clock = Clock(at(14, 0))
+  let h = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log", "logCalendarName": "Focus Log"}"#, clock: clock)
+  keepHarnesses.append(h)
+  h.fake.eventList = [event("B5", "extend then break", at(14, 0), at(14, 25))]
+  let id = h.send("start", ["eventId": "B5"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(14, 25)
+  h.core.secondTick()
+  clock.now = at(14, 27)
+  let dismissalsBefore = h.presenter.dismissals
+  let extended = h.send("extend", ["seconds": 300])
+  check("extend at the first card keeps its review", h.presenter.dismissals == dismissalsBefore
+    && extended["session"]?["state"] == "running", extended.serialized())
+  clock.now = at(14, 32)
+  h.core.secondTick()
+  _ = h.send("startBreak", ["sessionId": .int(id), "seconds": 300, "focusSeconds": 1500])
+  clock.now = at(14, 37)
+  _ = h.send("finishBreak", ["sessionId": .int(id)])
+  let event = h.fake.saved.first?.draft
+  let notes = event?.notes ?? ""
+  check("extend before a break: the event spans the whole task", event?.start == at(14, 0) && event?.end == at(14, 37))
+  check("extend before a break: the notes split it", notes.contains("Focused: 30 min of 37 min")
+    && notes.contains("Breaks: 1, 5 min in total")
+    && notes.contains("Break: \(ISO.local(at(14, 32))) to \(ISO.local(at(14, 37))) (5 min)")
+    && notes.contains("Waiting between blocks: 2 min")
+    && notes.contains("Focus block: \(ISO.local(at(14, 0))) to \(ISO.local(at(14, 25))) (25 min)")
+    && notes.contains("Focus block: \(ISO.local(at(14, 27))) to \(ISO.local(at(14, 32))) (5 min)"), notes)
 }
 
 print("\(count - failures)/\(count) passed")

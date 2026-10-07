@@ -231,6 +231,11 @@ final class StarRating: NSView {
 final class SheetButton: NSButton {
   let primary: Bool
   let hint: String?
+  /// The ready card's buttons take the keyboard; every other button on the
+  /// card stays click-only.
+  let focusable: Bool
+  /// Keys while focused route through the card's own rules (grace included).
+  var onKey: ((NSEvent) -> Bool)?
   /// A picked choice in the break chooser (accent edge).
   var picked = false {
     didSet { if picked != oldValue { needsDisplay = true } }
@@ -238,15 +243,19 @@ final class SheetButton: NSButton {
   private var hovering = false {
     didSet { needsDisplay = true }
   }
+  private var focused = false {
+    didSet { if focused != oldValue { needsDisplay = true } }
+  }
   private var trackingArea: NSTrackingArea?
 
-  init(title: String, hint: String? = nil, primary: Bool = false) {
+  init(title: String, hint: String? = nil, primary: Bool = false, focusable: Bool = false) {
     self.primary = primary
     self.hint = hint
+    self.focusable = focusable
     super.init(frame: .zero)
     isBordered = false
     setButtonType(.momentaryChange)
-    refusesFirstResponder = true
+    refusesFirstResponder = !focusable
     focusRingType = .none
     imagePosition = .noImage
     self.title = title
@@ -257,7 +266,21 @@ final class SheetButton: NSButton {
 
   required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-  override var acceptsFirstResponder: Bool { false }
+  override var acceptsFirstResponder: Bool { focusable }
+  override func keyDown(with event: NSEvent) {
+    if let onKey, onKey(event) { return }
+    super.keyDown(with: event)
+  }
+  override func becomeFirstResponder() -> Bool {
+    let ok = super.becomeFirstResponder()
+    if ok { focused = true }
+    return ok
+  }
+  override func resignFirstResponder() -> Bool {
+    let ok = super.resignFirstResponder()
+    if ok { focused = false }
+    return ok
+  }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override var mouseDownCanMoveWindow: Bool { false }
   static let cap: CGFloat = 16
@@ -295,6 +318,11 @@ final class SheetButton: NSButton {
       let path = NSBezierPath(roundedRect: box, xRadius: box.height / 2, yRadius: box.height / 2)
       (lit ? SheetStyle.primaryHover : SheetStyle.primary).setFill()
       path.fill()
+      if focused {
+        SheetStyle.accent.setStroke()
+        path.lineWidth = 1.5
+        path.stroke()
+      }
     } else {
       let path = NSBezierPath(roundedRect: box, xRadius: SheetStyle.radius, yRadius: SheetStyle.radius)
       SheetStyle.fill.setFill()
@@ -303,8 +331,8 @@ final class SheetButton: NSButton {
         SheetStyle.hover.setFill()
         path.fill()
       }
-      (picked ? SheetStyle.accent : SheetStyle.border).setStroke()
-      path.lineWidth = picked ? 1.5 : 1
+      (picked || focused ? SheetStyle.accent : SheetStyle.border).setStroke()
+      path.lineWidth = picked || focused ? 1.5 : 1
       path.stroke()
     }
 
@@ -383,9 +411,9 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   /// The gentle card when a break ends: no auto-finish, no resume by itself.
   let readyBlock = NSView()
   let readyLabel = NSTextField(labelWithString: "")
-  let startNextButton = SheetButton(title: "Start 25 min", hint: "↩", primary: true)
-  let moreBreakButton = SheetButton(title: "+5 min break")
-  let readyFinishButton = SheetButton(title: "Finish")
+  let startNextButton = SheetButton(title: "Start 25 min", hint: "↩", primary: true, focusable: true)
+  let moreBreakButton = SheetButton(title: "+5 min break", focusable: true)
+  let readyFinishButton = SheetButton(title: "Finish", focusable: true)
 
   /// The session the sheet is (or was last) asking about.
   private(set) var session: SessionView?
@@ -698,6 +726,9 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     startNextButton.nextKeyView = moreBreakButton
     moreBreakButton.nextKeyView = readyFinishButton
     readyFinishButton.nextKeyView = startNextButton
+    for button in [startNextButton, moreBreakButton, readyFinishButton] {
+      button.onKey = { [weak self] event in self?.handleKey(event) ?? false }
+    }
   }
 
   /// A stretchable rounded mask for the blur.
@@ -981,16 +1012,31 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     switch event.keyCode {
     case 36, 76:  // Return, keypad Enter
       if keysArmed {
-        if readyMode { resumeBreak() } else if pickerExpanded { startBreak() } else { finish() }
+        // On the ready card these activate whichever button has the focus
+        // (Start when none does), never bypassing the same rules a card
+        // key follows.
+        if readyMode {
+          (panel.firstResponder as? SheetButton ?? startNextButton).performClick(nil)
+        } else if pickerExpanded { startBreak() } else { finish() }
+      }
+      return true
+    case 49 where readyMode:  // Space activates the focused ready button too
+      if keysArmed {
+        (panel.firstResponder as? SheetButton ?? startNextButton).performClick(nil)
       }
       return true
     case 48:  // Tab
       if keysArmed {
         onEngage?()
-        // The ready card has no note; Tab cycles its visible buttons.
+        // The ready card has no note; Tab cycles its visible buttons from
+        // whichever one is focused, Shift+Tab the other way.
         if readyMode {
-          panel.makeFirstResponder(startNextButton)
-          panel.selectNextKeyView(startNextButton)
+          let order = [startNextButton, moreBreakButton, readyFinishButton]
+          let current = order.firstIndex { $0 === panel.firstResponder }
+          let back = event.modifierFlags.contains(.shift)
+          let from = current ?? (back ? 0 : -1)
+          let next = order[((from + (back ? -1 : 1)) % order.count + order.count) % order.count]
+          panel.makeFirstResponder(next)
         } else {
           panel.makeFirstResponder(noteField)
         }

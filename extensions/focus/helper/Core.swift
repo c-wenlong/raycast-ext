@@ -432,9 +432,9 @@ final class FocusCore: SessionPresenterDelegate {
       publish(.show)
     case .extended(let seconds, let fromEnding):
       log("session \(id): extended by \(seconds) s\(fromEnding ? " from the end sheet" : "")")
-      // A continued task's card hides instead of dismissing so its stars and
-      // note survive the next block, same as a break's.
-      publish(fromEnding && active?.machine.hasBreak != true ? .dismiss : .keep)
+      // An extend from the card only hides it (never dismisses): the stars
+      // and note survive the next block, break or not.
+      publish(.keep)
     case .paused, .resumed:
       log("session \(id): \(transition == .paused ? "paused" : "resumed")")
       publish(.keep)

@@ -322,9 +322,9 @@ struct SessionMachine: Equatable {
       extendedSeconds += seconds
       let fromEnding = state == .ending
       if fromEnding {
-        // The wait at the card is not focus once the task continues through
-        // a break; record it before running again.
-        if hasBreak { recordDecisionSpan(at: at, from: endingAt) }
+        // The wait at the card is never focus once the task runs again:
+        // record it, even before the first break.
+        recordDecisionSpan(at: at, from: endingAt)
         state = .running
         endingReason = nil
         endingAt = nil
@@ -388,8 +388,8 @@ struct SessionMachine: Equatable {
   }
 
   /// Records the wait at the end card as a closed "decision" span
-  /// [endingAt, at]: not focus, not a real pause. Only for a task that
-  /// continued through a break; no-op when there is nothing to wait out.
+  /// [endingAt, at]: not focus, not a real pause. No-op when there is
+  /// nothing to wait out.
   private mutating func recordDecisionSpan(at: Date, from endingAt: Date?) {
     guard let startedAt else { return }
     let start = max(endingAt ?? at, startedAt)

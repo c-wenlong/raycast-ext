@@ -477,6 +477,39 @@ do {
   sheet.readyFinishButton.performClick(nil)
   check("ready card: a second Finish sends nothing", lastCall() == "finishBreak 21 5 \"kept note\"")
 
+  // The ready card's keyboard loop: focus starts on Start; Tab cycles the
+  // three buttons (Shift+Tab backwards); Return and Space click whichever
+  // has the focus. Inside the grace all of them do nothing.
+  func readyKey(_ chars: String, _ code: UInt16, _ shift: Bool = false) {
+    _ = sheet.handleKey(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: shift ? [.shift] : [], timestamp: 0, windowNumber: 0, context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!)
+  }
+  ui.showEndSheet(view)
+  check("ready card: the focus starts on Start", panel.firstResponder === sheet.startNextButton)
+  let callsInGrace = fake.calls.count
+  readyKey("\r", 36); readyKey(" ", 49); readyKey("\t", 48)
+  check("ready card: grace swallows Return, Space and Tab", fake.calls.count == callsInGrace
+    && panel.firstResponder === sheet.startNextButton, "\(fake.calls)")
+  now = now.addingTimeInterval(1)
+  readyKey("\t", 48)
+  check("ready card: Tab moves to +5 min break", panel.firstResponder === sheet.moreBreakButton)
+  readyKey("\t", 48)
+  check("ready card: Tab moves to Finish", panel.firstResponder === sheet.readyFinishButton)
+  readyKey("\t", 48)
+  check("ready card: Tab wraps to Start", panel.firstResponder === sheet.startNextButton)
+  readyKey("\t", 48, true)
+  check("ready card: Shift+Tab goes back to Finish", panel.firstResponder === sheet.readyFinishButton)
+  sheet.readyFinishButton.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)!)
+  check("ready card: Space on Finish finishes, does not resume", lastCall() == "finishBreak 21 5 \"kept note\"", lastCall())
+  ui.showEndSheet(view)
+  now = now.addingTimeInterval(1)
+  panel.makeFirstResponder(sheet.moreBreakButton)
+  sheet.moreBreakButton.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
+  check("ready card: Return on +5 min break extends it", lastCall() == "extendBreak 21 300", lastCall())
+  ui.showEndSheet(view)
+  now = now.addingTimeInterval(1)
+  readyKey("\r", 36)
+  check("ready card: untouched Return still starts the block", lastCall() == "resumeBreak 21", lastCall())
+
   // A continued task's extend also only hides the card: the next end card
   // for the same id still carries the stars and note (no dismiss).
   ui.showEndSheet(session(id: 21, state: "ending", remaining: 0, plannedEnd: 0))
@@ -489,7 +522,7 @@ do {
   check("the final Finish sends the kept review", lastCall() == "finish 5 \"kept note\"", lastCall())
   ui.update(nil)
 }
-check("no calls but the break block's eight", fake.calls.count == afterExtend + 8, "\(fake.calls)")
+check("no calls but the break block's eleven", fake.calls.count == afterExtend + 11, "\(fake.calls)")
 
 // MARK: Config keys
 
