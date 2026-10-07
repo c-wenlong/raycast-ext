@@ -1147,8 +1147,13 @@ final class NoteTextView: NSTextView {
     super.setFrameSize(size)
   }
 
+  /// Set while a rule edit or its undo/redo replacement runs: any
+  /// transient scroll-to-caret inside is skipped and the caller scrolls
+  /// the final selection once at the end.
+  private var suppressingEditScroll = false
+
   override func scrollRangeToVisible(_ range: NSRange) {
-    guard !preservingTaskViewport else { return }
+    guard !preservingTaskViewport, !suppressingEditScroll else { return }
     super.scrollRangeToVisible(range)
     // Only a caret is lifted: lifting a selection's last line could push
     // its start off the top.
@@ -1600,12 +1605,14 @@ final class NoteTextView: NSTextView {
   /// the default behaviour. LinkController applies its rewrites through it.
   @discardableResult
   func apply(_ edit: ListEditing.Edit?) -> Bool {
-    guard let edit, let storage = textStorage else { return false }
+    guard let edit, textStorage != nil else { return false }
     let ns = string as NSString
-    guard NSMaxRange(edit.range) <= ns.length else { return false }
+    guard edit.range.location >= 0, edit.range.length >= 0,
+      edit.range.location <= ns.length, edit.range.length <= ns.length - edit.range.location
+    else { return false }
     let newLength = ns.length - edit.range.length + (edit.replacement as NSString).length
     let location = min(max(edit.cursor, 0), newLength)
-    let selection = NSRange(location: location, length: min(edit.selectionLength, newLength - location))
+    let selection = NSRange(location: location, length: min(max(edit.selectionLength, 0), newLength - location))
 
     if ns.substring(with: edit.range) == edit.replacement {
       setSelectedRange(selection)
@@ -1614,22 +1621,69 @@ final class NoteTextView: NSTextView {
     // Close the running typing group first so ⌘Z takes back just this rule,
     // and again after so the next keystrokes start a group of their own.
     breakUndoCoalescing()
-    guard shouldChangeText(in: edit.range, replacementString: edit.replacement) else { return true }
-    storage.replaceCharacters(in: edit.range, with: edit.replacement)
-    // Select before didChangeText so the restyle it triggers keeps this
-    // caret. The rule placed it; the caret rules (which read the styling,
-    // stale until the restyle) must not move it.
-    suppressCaretRules = true
-    setSelectedRange(selection)
-    suppressCaretRules = false
-    didChangeText()
+    replaceText(in: edit.range, with: NSAttributedString(string: edit.replacement), selectionAfter: selection)
     breakUndoCoalescing()
-    if selectedRange() != selection {
-      suppressCaretRules = true
-      setSelectedRange(selection)
-      suppressCaretRules = false
-    }
-    scrollRangeToVisible(selection)
     return true
+  }
+
+  /// Replaces `range` with `replacement` under its own undo step whose
+  /// undo restores the previous attributed text and the selection it
+  /// had, instead of AppKit's default of selecting the whole replaced
+  /// range (and a redo caret at its end). Used by `apply` and as the
+  /// reciprocal action its undo registers; keeps attributed substrings
+  /// so attributes like `Markdown.toggleCollapsed` survive undo/redo.
+  private func replaceText(in range: NSRange, with replacement: NSAttributedString, selectionAfter: NSRange) {
+    guard let storage = textStorage,
+      range.location >= 0, range.length >= 0,
+      range.location <= storage.length, range.length <= storage.length - range.location
+    else { return }
+    let before = storage.attributedSubstring(from: range)
+    let selectionBefore = selectedRange()
+    let manager = undoManager
+    // Registration can already be disabled by a caller that manages its
+    // own undo (setTaskMark); only balance the disable/enable we did.
+    let registers = allowsUndo && (manager?.isUndoRegistrationEnabled ?? false)
+    if registers { manager?.disableUndoRegistration() }
+    var applied = false
+    var restored = selectionAfter
+    let hadCaretRules = suppressCaretRules
+    let hadEditScroll = suppressingEditScroll
+    let hadFenceRelocation = suppressFenceRelocation
+    suppressCaretRules = true
+    suppressingEditScroll = true
+    suppressFenceRelocation = true
+    if shouldChangeText(in: range, replacementString: replacement.string) {
+      storage.replaceCharacters(in: range, with: replacement)
+      // Select before didChangeText so the restyle it triggers keeps this
+      // caret. The rule placed it; the caret rules (which read the
+      // styling, stale until the restyle) must not move it.
+      let end = storage.length
+      let loc = min(max(selectionAfter.location, 0), end)
+      restored = NSRange(location: loc, length: min(max(selectionAfter.length, 0), end - loc))
+      setSelectedRange(restored)
+      didChangeText()
+      if selectedRange() != restored { setSelectedRange(restored) }
+      applied = true
+    }
+    suppressingEditScroll = hadEditScroll
+    suppressCaretRules = hadCaretRules
+    suppressFenceRelocation = hadFenceRelocation
+    if registers { manager?.enableUndoRegistration() }
+    guard applied else { return }
+    scrollRangeToVisible(restored)
+    guard registers, let manager, manager.isUndoRegistrationEnabled else { return }
+    let replaced = NSRange(location: range.location, length: replacement.length)
+    // Close the run loop's open group first so this edit is an undo step
+    // of its own; a fresh group stays open for whatever typing follows.
+    // Deeper nesting (finishPick's explicit group) is kept, so a pick's
+    // rewind and edit still undo together. During undo/redo the manager
+    // owns the group; the reciprocal just registers into it.
+    if manager.groupingLevel == 1, !manager.isUndoing, !manager.isRedoing {
+      manager.endUndoGrouping()
+      manager.beginUndoGrouping()
+    }
+    manager.registerUndo(withTarget: self) { view in
+      view.replaceText(in: replaced, with: before, selectionAfter: selectionBefore)
+    }
   }
 }

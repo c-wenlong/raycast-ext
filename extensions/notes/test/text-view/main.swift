@@ -1473,8 +1473,8 @@ load("")
 type("@today ")
 check("typing @today then space gives the date", tv.string == "2026-10-05 " && caret() == 11, "\(tv.string.debugDescription) \(caret())")
 tv.undoManager?.undo()
-// As everywhere in NSTextView, the undone text comes back selected.
-check("one undo gives back @today and the space", tv.string == "@today " && tv.selectedRange() == NSRange(location: 0, length: 6), "\(tv.string.debugDescription) \(tv.selectedRange())")
+// Rule edits keep the caret where it was, not AppKit's whole-range select.
+check("one undo gives back @today and the space", tv.string == "@today " && tv.selectedRange() == NSRange(location: 7, length: 0), "\(tv.string.debugDescription) \(tv.selectedRange())")
 load("")
 type("@today")
 tv.insertText(" ", replacementRange: none)
@@ -1855,6 +1855,313 @@ hitPill.mouseDown(with: settingsMouse(.leftMouseDown, middleOption))
 check("press alone does not dispatch a settings command", clickRecorder.count == 0)
 hitPill.mouseUp(with: settingsMouse(.leftMouseUp, middleOption))
 check("completed click selects and dispatches once", hitPill.selectedSegment == 1 && clickRecorder.count == 1)
+
+// === Task marker atomicity and rule-edit undo selections ===
+// The production restyle delegate recipe: capture the selection, reapply
+// markdown, put the selection back, reset typing attributes.
+final class RichEditDelegate: NSObject, NSTextViewDelegate {
+  var veto = false
+  var changes = 0
+  func textDidChange(_ notification: Notification) {
+    changes += 1
+    guard let view = notification.object as? NoteTextView, let storage = view.textStorage else { return }
+    let selection = view.selectedRange()
+    Markdown.apply(to: storage)
+    view.setSelectedRange(selection)
+    view.typingAttributes = [.font: Markdown.baseFont, .foregroundColor: NSColor.labelColor]
+  }
+  func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+    !veto
+  }
+}
+let richDelegate = RichEditDelegate()
+stv.delegate = richDelegate
+stv.allowsUndo = true
+func sload(_ text: String) {
+  stv.undoManager?.removeAllActions()
+  stv.string = text
+  Markdown.apply(to: stv.textStorage!)
+  stv.layoutManager?.ensureLayout(for: stv.textContainer!)
+  stv.undoManager?.removeAllActions()
+  drainMain()
+}
+func stype(_ s: String) {
+  for ch in s {
+    stv.insertText(String(ch), replacementRange: NSRange(location: NSNotFound, length: 0))
+    drainMain()
+  }
+}
+func scaret(_ loc: Int) { stv.setSelectedRange(NSRange(location: loc, length: 0)); drainMain() }
+func sorigin() -> NSPoint { scroller.contentView.bounds.origin }
+func scaretVisible() -> Bool {
+  stv.layoutManager?.ensureLayout(for: stv.textContainer!)
+  let sel = stv.selectedRange()
+  guard let lm = stv.layoutManager, lm.numberOfGlyphs > 0 else { return true }
+  let glyph = min(lm.glyphIndexForCharacter(at: sel.location), lm.numberOfGlyphs - 1)
+  let rect = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).insetBy(dx: 0, dy: -1)
+  return rect.intersects(scroller.documentVisibleRect.insetBy(dx: 0, dy: -stv.textContainerOrigin.y))
+}
+
+// Immediate Backspace on a fresh task removes the whole marker, no raw
+// "-", "[" or "]" left behind, through every way a task is made.
+for (name, make) in [
+  ("formatting", { sload(""); scaret(0); stv.applyFormat(.prefix(.task)) }),
+  ("typed [] ", { sload(""); scaret(0); stype("[] ") }),
+  ("slash /task Return", {
+    sload("")
+    scaret(0)
+    stype("/task")
+    stv.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+      windowNumber: scrollWin.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
+  }),
+] {
+  make()
+  check("\(name) makes a task", stv.string == "- [ ] ", stv.string.debugDescription)
+  stv.deleteBackward(nil)
+  drainMain()
+  check("\(name): one backspace removes the marker whole", stv.string == "" && stv.selectedRange().location == 0, stv.string.debugDescription)
+  stv.undoManager?.undo()
+  check("\(name): undo restores the marker and caret", stv.string == "- [ ] " && stv.selectedRange() == NSRange(location: 6, length: 0), "\(stv.string.debugDescription) \(stv.selectedRange())")
+  stv.undoManager?.redo()
+  check("\(name): redo removes it again", stv.string == "" && stv.selectedRange().location == 0, stv.string.debugDescription)
+}
+
+// Enter continuation, then one Backspace on the fresh marker.
+sload("- [ ] Task")
+scaret(10)
+stv.insertNewline(nil)
+drainMain()
+check("Enter continues a task", stv.string == "- [ ] Task\n- [ ] " && stv.selectedRange().location == 17, "\(stv.string.debugDescription) \(stv.selectedRange())")
+stv.deleteBackward(nil)
+drainMain()
+check("backspace removes a continued marker whole", stv.string == "- [ ] Task\n" && stv.selectedRange().location == 11, stv.string.debugDescription)
+stv.undoManager?.undo()
+check("undo brings back the continued marker and its caret", stv.string == "- [ ] Task\n- [ ] " && stv.selectedRange() == NSRange(location: 17, length: 0), "\(stv.string.debugDescription) \(stv.selectedRange())")
+
+// Nested continuation: same atomic removal at depth.
+sload("- [ ] a")
+scaret(7)
+stv.insertNewline(nil)
+stv.insertTab(nil)
+drainMain()
+check("tab nests the fresh task", stv.string == "- [ ] a\n  - [ ] ", stv.string.debugDescription)
+stv.deleteBackward(nil)
+drainMain()
+check("backspace removes a nested marker whole", stv.string == "- [ ] a\n" && stv.selectedRange().location == 8, stv.string.debugDescription)
+
+// Enter at a task's content start inserts the empty sibling above.
+sload("- [ ] Task")
+scaret(6)
+stv.insertNewline(nil)
+drainMain()
+check("enter at task start pushes above", stv.string == "- [ ] \n- [ ] Task" && stv.selectedRange() == NSRange(location: 13, length: 0), "\(stv.string.debugDescription) \(stv.selectedRange())")
+sload("- [X] Task")
+scaret(6)
+stv.insertNewline(nil)
+drainMain()
+check("enter at checked task start keeps the mark", stv.string == "- [ ] \n- [X] Task" && stv.selectedRange().location == 13, "\(stv.string.debugDescription) \(stv.selectedRange())")
+
+// Long scrolled note: rule edits undo/redo restore the exact caret, not a
+// whole-range selection, and the viewport never jumps to top or end.
+func slineY(_ loc: Int) -> CGFloat {
+  stv.layoutManager!.ensureLayout(for: stv.textContainer!)
+  let glyph = stv.layoutManager!.glyphIndexForCharacter(at: loc)
+  return stv.layoutManager!.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + stv.textContainerOrigin.y
+}
+func snearEdit(_ lineY: CGFloat, _ tag: String) -> Bool {
+  let origin = sorigin()
+  let viewport = scroller.documentVisibleRect.height
+  return abs(origin.y - lineY) <= viewport + 1
+    && scaretVisible()
+}
+sload((1...70).map { "- [ ] task \($0)" }.joined(separator: "\n"))
+let sStart40 = (stv.string as NSString).range(of: "- [ ] task 40").location
+let sCaret40 = sStart40 + 6
+scaret(sCaret40)
+stv.scrollRangeToVisible(stv.selectedRange())
+drainMain()
+let line40Y = slineY(sStart40)
+stv.insertNewline(nil)
+drainMain()
+let afterEnter = stv.selectedRange()
+let enterText = stv.string
+check("long note enter lands a caret", afterEnter.length == 0 && enterText.contains("\n- [ ] \n- [ ] task 40\n"), stv.string.debugDescription)
+stv.undoManager?.undo()
+drainMain()
+check("long note undo restores the caret", stv.selectedRange() == NSRange(location: sCaret40, length: 0), "\(stv.selectedRange())")
+check("long note undo keeps the caret on screen", snearEdit(line40Y, "undo"), "origin \(sorigin()) lineY \(line40Y)")
+stv.undoManager?.redo()
+drainMain()
+check("long note redo restores the rule caret", stv.string == enterText && stv.selectedRange() == afterEnter, "\(stv.selectedRange())")
+check("long note redo keeps the caret on screen", snearEdit(line40Y, "redo"), "origin \(sorigin())")
+stv.undoManager?.undo()
+drainMain()
+check("second undo still restores the caret", stv.selectedRange() == NSRange(location: sCaret40, length: 0) && snearEdit(line40Y, "u2"), "\(stv.selectedRange()) \(sorigin())")
+stv.undoManager?.redo()
+drainMain()
+check("second redo restores the rule caret", stv.selectedRange() == afterEnter && snearEdit(line40Y, "r2"), "\(stv.selectedRange()) \(sorigin())")
+
+// Same edit mid-note: marker backspace at the caret Enter left.
+sload((1...70).map { "- [ ] task \($0)" }.joined(separator: "\n"))
+let sStart40b = (stv.string as NSString).range(of: "- [ ] task 40").location
+scaret(sStart40b + 6)
+stv.insertNewline(nil)  // empty sibling above at line start of task 40
+drainMain()
+stv.deleteBackward(nil)  // caret is at task 40's content start
+drainMain()
+var expected40 = (1...70).map { "- [ ] task \($0)" }
+expected40.insert("- [ ] ", at: 39)
+expected40[40] = "task 40"
+check("marker backspace mid-note edits only the prefix", stv.string == expected40.joined(separator: "\n"), stv.string.debugDescription)
+stv.undoManager?.undo()
+drainMain()
+check("marker backspace mid-note undo restores the caret", stv.selectedRange() == NSRange(location: sStart40b + 13, length: 0), "\(stv.selectedRange())")
+
+// Tab outdent mid-note: same caret/viewport fidelity on undo/redo.
+sload("- [ ] a\n" + (1...70).map { "  - [ ] task \($0)" }.joined(separator: "\n"))
+let nStart40 = (stv.string as NSString).range(of: "  - [ ] task 40").location
+scaret(nStart40 + 8)
+stv.scrollRangeToVisible(stv.selectedRange())
+drainMain()
+let outdentBefore = stv.string
+let outdentCaret = stv.selectedRange()
+stv.insertBacktab(nil)
+drainMain()
+let outdentText = stv.string
+let outdentCaretAfter = stv.selectedRange()
+check("shift-tab outdents a task", outdentText != outdentBefore && outdentCaretAfter.length == 0, outdentText.debugDescription)
+stv.undoManager?.undo()
+drainMain()
+check("outdent undo restores text and caret", stv.string == outdentBefore && stv.selectedRange() == outdentCaret, "\(stv.selectedRange())")
+check("outdent undo keeps caret visible", scaretVisible(), "origin \(sorigin())")
+stv.undoManager?.redo()
+drainMain()
+check("outdent redo restores text and caret", stv.string == outdentText && stv.selectedRange() == outdentCaretAfter, "\(stv.selectedRange())")
+
+// A full-line format mid-note (caret-based heading on line 40 of plain
+// text): the same undo/redo selection and viewport rules hold.
+sload((1...70).map { "plain line \($0)" }.joined(separator: "\n"))
+let pStart40 = (stv.string as NSString).range(of: "plain line 40").location
+let pLine40Y = slineY(pStart40)
+scaret(pStart40 + 6)
+stv.applyFormat(.prefix(.heading(2)))
+drainMain()
+let headingText = stv.string
+let headingSel = stv.selectedRange()
+check("heading format applies at line 40", headingText.contains("\n## plain line 40\n") && headingSel.length == 0, "\(headingSel)")
+stv.undoManager?.undo()
+drainMain()
+check("heading undo restores text and caret", stv.string == (1...70).map { "plain line \($0)" }.joined(separator: "\n") && stv.selectedRange() == NSRange(location: pStart40 + 6, length: 0), "\(stv.selectedRange())")
+check("heading undo keeps caret on screen", snearEdit(pLine40Y, "h-undo"), "origin \(sorigin())")
+stv.undoManager?.redo()
+drainMain()
+check("heading redo restores format and caret", stv.string == headingText && stv.selectedRange() == headingSel && snearEdit(slineY(pStart40), "h-redo"), "\(stv.selectedRange()) \(sorigin())")
+
+// Native plain typing undo/redo under the restyle delegate is unchanged.
+sload((1...60).map { "plain line \($0)" }.joined(separator: "\n"))
+let tStart60 = (stv.string as NSString).range(of: "plain line 60").location
+scaret(tStart60)
+stv.scrollRangeToVisible(stv.selectedRange())
+drainMain()
+stype("x")
+check("typing near the bottom lands", stv.string.hasSuffix("xplain line 60"))
+stv.undoManager?.undo()
+drainMain()
+check("typing undo keeps caret and viewport", stv.selectedRange() == NSRange(location: tStart60, length: 0) && scaretVisible(), "\(stv.selectedRange()) \(sorigin())")
+stv.undoManager?.redo()
+drainMain()
+check("typing redo restores the character", stv.string.hasSuffix("xplain line 60") && scaretVisible(), stv.string.debugDescription)
+
+// A selection (not just a caret) survives formatting undo/redo.
+sload("alpha beta gamma")
+stv.setSelectedRange(NSRange(location: 6, length: 4))
+drainMain()
+stv.applyFormat(.wrap("**"))
+drainMain()
+check("wrap selects the wrapped word", stv.string == "alpha **beta** gamma" && stv.selectedRange().length > 0, "\(stv.string.debugDescription) \(stv.selectedRange())")
+stv.undoManager?.undo()
+drainMain()
+check("undo restores the real selection", stv.string == "alpha beta gamma" && stv.selectedRange() == NSRange(location: 6, length: 4), "\(stv.string.debugDescription) \(stv.selectedRange())")
+stv.undoManager?.redo()
+drainMain()
+check("redo restores the wrapped selection", stv.string == "alpha **beta** gamma" && stv.selectedRange().length > 0, "\(stv.string.debugDescription) \(stv.selectedRange())")
+
+// A folded toggle's attribute rides the attributed undo record.
+sload("> T\n  child")
+stv.toggleCollapse(atMarker: 0)
+drainMain()
+check("folded before edit", stv.collapsedToggleKeys().count == 1)
+stv.applyFormat(.plain)
+drainMain()
+check("plain strips the toggle marker", stv.string == "T\n  child", stv.string.debugDescription)
+stv.undoManager?.undo()
+drainMain()
+check("undo restores the fold attribute", stv.string == "> T\n  child" && stv.textStorage!.attribute(Markdown.toggleCollapsed, at: 0, effectiveRange: nil) != nil && stv.collapsedToggleKeys().count == 1, stv.string.debugDescription)
+stv.undoManager?.redo()
+drainMain()
+check("redo unstacks again", stv.string == "T\n  child", stv.string.debugDescription)
+stv.undoManager?.undo()
+drainMain()
+check("second undo restores the fold again", stv.collapsedToggleKeys().count == 1)
+
+// A vetoed change leaves text and undo state alone.
+sload("keep")
+scaret(4)
+richDelegate.veto = true
+let beforeVetoUndo = stv.undoManager?.canUndo
+let beforeVetoChanges = richDelegate.changes
+stv.apply(ListEditing.Edit(range: NSRange(location: 4, length: 0), replacement: "x", cursor: 5))
+richDelegate.veto = false
+check("veto leaves text and undo alone", stv.string == "keep" && (stv.undoManager?.canUndo ?? false) == beforeVetoUndo, stv.string.debugDescription)
+check("veto keeps registration enabled and fires no restyle", (stv.undoManager?.isUndoRegistrationEnabled ?? false) && richDelegate.changes == beforeVetoChanges)
+
+// A no-op apply moves the caret but registers nothing and emits no
+// textDidChange.
+let beforeNoopUndo = stv.undoManager?.canUndo
+let beforeNoopChanges = richDelegate.changes
+stv.apply(ListEditing.Edit(range: NSRange(location: 0, length: 4), replacement: "keep", cursor: 4))
+check("no-op apply adds no undo step", (stv.undoManager?.canUndo ?? false) == beforeNoopUndo && stv.string == "keep" && stv.selectedRange().location == 4, "\(stv.string.debugDescription) \(stv.selectedRange())")
+check("no-op apply emits no restyle", richDelegate.changes == beforeNoopChanges)
+
+// An edit with allowsUndo off still changes the text but leaves nothing
+// undoable.
+sload("keep")
+scaret(0)
+stv.allowsUndo = false
+stv.undoManager?.removeAllActions()
+stv.apply(ListEditing.Edit(range: NSRange(location: 0, length: 4), replacement: "changed", cursor: 7))
+let editedWithoutUndo = stv.string
+stv.allowsUndo = true
+check("apply with allowsUndo off edits but registers nothing", editedWithoutUndo == "changed" && !(stv.undoManager?.canUndo ?? false), editedWithoutUndo.debugDescription)
+
+// A caller that disabled registration keeps it disabled and gets no
+// entry (the task-mark toggle path).
+sload("keep")
+scaret(0)
+stv.undoManager?.removeAllActions()
+stv.undoManager?.disableUndoRegistration()
+stv.apply(ListEditing.Edit(range: NSRange(location: 0, length: 4), replacement: "again", cursor: 5))
+let stillDisabled = !(stv.undoManager?.isUndoRegistrationEnabled ?? true)
+stv.undoManager?.enableUndoRegistration()
+check("apply under disabled registration adds no undo", stv.string == "again" && stillDisabled && !(stv.undoManager?.canUndo ?? true), "\(stv.string.debugDescription)")
+
+// Invalid ranges are refused without touching text, selection or undo.
+sload("keep")
+scaret(2)
+stv.undoManager?.removeAllActions()
+let beforeInvalidChanges = richDelegate.changes
+let invalidEdits = [
+  ListEditing.Edit(range: NSRange(location: NSNotFound, length: 0), replacement: "x", cursor: 0),
+  ListEditing.Edit(range: NSRange(location: 3, length: 10), replacement: "x", cursor: 0),
+  ListEditing.Edit(range: NSRange(location: 99, length: 0), replacement: "x", cursor: 0),
+]
+for bad in invalidEdits {
+  check("invalid range returns false", !stv.apply(bad))
+}
+check("invalid ranges left everything alone", stv.string == "keep" && stv.selectedRange() == NSRange(location: 2, length: 0) && !(stv.undoManager?.canUndo ?? true) && richDelegate.changes == beforeInvalidChanges, "\(stv.string.debugDescription) \(stv.selectedRange())")
+
+stv.delegate = nil
+stv.textContainer?.replaceLayoutManager(TaskBoxLayoutManager())
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
