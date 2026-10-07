@@ -577,8 +577,14 @@ final class NotchPanel: NSObject {
     strip.setAccessibilityLabel(label)
     pill.setAccessibilityLabel(label)
     let paused = view.state == "paused"
-    pauseButton.set(title: paused ? "Resume" : "Pause", symbol: paused ? "play" : "pause", label: paused ? "Resume" : "Pause")
-    completeButton.setAccessibilityLabel("Complete")
+    let onBreak = view.isOnBreak
+    pauseButton.set(
+      title: onBreak ? "Start now" : paused ? "Resume" : "Pause",
+      symbol: onBreak || paused ? "play" : "pause",
+      label: onBreak ? "Start the next focus block" : paused ? "Resume" : "Pause")
+    completeButton.set(
+      title: onBreak ? "Finish" : "Complete", symbol: "checkmark",
+      label: onBreak ? "Finish" : "Complete")
 
     guard let screen = screen() else { return }
     let wing = NotchLayout.wing(content)
@@ -752,7 +758,7 @@ final class NotchPanel: NSObject {
 
   @objc func pauseClicked() {
     guard let session, session.state != "ending" else { return }
-    if session.state == "paused" {
+    if session.isOnBreak || session.state == "paused" {
       actions?.panelResume()
     } else {
       runMenu(pauseMenu, from: pauseButton)

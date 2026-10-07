@@ -63,14 +63,37 @@ countdown lives in the helper's `NSStatusItem`, not in a Raycast command.
 idle ──start(event | ad hoc)──▶ running ◀──resume── paused
                                   │  ▲              ▲
                                   │  └────pause─────┘
-                                  ├── timer ends ──▶ ending (sheet: Extend +5/+10/+15/+25 or Finish)
+                                  ├── timer ends ──▶ ending (sheet: Extend +5/+15/+25/+45 or Finish)
                                   ├── manual stop ─▶ ending (same sheet)
                                   └── helper dies ─▶ abandoned (marked on next launch)
 paused ── planned end passes ──▶ ending (calendar sessions only; the deadline is checked every second while paused too)
 paused ── resume ──────────────▶ running (ad hoc: the planned end moves later by the pause)
 paused ── manual stop ─────────▶ ending
 ending ──Finish (rating, note)──▶ finished: sqlite row closed, log event written
+ending ──Take a break (5/10/15 min, next block 5/15/25/45, default 5+25)──▶ break
+break ──Start now (card, menu, Raycast)──▶ running (a fresh block of the chosen length; same session id, goal, calendar)
+break ──breakUntil passes──▶ break (ready card: "Break finished", Start N min / +5 min break / Finish; never auto-resumes, never auto-finishes)
+break ──Finish──▶ finished
 ```
+
+A break continues the same task, it is not a new session: the row, the goal,
+the calendar and the end card's kept stars and note all carry through the
+cycle. Blocking is off for the whole break (it comes back when the next
+block starts); starting another task while resting is refused without
+touching the break. Pause, Extend and Stop on a break are refused: the only
+ways out are Start now / resumeBreak, +N min break (extendBreak), and
+Finish (finishBreak). The ordinary `resume` deliberately still accepts a
+break so old hosted clients can end it.
+
+- Each wait at a completed task's card is stored as a `decision` pause
+  span, each rest as a `break` span (schema 4, `pauses.kind`); the log event
+  stays the one event for the task, its notes naming each "Focus block:",
+  the "Breaks:" count with per-break timestamps and "Waiting between
+  blocks:", so the waits and rests are excluded but visible.
+- Continuation fields live on the open row: `ending_at` (when the card
+  first came up), `break_until` and `next_focus_seconds` (schema 4), so a
+  restart mid-break or past the break's end restores it regardless of the
+  heartbeat age, and the ready card re-announces if its time already came.
 
 Rules:
 
@@ -294,6 +317,9 @@ create table sessions (
   end_reason text,             -- timer, manual, abandoned; on an open row: at the end sheet, and why
   extended_seconds integer not null default 0,
   extended_end text,           -- the end the timer runs to when not planned_end: extensions, plus an ad-hoc session's closed pauses (schema 2)
+  ending_at text,              -- when the end card first came up (schema 4; the wait before a break becomes a decision span)
+  break_until text,            -- on a break: when the rest ends (schema 4)
+  next_focus_seconds integer,  -- on a break: the next block's length (schema 4)
   rating integer,              -- 1 to 5
   note text,
   log_calendar_id text,        -- EKCalendar the log event was (or will be) written to, fixed at Finish
@@ -303,7 +329,8 @@ create table sessions (
 );
 create table pauses (
   id integer primary key, session_id integer not null references sessions(id),
-  paused_at text not null, resumed_at text
+  paused_at text not null, resumed_at text,
+  kind text not null default 'pause'  -- 'pause', 'break' or 'decision' (schema 4); all three are excluded from focused time
 );
 create table blocked_attempts (
   id integer primary key, session_id integer not null references sessions(id),

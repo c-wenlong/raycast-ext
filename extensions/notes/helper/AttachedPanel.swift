@@ -399,9 +399,11 @@ final class FocusTabView: NSView {
     return ceil(text.size().width) + PanelButton.iconGap + PanelButton.iconSide + PanelButton.padding * 2
   }
 
-  /// The Pause slot is as wide as the wider of Pause and Resume, so the
-  /// row does not shift when the state flips.
-  static var pauseSlot: CGFloat { max(width(ofTitle: "Pause"), width(ofTitle: "Resume")) }
+  /// The Pause slot is as wide as the widest of Pause, Resume and the
+  /// break's "Start now", so the row does not shift when the state flips.
+  static var pauseSlot: CGFloat {
+    max(width(ofTitle: "Pause"), width(ofTitle: "Resume"), width(ofTitle: "Start now"))
+  }
 
   /// The controls row's width.
   private var rowWidth: CGFloat {
@@ -412,11 +414,12 @@ final class FocusTabView: NSView {
   /// The daemon's session as a SessionView for the shared model views.
   static func adapter(_ session: FocusSession, at now: Date) -> SessionView {
     SessionView(
-      id: session.id, goal: session.goal, state: session.state,
+      id: session.id, goal: session.goal, state: session.isOnBreak ? "break" : session.state,
       startedAt: session.startedAt, plannedEnd: session.plannedEnd,
       remainingSeconds: session.remaining(at: now), pausedSeconds: session.pausedSeconds,
       calendarTitle: session.calendarTitle, extendOptions: session.extendOptions,
-      pauseStopsClock: session.pauseStopsClock)
+      pauseStopsClock: session.pauseStopsClock,
+      breakUntil: session.breakUntil, nextFocusSeconds: session.nextFocusSeconds)
   }
 
   /// The bridge's latest session and capabilities: the pill content and
@@ -425,6 +428,12 @@ final class FocusTabView: NSView {
     self.session = session
     self.actions = actions
     for button in [pauseButton, completeButton, moreButton] { button.isEnabled = session != nil }
+    // Finish on a break is the new `finishBreak` verb: an old daemon only
+    // has the legacy four, so the button is disabled rather than sending a
+    // refused action.
+    if let session, session.isOnBreak, !actions.contains("finishBreak") {
+      completeButton.isEnabled = false
+    }
     guard let session else {
       sweep = PanelSweep()
       pill.content = PanelContent(clock: "00:00", paused: false, progress: 0, goal: "")
@@ -441,10 +450,15 @@ final class FocusTabView: NSView {
     pill.content = content
     pill.progress = content.progress
     pill.setAccessibilityLabel(content.titleText)
-    let paused = session.state == "paused"
+    let paused = session.state == "paused" && !session.isOnBreak
+    let onBreak = session.isOnBreak
     pauseButton.set(
-      title: paused ? "Resume" : "Pause", symbol: paused ? "play" : "pause",
-      label: paused ? "Resume" : "Pause")
+      title: onBreak ? "Start now" : paused ? "Resume" : "Pause",
+      symbol: onBreak || paused ? "play" : "pause",
+      label: onBreak ? "Start the next focus block" : paused ? "Resume" : "Pause")
+    completeButton.set(
+      title: onBreak ? "Finish" : "Complete", symbol: "checkmark",
+      label: onBreak ? "Finish" : "Complete")
     updateSweepTimer()
     needsLayout = true
   }
@@ -507,8 +521,10 @@ final class FocusTabView: NSView {
   // MARK: Controls
 
   @objc private func pauseClicked() {
-    guard let session, session.state == "running" || session.state == "paused" else { return }
-    if session.state == "paused" {
+    guard let session, session.state == "running" || session.state == "paused" || session.isOnBreak else { return }
+    // On a break this is "Start now": the legacy resume verb starts the
+    // next block early.
+    if session.isOnBreak || session.state == "paused" {
       onAction?("resume", nil)
     } else {
       onEngage()
@@ -517,7 +533,13 @@ final class FocusTabView: NSView {
   }
 
   @objc private func completeClicked() {
-    guard session != nil else { return }
+    guard let session else { return }
+    // On a break this is Finish: the final finish through the new verb.
+    if session.isOnBreak {
+      guard actions.contains("finishBreak") else { return }
+      onAction?("finishBreak", nil)
+      return
+    }
     onAction?("stop", nil)
   }
 
@@ -589,6 +611,12 @@ final class FocusTabView: NSView {
     add("Move to Floating Panel", "macwindow", #selector(movePanelChosen(_:)), "moveToPanel")
     add("Move to Menu Bar", "menubar.rectangle", #selector(moveMenuBarChosen(_:)), "moveToMenuBar")
     menu.addItem(.separator())
+    // On a break the only extension is more rest; the pause choices and the
+    // focus Extend list do not apply.
+    if session?.isOnBreak == true {
+      add("+5 min break", "plus.circle", #selector(extendBreakChosen(_:)), "extendBreak")
+      return menu
+    }
     let extend = NSMenuItem(title: "Extend", action: nil, keyEquivalent: "")
     let submenu = NSMenu()
     submenu.autoenablesItems = false
@@ -610,6 +638,7 @@ final class FocusTabView: NSView {
   @objc private func movePanelChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "moveToPanel") { onAction?("moveToPanel", nil) } }
   @objc private func moveMenuBarChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "moveToMenuBar") { onAction?("moveToMenuBar", nil) } }
   @objc private func extendChosen(_ sender: NSMenuItem) { if allowed(sender) { onAction?("extend", sender.tag) } }
+  @objc private func extendBreakChosen(_ sender: NSMenuItem) { if allowed(sender, verb: "extendBreak") { onAction?("extendBreak", 300) } }
 }
 
 // MARK: - The panel
@@ -805,12 +834,13 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
   func updateChrome() {
     let now = self.now()
     strip.clockText = session?.clock(at: now)
-    strip.paused = session?.state == "paused"
+    // A break draws like a pause: muted clock, no green fill.
+    strip.paused = session?.state == "paused" || session?.isOnBreak == true
     focusView.update(session: session, actions: actions, at: now)
     let shared = mode == .notch && session != nil
     header.update(
       tabs: shared, title: windowTitle, clock: shared ? session?.clock(at: now) : nil,
-      paused: session?.state == "paused")
+      paused: session?.state == "paused" || session?.isOnBreak == true)
     if mode == .notch { relayout() }
     layoutContent()
   }
@@ -1015,7 +1045,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     guard let session else { return }
     pinned = true
     switch action {
-    case "togglePause": onFocusAction(session.state == "paused" ? "resume" : "pause", nil)
+    case "togglePause": onFocusAction(session.state == "paused" || session.isOnBreak ? "resume" : "pause", nil)
     default: onFocusAction(action, seconds)
     }
   }

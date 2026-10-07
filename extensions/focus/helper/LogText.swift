@@ -11,6 +11,11 @@ import Foundation
 struct PauseSpan: Equatable {
   var start: Date
   var end: Date?  // nil while still paused
+  /// "pause" (a real pause), "break" (the task resting between focus
+  /// blocks) or "decision" (the wait at the end card of a continued task).
+  /// All three count as non-focus time; only "pause" moves an ad-hoc
+  /// session's deadline.
+  var kind: String = "pause"
 }
 
 struct BlockedAttempt: Equatable {
@@ -61,6 +66,26 @@ enum LogText {
     return Int(total.rounded())
   }
 
+  /// The focused intervals `start`...`end` has left once every pause-like
+  /// span (pause, break, decision) is clipped out: the source of the
+  /// "Focus block:" timestamp lines in the event notes.
+  static func focusSpans(_ pauses: [PauseSpan], start: Date, end: Date) -> [DateInterval] {
+    guard end > start else { return [] }
+    let excluded = pauses.compactMap { pause -> DateInterval? in
+      let lo = max(start, pause.start)
+      let hi = min(end, pause.end ?? end)
+      return hi > lo ? DateInterval(start: lo, end: hi) : nil
+    }.sorted { $0.start < $1.start }
+    var cursor = start
+    var focused: [DateInterval] = []
+    for span in excluded {
+      if span.start > cursor { focused.append(DateInterval(start: cursor, end: span.start)) }
+      cursor = max(cursor, span.end)
+    }
+    if cursor < end { focused.append(DateInterval(start: cursor, end: end)) }
+    return focused
+  }
+
   /// Focused time = (end - start) - pauses, never negative.
   static func focusedSeconds(_ summary: LogSummary) -> Int {
     let span = Int(summary.endedAt.timeIntervalSince(summary.startedAt).rounded())
@@ -93,11 +118,46 @@ enum LogText {
     let span = Int(summary.endedAt.timeIntervalSince(summary.startedAt).rounded())
     lines.append("Focused: \(minutes(focusedSeconds(summary))) of \(minutes(span))")
 
-    if summary.pauses.isEmpty {
-      lines.append("Pauses: none")
+    // "pause" rows are real pauses; "break" rows are the task resting
+    // between focus blocks and "decision" rows the waits at its end cards.
+    // All are clipped once into the total that the Focused line subtracts;
+    // the breakdown names each kind separately so a break is never counted
+    // twice (also as a pause).
+    let realPauses = summary.pauses.filter { $0.kind == "pause" }
+    let breaks = summary.pauses.filter { $0.kind == "break" }
+    let decisions = summary.pauses.filter { $0.kind == "decision" }
+    func seconds(_ spans: [PauseSpan]) -> Int {
+      pausedSeconds(spans, start: summary.startedAt, end: summary.endedAt)
+    }
+    if breaks.isEmpty && decisions.isEmpty {
+      if summary.pauses.isEmpty {
+        lines.append("Pauses: none")
+      } else {
+        lines.append("Pauses: \(summary.pauses.count), \(minutes(seconds(summary.pauses))) in total")
+      }
     } else {
-      let paused = pausedSeconds(summary.pauses, start: summary.startedAt, end: summary.endedAt)
-      lines.append("Pauses: \(summary.pauses.count), \(minutes(paused)) in total")
+      if realPauses.isEmpty {
+        lines.append("Pauses: none")
+      } else {
+        lines.append("Pauses: \(realPauses.count), \(minutes(seconds(realPauses))) in total")
+      }
+      // A continued task's event also names each focus block by its real
+      // clock times, between the Focused total and the Breaks breakdown.
+      if !breaks.isEmpty {
+        for span in focusSpans(summary.pauses, start: summary.startedAt, end: summary.endedAt) {
+          lines.append(
+            "Focus block: \(ISO.local(span.start)) to \(ISO.local(span.end)) (\(minutes(Int(span.duration.rounded()))))")
+        }
+        lines.append("Breaks: \(breaks.count), \(minutes(seconds(breaks))) in total")
+        for span in breaks {
+          let end = span.end ?? summary.endedAt
+          let length = Int(end.timeIntervalSince(span.start).rounded())
+          lines.append("Break: \(ISO.local(span.start)) to \(ISO.local(end)) (\(minutes(length)))")
+        }
+      }
+      if !decisions.isEmpty {
+        lines.append("Waiting between blocks: \(minutes(seconds(decisions)))")
+      }
     }
 
     lines.append("Blocked attempts: \(attemptsText(summary.attempts))")

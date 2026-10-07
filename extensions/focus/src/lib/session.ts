@@ -47,11 +47,14 @@ export function sessionActions(
   const open =
     session.state === "running" ||
     session.state === "paused" ||
-    session.state === "ending";
+    session.state === "ending" ||
+    session.state === "break";
   return {
+    // On a break only Start now (resume), Finish and extendBreak apply;
+    // pause, extend and stop are refused by the helper.
     pause: session.state === "running",
-    resume: session.state === "paused",
-    extend: open,
+    resume: session.state === "paused" || session.state === "break",
+    extend: open && session.state !== "break",
     stop: session.state === "running" || session.state === "paused",
     finish: open,
   };
@@ -65,7 +68,9 @@ export function pausedSecondsNow(
   now: Date,
 ): number {
   const base = session.pausedSeconds ?? 0;
-  if (session.state !== "paused") return base;
+  // A break keeps accruing excluded time (its open break span is counted
+  // the same as an open pause).
+  if (session.state !== "paused" && session.state !== "break") return base;
   return base + Math.max(0, (now.getTime() - fetchedAt.getTime()) / 1000);
 }
 
@@ -82,6 +87,8 @@ export function sessionStatusText(
     | "endReason"
     | "pauseStopsClock"
     | "remainingSeconds"
+    | "breakUntil"
+    | "nextFocusSeconds"
   >,
   now: Date,
 ): string {
@@ -89,6 +96,16 @@ export function sessionStatusText(
     return session.endReason === "manual" ? "stopped" : "time's up";
   }
   if (session.state === "finished") return "finished";
+  // A break counts down to its own end (plannedEnd is breakUntil); the
+  // task resumes into a fresh block after it.
+  if (session.state === "break") {
+    const left = session.plannedEnd
+      ? (Date.parse(session.plannedEnd) - now.getTime()) / 1000
+      : Number.NaN;
+    const remaining =
+      Number.isFinite(left) && left > 0 ? `${durationText(left)} left` : "done";
+    return `on a break, ${remaining}`;
+  }
   const frozen =
     session.state === "paused" &&
     session.pauseStopsClock === true &&
@@ -116,6 +133,7 @@ export function blockingText(
   session: Pick<Session, "state" | "profile">,
   blocking: Pick<BlockingStatus, "profile" | "mode"> | null,
 ): string {
+  if (session.state === "break") return "Taking a break";
   const profile = blocking?.profile ?? session.profile;
   const label = blocking?.mode ? `${profile} · ${blocking.mode}` : profile;
   return session.state === "paused" ? `${label}, off while paused` : label;

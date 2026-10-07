@@ -127,6 +127,10 @@ final class NotchBridge {
     case edit
     /// End the session now: no rating, no note, no end sheet.
     case cancel
+    /// Finish the task for good while it is on a break (the host's Finish).
+    case finishBreak
+    /// More time on the open break ("+5 min break" on the host).
+    case extendBreak(Int)
     /// Move the countdown to another display.
     case move(CountdownDisplay)
   }
@@ -162,6 +166,10 @@ final class NotchBridge {
       return .pauseFor(seconds)
     case "edit": return .edit
     case "cancel": return .cancel
+    case "finishBreak": return .finishBreak
+    case "extendBreak":
+      guard let seconds = try request.int("seconds") else { throw FocusError("seconds is required") }
+      return .extendBreak(seconds)
     case "moveToPanel": return .move(.panel)
     case "moveToMenuBar": return .move(.menuBar)
     case let other:

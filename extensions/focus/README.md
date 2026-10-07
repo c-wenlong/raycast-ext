@@ -20,8 +20,8 @@ in [HELPER.md](HELPER.md). Everything below is built (see "Status").
   session started now would run. `↩` starts a session that runs until the
   event's planned end. The open session sits on top under **Running** with
   its state (running, paused, or ending at the end sheet), the time left and
-  the time paused, and actions Pause or Resume (`⌘⇧P`), Extend by 5, 10, 15
-  or 25 minutes (`⌘E`), Stop (`⌘⇧S`, goes to the end sheet), and "Finish
+  the time paused, and actions Pause or Resume (`⌘⇧P`), Extend by 5, 15, 25
+  or 45 minutes (`⌘E`), Stop (`⌘⇧S`, goes to the end sheet), and "Finish
   (Rating and Note)" (`⌘⇧F`), the fallback for the helper's native end sheet,
   and Discard Session (`⌃X`, no confirmation): the session ends with no
   rating and is deleted, and no log event is written for it.
@@ -124,6 +124,10 @@ once. It
 stays for a second, fades out slowly over the next 5 seconds and then
 finishes the session with no rating or note; hovering it holds it, and
 clicking it or typing a note keeps it until you press Finish or Extend.
+Or press "Take a break…" on it: the same task rests (5, 10 or 15 minutes,
+blocking off) and then asks for a fresh focus block (5, 15, 25 or 45); the
+break never resumes or finishes by itself, and the one calendar event gets
+both blocks with the breaks and waits listed.
 Focus Settings' Countdown field (or each display's own "Move to …" items)
 switches between the panel, the menu bar and the notch.
 

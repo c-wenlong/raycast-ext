@@ -1357,7 +1357,75 @@ net.createServer((socket) => {
         stop: false,
         finish: false,
       });
-      assert.deepEqual([...EXTEND_MINUTES], [5, 10, 15, 25]);
+      assert.deepEqual([...EXTEND_MINUTES], [5, 15, 25, 45]);
+      // A break: resume (Start now) and finish are the only verbs left.
+      assert.deepEqual(sessionActions({ state: "break" }), {
+        pause: false,
+        resume: true,
+        extend: false,
+        stop: false,
+        finish: true,
+      });
+    },
+  ],
+  [
+    "session: a break counts down to its own end and never blocks",
+    async () => {
+      const now = new Date(2026, 8, 27, 14, 30, 0);
+      const breakSession = {
+        state: "break" as const,
+        plannedEnd: at(now, 300), // plannedEnd mirrors breakUntil on a break
+        endReason: null,
+        pausedSeconds: 120,
+      };
+      assert.equal(sessionStatusText(breakSession, now), "on a break, 5 min left");
+      assert.equal(
+        sessionStatusText({ ...breakSession, plannedEnd: at(now, -10) }, now),
+        "on a break, done",
+      );
+      // Excluded time keeps accruing while the break is open.
+      assert.equal(pausedSecondsNow(breakSession, now, now), 120);
+      assert.equal(
+        pausedSecondsNow(breakSession, now, new Date(now.getTime() + 60_000)),
+        180,
+      );
+      assert.equal(
+        blockingText({ state: "break", profile: "deep" }, {
+          profile: "deep",
+          mode: "blocklist",
+        }),
+        "Taking a break",
+      );
+    },
+  ],
+  [
+    "daemon: break requests carry the session id",
+    async () => {
+      const socketPath = path.join(freshDir(), "s.sock");
+      const session = { id: 7, goal: "x", state: "break" };
+      const server = await scriptedServer(socketPath, (_raw, socket) => {
+        socket.end(`${JSON.stringify({ ok: true, session })}\n`);
+      });
+      const daemon = new FocusDaemon({ socketPath, binaryPath: "/nonexistent" });
+      await daemon.startBreak(7, 300, 1500);
+      await daemon.resumeBreak(7);
+      await daemon.extendBreak(7, 300);
+      await daemon.finishBreak(7, { rating: 4, note: "done" });
+      assert.deepEqual(
+        server.received.map((raw) => JSON.parse(raw)),
+        [
+          { cmd: "startBreak", sessionId: 7, seconds: 300, focusSeconds: 1500 },
+          { cmd: "resumeBreak", sessionId: 7 },
+          { cmd: "extendBreak", sessionId: 7, seconds: 300 },
+          { cmd: "finishBreak", sessionId: 7, rating: 4, note: "done" },
+        ],
+      );
+      // The client-side ranges hold before anything leaves the process.
+      const sent = server.received.length;
+      await assert.rejects(daemon.startBreak(7, 30, 1500), RangeError);
+      await assert.rejects(daemon.extendBreak(7, 4000), RangeError);
+      assert.equal(server.received.length, sent);
+      await server.close();
     },
   ],
   [

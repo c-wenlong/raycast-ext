@@ -41,10 +41,19 @@ export function FinishSessionForm(props: {
       title: "Finishing session",
     });
     try {
-      const result = await getDaemon().finish({
-        rating: Number(values.rating),
-        note: values.note,
-      });
+      // On a break the form's Finish is finishBreak: the id rides along so
+      // a stale form can never close a session that moved on.
+      const finish =
+        props.session.state === "break"
+          ? getDaemon().finishBreak(props.session.id, {
+              rating: Number(values.rating),
+              note: values.note,
+            })
+          : getDaemon().finish({
+              rating: Number(values.rating),
+              note: values.note,
+            });
+      const result = await finish;
       toast.style = Toast.Style.Success;
       toast.title = `Finished: ${result.session.goal}`;
       toast.message = finishToastText(result, props.logCalendarName);
