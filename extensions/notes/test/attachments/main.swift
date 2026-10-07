@@ -29,6 +29,8 @@ if ProcessInfo.processInfo.environment["NOTES_ATTACHMENT_TEST_CHILD"] != "1" {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
+// Test daemons close sockets mid-run; SIGPIPE must not kill the harness.
+signal(SIGPIPE, SIG_IGN)
 
 var failures = 0
 var count = 0
@@ -1069,7 +1071,7 @@ final class MenuTrackingDaemon {
       body = replyBody(claimed: claimed)
     }
     lock.unlock()
-    _ = (body + "\n").withCString { pointer in
+    (body + "\n").withCString { pointer in
       var offset = 0
       let size = strlen(pointer)
       while offset < size {

@@ -206,6 +206,14 @@ final class FocusBridgeClient {
   private(set) var generation = 0
   private var inflight = false
   private var releaseQueued = false
+  /// Serialized actions picked while another request was in flight: a menu
+  /// click during a renew must not be dropped. The generation pins each to
+  /// the attachment that queued it; a release drops the queue outright.
+  private struct QueuedAction {
+    let body: BridgeValue
+    let generation: Int
+  }
+  private var pendingActions: [QueuedAction] = []
   private(set) var claimed = false
   private(set) var last = FocusBridgeStatus()
 
@@ -267,8 +275,30 @@ final class FocusBridgeClient {
     claimed = false
     last.claimed = false
     generation += 1
+    pendingActions.removeAll()
     releaseQueued = true
     if !inflight { flushRelease() }
+  }
+
+  /// After a request finishes: a queued release outranks actions, then
+  /// one FIFO action goes out (its generation must still be current: a
+  /// release or display change voids the rest). No retry on an action's
+  /// own failure: the backend may have applied it.
+  private func flushPendingWork() {
+    guard !inflight else { return }
+    if releaseQueued { flushRelease(); return }
+    pendingActions.removeAll { $0.generation != generation }
+    guard let next = pendingActions.first else { return }
+    pendingActions.removeFirst()
+    send(next.body, kind: .action)
+  }
+
+  /// A daemon that is gone or speaks no bridge can never honour what was
+  /// queued; report the drop once per batch.
+  private func cancelPending(_ message: String) {
+    guard !pendingActions.isEmpty else { return }
+    pendingActions.removeAll()
+    onActionProblem(message)
   }
 
   private func flushRelease() {
@@ -287,10 +317,23 @@ final class FocusBridgeClient {
 
   private func send(_ body: BridgeValue, kind: Kind) {
     guard performsIO else { return }
-    guard !inflight else { return }  // one in flight; the next tick retries
+    if inflight {
+      // Lease and probe traffic still skips and retries on the next tick;
+      // only actions queue, serialized at click time (session id and owner
+      // are never rebound on drain). A queued release belongs to a display
+      // change, so the action is refused instead of sent after it.
+      guard kind == .action else { return }
+      guard !releaseQueued else {
+        onActionProblem("Focus is changing displays; try again.")
+        return
+      }
+      pendingActions.append(QueuedAction(body: body, generation: generation))
+      return
+    }
     // A pending release belongs to the old attachment. Finish it before
     // any probe or new claim can reuse this owner's identity.
     if releaseQueued, kind != .release {
+      if kind == .action { onActionProblem("Focus is changing displays; try again.") }
       flushRelease()
       return
     }
@@ -314,7 +357,7 @@ final class FocusBridgeClient {
     inflight = false
     // Even a stale reply finishes the outstanding request: it must drain
     // the release queued behind it before a new attachment can claim.
-    defer { flushRelease() }
+    defer { flushPendingWork() }
     guard expected == nil || expected == generation else { return }
     var status = last
     switch result {
@@ -328,6 +371,7 @@ final class FocusBridgeClient {
       status.session = nil
       status.actions = []
       if kind == .action { onActionProblem(error.localizedDescription) }
+      cancelPending(error.localizedDescription)
     case .success(let reply):
       if reply["ok"] == .bool(false), let message = reply["error"]?.stringValue {
         let knownRefusal = message == "no live claim for this owner"
@@ -357,7 +401,9 @@ final class FocusBridgeClient {
         status.compatible = false
         status.claimed = false
         status.session = nil
-        if kind == .action, let message = reply["error"]?.stringValue { onActionProblem(message) }
+        let message = reply["error"]?.stringValue ?? "Focus cannot share the notch"
+        if kind == .action { onActionProblem(message) }
+        cancelPending(message)
         apply(status)
         return
       }
