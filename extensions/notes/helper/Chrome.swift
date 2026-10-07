@@ -38,6 +38,9 @@ final class ChromeButton: NSButton {
   var showsChevron = false {
     didSet { needsDisplay = true }
   }
+  /// Called with true on mouseEntered, false on mouseExited, so controls
+  /// like the Focus/Notes tabs can act on hover.
+  var onHover: ((Bool) -> Void)?
   private var hovering = false {
     didSet { needsDisplay = true }
   }
@@ -86,8 +89,14 @@ final class ChromeButton: NSButton {
     trackingArea = area
   }
 
-  override func mouseEntered(with event: NSEvent) { hovering = true }
-  override func mouseExited(with event: NSEvent) { hovering = false }
+  override func mouseEntered(with event: NSEvent) {
+    hovering = true
+    onHover?(true)
+  }
+  override func mouseExited(with event: NSEvent) {
+    hovering = false
+    onHover?(false)
+  }
   override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
   override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
 
