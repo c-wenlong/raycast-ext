@@ -159,12 +159,14 @@ final class AttachedHeaderView: NSView {
   private let browseButton = ChromeButton(symbol: "square.on.square", pointSize: 13, label: "Browse Notes (⌘P)")
   private let newButton = ChromeButton(symbol: "plus", pointSize: 13, label: "New Note (⌘N)")
   private let tabUnderline = NSView()
-  var onTab: ((Tab) -> Void)?
+  /// Second arg pins the card open: clicks pin, hover selection does not.
+  var onTab: ((Tab, Bool) -> Void)?
   var onSettings: ((NSView) -> Void)?
   var run: ((String) -> Void)?
 
   private(set) var tab: Tab = .notes
   private var tabsVisible = false
+  private var pendingHoverTab: Tab?
 
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -185,8 +187,10 @@ final class AttachedHeaderView: NSView {
     }
     focusTab.target = self
     focusTab.action = #selector(focusClicked)
+    focusTab.onHover = { [weak self] entered in self?.tabHover(.focus, entered: entered) }
     notesTab.target = self
     notesTab.action = #selector(notesClicked)
+    notesTab.onHover = { [weak self] entered in self?.tabHover(.notes, entered: entered) }
 
     tabUnderline.wantsLayer = true
     tabUnderline.layer?.backgroundColor = Markdown.accent.cgColor
@@ -214,8 +218,33 @@ final class AttachedHeaderView: NSView {
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
   @objc private func settingsClicked(_ sender: ChromeButton) { onSettings?(sender) }
-  @objc private func focusClicked() { onTab?(.focus) }
-  @objc private func notesClicked() { onTab?(.notes) }
+  @objc private func focusClicked() { onTab?(.focus, true) }
+  @objc private func notesClicked() { onTab?(.notes, true) }
+
+  /// Tabs switch on hover: resting the pointer on a tab for 0.15 s selects
+  /// it (the same dwell the card uses before closing), so a pointer passing
+  /// over on the way elsewhere doesn't flick the panel. Leaving the tab or
+  /// entering the other one cancels or supersedes the pending switch.
+  /// Hover selection passes `pinned: false` so a card the pointer opened
+  /// still closes on its own; only a click pins it.
+  private func tabHover(_ hovered: Tab, entered: Bool) {
+    if entered {
+      guard hovered != tab else { return }
+      pendingHoverTab = hovered
+      NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(commitHoverTab), object: nil)
+      perform(#selector(commitHoverTab), with: nil, afterDelay: 0.15)
+    } else {
+      guard pendingHoverTab == hovered else { return }
+      pendingHoverTab = nil
+      NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(commitHoverTab), object: nil)
+    }
+  }
+
+  @objc private func commitHoverTab() {
+    guard let hovered = pendingHoverTab else { return }
+    pendingHoverTab = nil
+    if hovered != tab { onTab?(hovered, false) }
+  }
   @objc private func command(_ sender: ChromeButton) {
     run?(["palette", "browse", "new"][sender.tag])
   }
@@ -486,7 +515,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     clip.addSubview(content)
 
     content.addSubview(header)
-    header.onTab = { [weak self] tab in self?.select(tab: tab, pinned: true) }
+    header.onTab = { [weak self] tab, pinned in self?.select(tab: tab, pinned: pinned) }
     header.run = { [weak self] command in self?.run(command) }
     header.onSettings = { [weak self] sender in self?.onSettings?(sender) }
     focusScroll.drawsBackground = false
