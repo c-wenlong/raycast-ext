@@ -25,7 +25,7 @@ func runAttachmentReviewRegressions() {
   host.window.orderOut(nil)
 
   let header = AttachedHeaderView(frame: NSRect(x: 0, y: 0, width: 560, height: 40))
-  header.update(tabs: true, title: "Note", clock: "25:00", goal: "Work", paused: false)
+  header.update(tabs: true, title: "Note", clock: "25:00", paused: false)
   header.layoutSubtreeIfNeeded()
   header.layout()
   check("header layout does not invalidate itself", !header.needsLayout)

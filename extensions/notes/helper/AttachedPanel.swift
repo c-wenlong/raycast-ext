@@ -141,8 +141,8 @@ final class IslandStripView: NSView {
 
 /// The header the attached window has instead of the floating window's
 /// toolbar: Focus and Notes tabs when a session is shared (or the note's
-/// title when not), the compact Focus clock and goal, and the Actions /
-/// Browse / New buttons at the right.
+/// title when not), the compact Focus countdown, and the Actions /
+/// Browse / Settings / New buttons at the right.
 final class AttachedHeaderView: NSView {
   static let height: CGFloat = 40
 
@@ -150,7 +150,6 @@ final class AttachedHeaderView: NSView {
 
   private let titleLabel = NSTextField(labelWithString: "Notes")
   private let clockLabel = NSTextField(labelWithString: "")
-  private let goalLabel = NSTextField(labelWithString: "")
   let focusTab = ChromeButton(glyph: "Focus", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Focus tab")
   let notesTab = ChromeButton(glyph: "Notes", font: NSFont.systemFont(ofSize: 12, weight: .semibold), label: "Notes tab")
   private let actionsButton = ChromeButton(symbol: "command", pointSize: 13, label: "Actions (⌘K)")
@@ -176,9 +175,6 @@ final class AttachedHeaderView: NSView {
 
     clockLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
     clockLabel.textColor = NotchMetrics.focusGreen
-    goalLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-    goalLabel.textColor = .secondaryLabelColor
-    goalLabel.lineBreakMode = .byTruncatingTail
 
     for button in [focusTab, notesTab] {
       button.cornerRadius = 6
@@ -212,7 +208,6 @@ final class AttachedHeaderView: NSView {
     addSubview(settingsButton)
     addSubview(titleLabel)
     addSubview(clockLabel)
-    addSubview(goalLabel)
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -250,13 +245,13 @@ final class AttachedHeaderView: NSView {
   }
 
   /// `tabs` shows Focus/Notes (a shared session); `title` is the note
-  /// title; `clock`/`goal` are the compact Focus readout or nil.
-  func update(tabs: Bool, title: String, clock: String?, goal: String?, paused: Bool) {
+  /// title; `clock` is the compact Focus countdown or nil. The goal stays
+  /// in the Focus card; the header shows only the countdown.
+  func update(tabs: Bool, title: String, clock: String?, paused: Bool) {
     tabsVisible = tabs
     titleLabel.stringValue = title
     clockLabel.stringValue = clock ?? ""
     clockLabel.textColor = paused ? NotchMetrics.clockPaused : NotchMetrics.focusGreen
-    goalLabel.stringValue = goal ?? ""
     set(tab: tab)
     needsLayout = true
   }
@@ -304,16 +299,11 @@ final class AttachedHeaderView: NSView {
       titleLabel.frame = NSRect(x: x, y: (bounds.height - 17) / 2, width: width, height: 17)
       x += width + 10
     }
-    // The compact clock and goal sit after the tabs/title.
+    // The compact countdown sits after the tabs/title.
     clockLabel.isHidden = clockLabel.stringValue.isEmpty
-    goalLabel.isHidden = goalLabel.stringValue.isEmpty
     clockLabel.sizeToFit()
-    goalLabel.sizeToFit()
     let clockWidth = max(0, min(clockLabel.frame.width, contentRight - x))
     clockLabel.frame = NSRect(x: x, y: (bounds.height - 15) / 2, width: clockWidth, height: 15)
-    x += clockWidth + (goalLabel.stringValue.isEmpty ? 0 : 6)
-    let goalWidth = max(0, min(goalLabel.frame.width, contentRight - x))
-    goalLabel.frame = NSRect(x: x, y: (bounds.height - 15) / 2, width: goalWidth, height: 15)
 
     var right = bounds.width - pad
     for button in [newButton, browseButton, settingsButton, actionsButton] {
@@ -820,7 +810,7 @@ final class AttachedPanel: NSObject, NSWindowDelegate {
     let shared = mode == .notch && session != nil
     header.update(
       tabs: shared, title: windowTitle, clock: shared ? session?.clock(at: now) : nil,
-      goal: shared ? session?.goal : nil, paused: session?.state == "paused")
+      paused: session?.state == "paused")
     if mode == .notch { relayout() }
     layoutContent()
   }
