@@ -490,6 +490,70 @@ do {
   bar.collapse()
   check("collapsing puts it away", !bar.window.isVisible)
 
+  // The header carries only the countdown; the duplicate goal is omitted
+  // so it never overlaps the hardware notch.
+  let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+  host.now = { t0 }
+  func goalSession(_ state: String) -> FocusSession {
+    FocusSession(json: .object([
+      "id": 3, "goal": "toolbox db sync module", "state": .string(state),
+      "startedAt": "2026-01-01T10:00:00.000Z", "plannedEnd": "2026-01-01T10:25:00.000Z",
+      "remainingSeconds": 2677, "pausedSeconds": 0, "calendarTitle": "",
+      "extendOptions": [300, 600, 900, 1500], "pauseStopsClock": true,
+    ]), at: t0)!
+  }
+  func headerLabels() -> [String] {
+    host.header.subviews.compactMap { $0 as? NSTextField }
+      .filter { !$0.isHidden && !$0.stringValue.isEmpty }.map(\.stringValue)
+  }
+  host.update(session: goalSession("running"))
+  host.expand(tab: .focus, pinned: true)
+  let headerFrameBefore = host.header.frame
+  let chromeFramesBefore = [host.header.focusTab, host.header.notesTab].map(\.frame)
+  for tab in [AttachedHeaderView.Tab.focus, .notes] {
+    host.expand(tab: tab, pinned: true)
+    host.window.display()
+    check("the header shows only the 44:37 countdown on the \(tab == .focus ? "Focus" : "Notes") tab",
+      headerLabels() == ["44:37"], "\(headerLabels())")
+    check("no goal text in the header on the \(tab == .focus ? "Focus" : "Notes") tab",
+      !headerLabels().contains { $0.contains("toolbox") }, "\(headerLabels())")
+  }
+  let pill = host.focusView.subviews.compactMap { $0 as? CountdownPillView }.first!
+  check("the pill keeps the full goal",
+    pill.content.goal == "toolbox db sync module"
+      && CountdownPillView.goalText(pill.content).string.contains("toolbox db sync module"),
+    pill.content.goal)
+
+  // Paused: same countdown, the paused clock colour, header geometry held.
+  host.update(session: goalSession("paused"))
+  host.window.display()
+  let clockField = host.header.subviews.compactMap { $0 as? NSTextField }
+    .first { !$0.isHidden && $0.stringValue == "44:37" }
+  check("paused keeps 44:37 with the paused clock colour",
+    headerLabels() == ["44:37"] && clockField?.textColor == NotchMetrics.clockPaused)
+  host.expand(tab: .notes, pinned: true)
+  host.expand(tab: .focus, pinned: true)
+  host.update(session: goalSession("running"))
+  check("header and chrome frames hold across paused and tab round trips",
+    host.header.frame == headerFrameBefore
+      && [host.header.focusTab, host.header.notesTab].map(\.frame) == chromeFramesBefore)
+  check("the pill still carries the goal", pill.content.goal == "toolbox db sync module")
+
+  host.update(session: nil)
+  host.header.layout()
+  check("no session: the header keeps the note title, no clock or tabs",
+    headerLabels() == ["Scratch"] && host.header.focusTab.isHidden && host.header.notesTab.isHidden,
+    "\(headerLabels())")
+  host.collapse()
+
+  // Menu bar mode keeps its ordinary note heading when nothing is shared.
+  let barHeader = AttachedPanel(mode: .menuBar)
+  barHeader.anchor = { NSRect(x: 1400, y: 982, width: 24, height: 24) }
+  barHeader.update(session: nil)
+  check("menu bar header keeps the default note heading",
+    barHeader.header.subviews.compactMap { ($0 as? NSTextField)?.stringValue }.contains("Notes"))
+  barHeader.window.orderOut(nil)
+
   // The status item itself: private bar, note symbol, toggle wiring.
   let item = MenuBarItem(statusBar: NSStatusBar())
   var toggled = false
