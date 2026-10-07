@@ -382,7 +382,13 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
     guard let view = lastView, view.state == "running" else { return }
     delegate?.presenterPause()
     guard let seconds, seconds > 0 else { return }
-    let id = view.id
+    armTimedPause(sessionId: view.id, seconds: seconds)
+  }
+
+  /// Arms the "resume in `seconds`" timer for session `id`, already asked
+  /// to pause (native) or confirmed paused (hosted). Shared so the hosted
+  /// path gets identical timer/resume semantics.
+  private func armTimedPause(sessionId id: Int, seconds: Int) {
     let task = scheduler.after(TimeInterval(seconds)) { [weak self] in
       guard let self, let pause = self.timedPause, pause.sessionId == id else { return }
       self.timedPause = nil
@@ -390,6 +396,18 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
       self.delegate?.presenterResume()
     }
     timedPause = (id, task, false, clock())
+  }
+
+  var supportsHostedTimedPause: Bool { true }
+
+  /// A session the hosting helper paused through the bridge (`pauseFor`):
+  /// the same timed pause the panel arms, for a session that is really
+  /// paused now. A stale call (another session, or not paused) changes
+  /// nothing and never cancels a live timer.
+  func scheduleHostedPause(sessionId: Int, seconds: Int) {
+    guard seconds > 0, let view = lastView, view.id == sessionId, view.state == "paused" else { return }
+    cancelTimedPause()
+    armTimedPause(sessionId: sessionId, seconds: seconds)
   }
 
   func panelResume() {

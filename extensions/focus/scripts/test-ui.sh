@@ -11,7 +11,7 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p dist
 swiftc -swift-version 5 -o dist/ui-tests \
-  helper/Presenter.swift helper/MenuBar.swift helper/EndSheet.swift helper/UIPresenter.swift \
+  helper/CountdownModel.swift helper/CountdownChrome.swift helper/Presenter.swift helper/MenuBar.swift helper/EndSheet.swift helper/UIPresenter.swift \
   helper/FloatingPanel.swift helper/NotchPanel.swift helper/Glass.swift helper/LiveBackground.swift helper/Completion.swift \
   helper/Protocol.swift helper/Dates.swift helper/Rules.swift helper/Session.swift helper/LogText.swift helper/Config.swift \
   helper/Blocking.swift helper/Categories.swift helper/Matching.swift helper/BlockEngine.swift \

@@ -131,11 +131,14 @@ struct FocusSession: Equatable {
   var pauseStopsClock: Bool
   var receivedAt: Date
 
-  /// The countdown as of `now`: a running session ticks between bridge
-  /// replies; a paused one holds what it had. Never negative, never fake.
+  /// The countdown as of `now`: ticks between bridge replies while the
+  /// clock runs: a running session, or a paused calendar session (its
+  /// pause does not move the planned end). Only an ad-hoc pause holds
+  /// what it had (`pauseStopsClock`). Never negative, never fake.
   func remaining(at now: Date) -> Int {
-    guard state == "running" else { return remainingSeconds }
-    return max(0, remainingSeconds - Int(now.timeIntervalSince(receivedAt).rounded(.down)))
+    guard !(state == "paused" && pauseStopsClock) else { return remainingSeconds }
+    let elapsed = max(0, now.timeIntervalSince(receivedAt))
+    return max(0, remainingSeconds - Int(elapsed.rounded(.down)))
   }
 
   /// "mm:ss" (or h:mm:ss past an hour), like Focus's own strip.
@@ -178,6 +181,9 @@ struct FocusBridgeStatus: Equatable {
   /// Our lease is live: Focus's island is suppressed for us.
   var claimed = false
   var session: FocusSession?
+  /// The `notchAction` verbs the daemon advertised; empty for an old
+  /// daemon, which still supports pause/resume/stop/extend.
+  var actions: Set<String> = []
 }
 
 final class FocusBridgeClient {
@@ -320,6 +326,7 @@ final class FocusBridgeClient {
       status.present = false
       status.claimed = false
       status.session = nil
+      status.actions = []
       if kind == .action { onActionProblem(error.localizedDescription) }
     case .success(let reply):
       if reply["ok"] == .bool(false), let message = reply["error"]?.stringValue {
@@ -358,6 +365,8 @@ final class FocusBridgeClient {
       status.compatible = true
       status.display = reply["display"]?.stringValue ?? ""
       status.session = reply["session"].flatMap { FocusSession(json: $0, at: now()) }
+      // A missing or malformed list just means the original controls.
+      status.actions = Set(reply["actions"]?.arrayValue?.compactMap { $0.stringValue } ?? [])
       if kind == .release {
         claimed = false
         status.claimed = false

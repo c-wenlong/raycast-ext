@@ -9,7 +9,7 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p dist
 swiftc -swift-version 5 -o dist/site-tests \
-  helper/Presenter.swift helper/Blocking.swift helper/BlockPage.swift helper/BlockServer.swift \
+  helper/CountdownModel.swift helper/Presenter.swift helper/Blocking.swift helper/BlockPage.swift helper/BlockServer.swift \
   helper/BrowserWatch.swift helper/SiteBlocking.swift \
   test/site/main.swift
 dist/site-tests "$@"

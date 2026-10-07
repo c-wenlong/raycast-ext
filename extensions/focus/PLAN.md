@@ -513,3 +513,25 @@ it:
   pins it until an explicit close. The end card is still Focus's: it
   appears above the shared window because it already sits at a higher
   level.
+
+Hover tabs and native controls (2026-10-07): on the shared card the
+Focus/Notes tabs switch on pointer entry (no click, no focus change, no
+pin; clicks remain the keyboard/accessibility path). The Focus tab is the
+original countdown card rendered by Focus's own presentation code:
+`CountdownModel.swift` (SessionView, PanelContent, SweepClock, PanelSweep
+and the shared clock formatter) and `CountdownChrome.swift` (PanelStyle,
+CountdownPillView, PanelButton) moved out of FloatingPanel.swift and
+Presenter.swift unchanged, and Notes compiles them plus Glass.swift into
+its helper. Presentation is shared; sessions, leases and every rule still
+live in the daemon over the socket. The hosted card is compact (header 40
++ body 98) while Notes keeps its half-height editor; the host freezes the
+editor before resizing so its scroll and undo never move. `notchAction`
+grew additive verbs validated by the same lease/display/session checks
+before anything mutates: `pauseFor` (seconds 1-86400: the daemon pauses,
+then `SessionPresenter.scheduleHostedPause` arms the same resume timer
+the panel uses), `edit` (opens the Focus Today deeplink), `cancel`
+(finishSession with no rating/note, no end sheet) and `moveToPanel` /
+`moveToMenuBar` (write only `countdownDisplay` and drop the claim).
+Replies advertise the accepted verbs in `actions`; v1 hosts ignore the
+field and old daemons simply omit it, so Notes keeps the legacy controls
+and dims the extras.

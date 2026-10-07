@@ -538,7 +538,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       host.onResign = { [weak self] in self?.hide() }
       attached = host
       host.windowTitle = panel.title
-      host.update(session: bridge.last.display == "notch" ? bridge.last.session : nil)
+      host.update(session: bridge.last.display == "notch" ? bridge.last.session : nil, actions: bridge.last.actions)
       if value == .menuBar {
         if menuBarItem == nil {
           menuBarItem = MenuBarItem()
@@ -648,7 +648,7 @@ final class PanelController: NSObject, NSApplicationDelegate, NSTextViewDelegate
       return
     }
     if status.present, status.compatible { exitFallback() }
-    attached?.update(session: status.display == "notch" ? status.session : nil)
+    attached?.update(session: status.display == "notch" ? status.session : nil, actions: status.actions)
   }
 
   /// Once a second: renew the lease while the notch is ours and healthy,
