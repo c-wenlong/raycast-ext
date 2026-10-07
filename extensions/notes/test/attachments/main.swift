@@ -906,6 +906,76 @@ do {
   for item in revMore.items { perform(item) }
   check("a capability removed while open refuses the new verbs", bridged.isEmpty, "\(bridged)")
 
+  // A break comes through the bridge as a paused snapshot carrying the new
+  // break fields (v1 clients never see "break"). Received at 14:27 with a
+  // break to 14:32 and a 25 min next block.
+  let breakJSON: BridgeValue = .object([
+    "id": 3, "goal": "toolbox db sync module", "state": "paused",
+    "startedAt": "2026-10-07T14:00:00Z", "plannedEnd": "2026-10-07T14:32:00Z",
+    "remainingSeconds": 300, "pausedSeconds": 120, "calendarTitle": "",
+    "extendOptions": .array([300, 900, 1500, 2700].map { .int($0) }),
+    "pauseStopsClock": false,
+    "breakUntil": "2026-10-07T14:32:00Z", "nextFocusSeconds": 1500,
+  ])
+  // Received at 14:27 with 300 s of rest left (breakUntil 14:32).
+  let t1427 = FocusSession(json: breakJSON, at: Date(timeIntervalSince1970: 0))!.breakUntil!.addingTimeInterval(-300)
+  let breakReceived = FocusSession(json: breakJSON, at: t1427)!
+  check("break: parses and counts the break", breakReceived.isOnBreak
+    && breakReceived.remaining(at: t1427.addingTimeInterval(60)) == 240)
+  let breakView = FocusTabView.adapter(breakReceived, at: t1427)
+  check("break: the adapter reads the break", breakView.state == "break" && breakView.isOnBreak
+    && breakView.nextFocusSeconds == 1500 && breakView.plannedEnd == breakReceived.breakUntil)
+  card.update(session: breakReceived, actions: allCaps.union(["finishBreak", "extendBreak"]), at: t1427)
+  card.layout()
+  let breakPill = card.subviews.compactMap { $0 as? CountdownPillView }.first!
+  check("break: the pill is muted and prefixed", breakPill.content.paused
+    && breakPill.content.goal == "Break · toolbox db sync module" && breakPill.content.progress == 0,
+    "\(breakPill.content)")
+  check("break: Start now and Finish are up", card.pauseButton.title == "Start now"
+    && card.completeButton.title == "Finish" && card.pauseButton.isEnabled && card.completeButton.isEnabled)
+  sent.removeAll()
+  card.pauseButton.performClick(nil)
+  check("break: Start now sends the legacy resume", sent.last?.0 == "resume" && sent.last?.1 == nil)
+  card.completeButton.performClick(nil)
+  check("break: Finish sends finishBreak", sent.last?.0 == "finishBreak" && sent.last?.1 == nil)
+  card.moreButton.performClick(nil)
+  let breakMore = menus.last!
+  check("break: the more menu offers the break extension",
+    breakMore.items.map { $0.isSeparatorItem ? "---" : $0.title }
+      == ["Edit", "Cancel", "---", "Move to Floating Panel", "Move to Menu Bar", "---", "+5 min break"],
+    "\(breakMore.items.map { $0.isSeparatorItem ? "---" : $0.title })")
+  perform(breakMore.items.last!)
+  check("break: +5 min break dispatches extendBreak 300", sent.last?.0 == "extendBreak" && sent.last?.1 == 300, "\(sent)")
+
+  // An old daemon (no breakUntil field, no new verbs) stays a plain paused
+  // session and Finish stays dark.
+  card.update(session: calPaused, actions: allCaps, at: fakeNow)
+  check("old daemon: a paused session is unchanged", card.pauseButton.title == "Resume"
+    && card.completeButton.title == "Complete" && card.completeButton.isEnabled)
+  card.update(session: breakReceived, actions: allCaps, at: t1427)
+  check("break: Finish disabled when finishBreak is not advertised",
+    card.completeButton.isEnabled == false && card.pauseButton.isEnabled)
+
+  // The editor keeps its text and selection across running → break →
+  // running updates (the card is rebuilt in place).
+  let editHost = AttachedPanel(mode: .notch)
+  let editRoot = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 600))
+  let editScroll = NSScrollView(frame: editRoot.bounds)
+  let editTv = NSTextView(frame: editScroll.bounds)
+  editTv.string = "# Scratch\nkept"
+  editTv.setSelectedRange(NSRange(location: 10, length: 4))
+  editScroll.documentView = editTv
+  editRoot.addSubview(editScroll)
+  editHost.attach(root: editRoot)
+  let running3 = makeSession(state: "running", pauseStopsClock: false)
+  editHost.update(session: running3, actions: allCaps)
+  editHost.update(session: breakReceived, actions: allCaps.union(["finishBreak", "extendBreak"]))
+  editHost.update(session: running3, actions: allCaps)
+  check("break: the editor never blinks across states",
+    editTv.string == "# Scratch\nkept" && editTv.selectedRange() == NSRange(location: 10, length: 4),
+    "\(editTv.selectedRange())")
+  card.update(session: running, actions: allCaps, at: fakeNow)
+
   // A session ending stops the sweep and disables the controls.
   let deadCard = FocusTabView(frame: NSRect(x: 0, y: 0, width: 560, height: FocusTabView.naturalHeight))
   deadCard.now = { fakeNow }

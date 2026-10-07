@@ -11,16 +11,23 @@ import Foundation
 struct SessionView: Equatable {
   var id: Int
   var goal: String
-  var state: String              // "running", "paused", "ending"
+  var state: String              // "running", "paused", "ending", "break"
   var startedAt: Date
-  var plannedEnd: Date           // extended end, if extended
+  var plannedEnd: Date           // extended end; the break's end while onBreak
   var remainingSeconds: Int      // never negative; 0 while ending
-  var pausedSeconds: Int         // total time spent paused so far
+  var pausedSeconds: Int         // total non-focus time so far
   var calendarTitle: String
-  var extendOptions: [Int]       // seconds, e.g. [300, 600, 900, 1500]
+  var extendOptions: [Int]       // seconds, e.g. [300, 900, 1500, 2700]
   /// True for an ad-hoc session: a pause holds `remainingSeconds` and moves
   /// `plannedEnd` on (Session.swift), so its fill freezes while paused.
   var pauseStopsClock = false
+  /// On a break: when the break ends.
+  var breakUntil: Date? = nil
+  /// On a break: the next focus block's length, seconds.
+  var nextFocusSeconds: Int? = nil
+  /// The task is resting between focus blocks (the hosted bridge still
+  /// reports state "paused" to old clients, with `breakUntil` set).
+  var isOnBreak: Bool { state == "break" || breakUntil != nil }
 }
 
 /// "mm:ss" under an hour, "h:mm:ss" from an hour up; never negative.
@@ -60,9 +67,10 @@ struct PanelContent: Equatable {
 
   init(_ view: SessionView) {
     clock = CountdownModel.clock(view.state == "ending" ? 0 : view.remainingSeconds)
-    paused = view.state == "paused"
+    paused = view.state == "paused" || view.isOnBreak
     progress = PanelContent.progress(view)
-    goal = view.goal.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    let text = view.goal.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    goal = view.isOnBreak ? "Break · \(text)" : text
   }
 
   /// How much of the session has gone: 1 - remaining / (plannedEnd - start).
@@ -70,6 +78,8 @@ struct PanelContent: Equatable {
   /// so lowers the fill. An ad-hoc session's length leaves out its pauses
   /// (`PanelSweep.focused`), since they moved its planned end.
   static func progress(_ view: SessionView) -> Double {
+    // A break is not focus: no green fill while the task rests.
+    if view.isOnBreak { return 0 }
     let view = PanelSweep.focused(view)
     let total = view.plannedEnd.timeIntervalSince(view.startedAt)
     guard total > 0 else { return 1 }
@@ -191,6 +201,10 @@ struct PanelSweep: Equatable {
         let reported = PanelContent.progress(view)
         frozen = clock.map { min($0.progress(at: now), reported) } ?? reported
       }
+      clock = nil
+    case "break":
+      // A break is not focus: the fill holds empty (the digits still tick).
+      frozen = 0
       clock = nil
     case "running", "paused":
       frozen = nil

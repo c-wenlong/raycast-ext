@@ -5,7 +5,7 @@ import Foundation
 //
 // A compact card, like a notification, that appears when a session reaches
 // its end: the goal over "Time's up" or "Stopped" with the focused time;
-// five stars and a one-line note on one row; Extend +5 / +10 / +15 / +25 min
+// five stars and a one-line note on one row; Extend +5 / +15 / +25 / +45 min
 // and a primary Finish (Return) on the next. Escape does nothing (PLAN.md:
 // blocking stays on until the card is answered).
 //
@@ -231,6 +231,10 @@ final class StarRating: NSView {
 final class SheetButton: NSButton {
   let primary: Bool
   let hint: String?
+  /// A picked choice in the break chooser (accent edge).
+  var picked = false {
+    didSet { if picked != oldValue { needsDisplay = true } }
+  }
   private var hovering = false {
     didSet { needsDisplay = true }
   }
@@ -299,8 +303,8 @@ final class SheetButton: NSButton {
         SheetStyle.hover.setFill()
         path.fill()
       }
-      SheetStyle.border.setStroke()
-      path.lineWidth = 1
+      (picked ? SheetStyle.accent : SheetStyle.border).setStroke()
+      path.lineWidth = picked ? 1.5 : 1
       path.stroke()
     }
 
@@ -357,10 +361,31 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   let titleLabel = NSTextField(labelWithString: "")
   let statusLabel = NSTextField(labelWithString: "")
   let stars = StarRating(frame: .zero)
+  let well = NoteWell()
   let noteField = NSTextField(string: "")
   let extendRow = NSStackView()
   private(set) var extendButtons: [SheetButton] = []
   let finishButton = SheetButton(title: "Finish", hint: "↩", primary: true)
+  /// Everything below the stars/note row, as a vertical stack so a hidden
+  /// section (the collapsed picker, the ready card's blocks) takes no room.
+  let controls = NSStackView()
+  /// "Take a break…" opens the inline chooser under it (no new window).
+  let breakToggle = SheetButton(title: "Take a break…")
+  /// The expanded chooser: break length, next block's length, the CTA.
+  let breakChooser = NSView()
+  private(set) var breakButtons: [SheetButton] = []
+  private(set) var focusButtons: [SheetButton] = []
+  /// The "Next focus:" row; its buttons follow the session's extendOptions.
+  let focusRow = NSStackView()
+  let readyHelper = NSTextField(labelWithString: "Blocking returns only when you start")
+  let startBreakButton = SheetButton(title: "Start 5 min break", primary: true)
+  let breakHelper = NSTextField(labelWithString: "")
+  /// The gentle card when a break ends: no auto-finish, no resume by itself.
+  let readyBlock = NSView()
+  let readyLabel = NSTextField(labelWithString: "")
+  let startNextButton = SheetButton(title: "Start 25 min", hint: "↩", primary: true)
+  let moreBreakButton = SheetButton(title: "+5 min break")
+  let readyFinishButton = SheetButton(title: "Finish")
 
   /// The session the sheet is (or was last) asking about.
   private(set) var session: SessionView?
@@ -379,6 +404,17 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   private var shownAt = Date.distantPast
   private let clock: () -> Date
   private var shownExtendOptions: [Int]?
+  /// The picked break and next-block lengths (5 min / 25 min by default).
+  private(set) var breakSeconds = 300
+  private(set) var focusSeconds = 1500
+  /// The chooser is open under the card's own buttons.
+  private(set) var pickerExpanded = false
+  /// The break's end card is up ("Break finished"), not an end sheet.
+  private(set) var readyMode = false
+  private static let breakChoices = [300, 600, 900]
+  /// The extend row and Finish on one line, and the "Take a break…" row.
+  private let extendLine = NSStackView()
+  private let toggleRow = NSStackView()
 
   /// Return and 1 to 5 are ignored this long after the sheet appears, so
   /// keys typed into another app at that moment cannot answer it.
@@ -504,7 +540,6 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     stars.setContentHuggingPriority(.required, for: .horizontal)
     stars.onPick = { [weak self] _ in self?.onEngage?() }
 
-    let well = NoteWell()
     well.translatesAutoresizingMaskIntoConstraints = false
     noteField.isBordered = false
     noteField.drawsBackground = false
@@ -531,7 +566,103 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     finishButton.setContentHuggingPriority(.required, for: .horizontal)
     finishButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-    for view in [titleLabel, statusLabel, stars, well, extendRow, finishButton] as [NSView] { content.addSubview(view) }
+    // The Extend row and Finish share one line, as before.
+    extendLine.orientation = .horizontal
+    extendLine.spacing = 8
+    extendLine.addArrangedSubview(extendRow)
+    extendLine.addArrangedSubview(finishButton)
+
+    // The break chooser under the toggle: "Break: 5/10/15 min", "Next
+    // focus:" and the CTA. Its width follows the card (360 pt minus padding).
+    breakToggle.target = self
+    breakToggle.action = #selector(breakToggleClicked)
+    breakToggle.setAccessibilityLabel("Take a break")
+    breakToggle.setContentHuggingPriority(.required, for: .horizontal)
+    toggleRow.orientation = .horizontal
+    toggleRow.addArrangedSubview(breakToggle)
+    toggleRow.addArrangedSubview(NSView())
+
+    // The chooser's rows: "Break: 5/10/15 min", "Next focus: <options>",
+    // the helper with the CTA on the right. Each is a horizontal stack, so
+    // a choice row simply hugs its buttons.
+    func caption(_ text: String) -> NSTextField {
+      let label = NSTextField(labelWithString: text)
+      label.font = SheetStyle.statusFont
+      label.textColor = SheetStyle.status
+      label.setContentHuggingPriority(.required, for: .horizontal)
+      return label
+    }
+    breakButtons = Self.breakChoices.map { seconds in
+      let button = SheetButton(title: MenuBar.extendTitle(seconds))
+      button.tag = seconds
+      button.target = self
+      button.action = #selector(breakPicked(_:))
+      return button
+    }
+    breakHelper.font = SheetStyle.statusFont
+    breakHelper.textColor = SheetStyle.status
+    startBreakButton.target = self
+    startBreakButton.action = #selector(startBreakClicked)
+    startBreakButton.setContentHuggingPriority(.required, for: .horizontal)
+    focusRow.spacing = 6
+    focusRow.orientation = .horizontal
+    focusRow.addArrangedSubview(caption("Next focus:"))
+    let breakLine = NSStackView(views: [caption("Break:")] + breakButtons + [NSView()])
+    breakLine.orientation = .horizontal
+    breakLine.spacing = 6
+    // The helper sits under the CTA, not beside it: both would not fit.
+    let ctaLine = NSStackView(views: [startBreakButton, NSView()])
+    ctaLine.orientation = .horizontal
+    let chooserStack = NSStackView(views: [breakLine, focusRow, ctaLine, breakHelper])
+    chooserStack.orientation = .vertical
+    chooserStack.spacing = SheetStyle.rowGap
+    chooserStack.translatesAutoresizingMaskIntoConstraints = false
+    breakChooser.addSubview(chooserStack)
+    NSLayoutConstraint.activate([
+      chooserStack.leadingAnchor.constraint(equalTo: breakChooser.leadingAnchor),
+      chooserStack.trailingAnchor.constraint(equalTo: breakChooser.trailingAnchor),
+      chooserStack.topAnchor.constraint(equalTo: breakChooser.topAnchor),
+      chooserStack.bottomAnchor.constraint(equalTo: breakChooser.bottomAnchor),
+    ])
+
+    // The ready card: "Ready for another N min?" plus its three answers.
+    readyLabel.font = SheetStyle.statusFont
+    readyLabel.textColor = SheetStyle.status
+    let readyRow = NSStackView(views: [startNextButton, moreBreakButton, readyFinishButton, NSView()])
+    readyRow.orientation = .horizontal
+    readyRow.spacing = 8
+    startNextButton.target = self
+    startNextButton.action = #selector(startNextClicked)
+    moreBreakButton.target = self
+    moreBreakButton.action = #selector(moreBreakClicked)
+    moreBreakButton.setAccessibilityLabel("Extend the break by 5 minutes")
+    readyFinishButton.target = self
+    readyFinishButton.action = #selector(readyFinishClicked)
+    readyLabel.translatesAutoresizingMaskIntoConstraints = false
+    readyHelper.font = SheetStyle.statusFont
+    readyHelper.textColor = SheetStyle.status
+    readyHelper.translatesAutoresizingMaskIntoConstraints = false
+    readyBlock.addSubview(readyLabel)
+    readyBlock.addSubview(readyRow)
+    readyBlock.addSubview(readyHelper)
+    readyRow.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      readyLabel.leadingAnchor.constraint(equalTo: readyBlock.leadingAnchor, constant: 2),
+      readyLabel.topAnchor.constraint(equalTo: readyBlock.topAnchor),
+      readyRow.topAnchor.constraint(equalTo: readyLabel.bottomAnchor, constant: SheetStyle.rowGap),
+      readyRow.leadingAnchor.constraint(equalTo: readyBlock.leadingAnchor),
+      readyRow.trailingAnchor.constraint(equalTo: readyBlock.trailingAnchor),
+      readyHelper.topAnchor.constraint(equalTo: readyRow.bottomAnchor, constant: SheetStyle.rowGap - 2),
+      readyHelper.leadingAnchor.constraint(equalTo: readyLabel.leadingAnchor),
+      readyHelper.bottomAnchor.constraint(equalTo: readyBlock.bottomAnchor),
+    ])
+
+    controls.orientation = .vertical
+    controls.spacing = SheetStyle.rowGap
+    controls.translatesAutoresizingMaskIntoConstraints = false
+    for row in [extendLine, toggleRow, breakChooser, readyBlock] { controls.addArrangedSubview(row) }
+
+    for view in [titleLabel, statusLabel, stars, well, controls] as [NSView] { content.addSubview(view) }
     let pad = SheetStyle.padding
     let side = pad + 2
     NSLayoutConstraint.activate([
@@ -555,16 +686,18 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
       noteField.trailingAnchor.constraint(equalTo: well.trailingAnchor, constant: -8),
       noteField.centerYAnchor.constraint(equalTo: well.centerYAnchor),
 
-      extendRow.topAnchor.constraint(equalTo: stars.bottomAnchor, constant: SheetStyle.rowGap),
-      extendRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
       extendRow.heightAnchor.constraint(equalToConstant: SheetStyle.controlHeight),
-      finishButton.leadingAnchor.constraint(equalTo: extendRow.trailingAnchor, constant: 8),
-      finishButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
-      finishButton.centerYAnchor.constraint(equalTo: extendRow.centerYAnchor),
-      extendRow.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -pad),
+      controls.topAnchor.constraint(equalTo: stars.bottomAnchor, constant: SheetStyle.rowGap),
+      controls.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
+      controls.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
+      controls.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -pad),
     ])
     content.nextKeyView = noteField
     noteField.nextKeyView = content
+    // The ready card's Tab loop touches only its own buttons.
+    startNextButton.nextKeyView = moreBreakButton
+    moreBreakButton.nextKeyView = readyFinishButton
+    readyFinishButton.nextKeyView = startNextButton
   }
 
   /// A stretchable rounded mask for the blur.
@@ -599,22 +732,81 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     extendRow.isHidden = options.isEmpty
   }
 
+  /// The "Next focus" choices mirror the session's extend options; the
+  /// default stays the middle-length 25 minutes.
+  private func setFocusOptions(_ options: [Int]) {
+    if focusSeconds <= 0 || !options.contains(focusSeconds) {
+      focusSeconds = options.contains(1500) ? 1500 : (options.count > 1 ? options[1] : options.first ?? 1500)
+    }
+    for button in focusButtons { focusRow.removeArrangedSubview(button); button.removeFromSuperview() }
+    focusButtons = options.map { seconds in
+      let button = SheetButton(title: MenuBar.extendTitle(seconds))
+      button.tag = seconds
+      button.target = self
+      button.action = #selector(focusPicked(_:))
+      return button
+    }
+    // Rebuild the row: caption first, then the choices, then a spacer.
+    while focusRow.arrangedSubviews.count > 1 {
+      let extra = focusRow.arrangedSubviews[1]
+      focusRow.removeArrangedSubview(extra)
+      extra.removeFromSuperview()
+    }
+    for button in focusButtons { focusRow.addArrangedSubview(button) }
+    focusRow.addArrangedSubview(NSView())
+    syncPickerText()
+  }
+
+  /// The picked outlines, CTA title and helper follow the two selections.
+  private func syncPickerText() {
+    breakButtons.forEach { $0.picked = $0.tag == breakSeconds }
+    focusButtons.forEach { $0.picked = $0.tag == focusSeconds }
+    startBreakButton.title = "Start \(MenuBar.extendTitle(breakSeconds)) break"
+    startBreakButton.setAccessibilityLabel("Start a \(MenuBar.extendTitle(breakSeconds)) break")
+    breakHelper.stringValue = "Then ask to start \(Self.duration(focusSeconds)) of focus"
+  }
+
   // MARK: Showing
 
   /// Shows the sheet for `view` top centre of `screen`, or refreshes it when
   /// it is already up. A different session starts with no stars and no note;
-  /// the same session (back after an extend) keeps what was entered.
+  /// the same session (back after an extend, or still the same task through
+  /// its breaks) keeps what was entered. For a session on a break whose end
+  /// passed, the card is the ready card: "Break finished", no auto-finish.
   func show(_ view: SessionView, on screen: ScreenGeometry?) {
     if session?.id != view.id {
       stars.rating = nil
       noteField.stringValue = ""
+      pickerExpanded = false
+      // A new task's chooser starts at the defaults; picks stay only as
+      // long as the same task's cards keep coming back.
+      breakSeconds = 300
+      focusSeconds = 1500
     }
     session = view
     answered = false
+    readyMode = view.isOnBreak
     let goal = view.goal.trimmingCharacters(in: .whitespacesAndNewlines)
     titleLabel.stringValue = goal.isEmpty ? "Focus session" : goal
-    statusLabel.stringValue = Self.statusText(view, now: clock())
-    setExtendOptions(view.extendOptions)
+    if readyMode {
+      let next = view.nextFocusSeconds ?? focusSeconds
+      statusLabel.stringValue = "Break finished"
+      readyLabel.stringValue = "Ready for another \(Self.duration(next))?"
+      startNextButton.title = "Start \(MenuBar.extendTitle(next))"
+      startNextButton.setAccessibilityLabel("Start the next \(MenuBar.extendTitle(next)) focus block")
+    } else {
+      statusLabel.stringValue = Self.statusText(view, now: clock())
+      setExtendOptions(view.extendOptions)
+      setFocusOptions(view.extendOptions)
+    }
+    // The ready card answers beside its question; the end card keeps the
+    // stars and note (they are kept for a break's finish too, just hidden).
+    stars.isHidden = readyMode
+    well.isHidden = readyMode
+    extendLine.isHidden = readyMode
+    toggleRow.isHidden = readyMode
+    breakChooser.isHidden = readyMode || !pickerExpanded
+    readyBlock.isHidden = !readyMode
 
     content.layoutSubtreeIfNeeded()
     let height = ceil(content.fittingSize.height)
@@ -645,7 +837,7 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
       panel.orderFrontRegardless()
       panel.invalidateShadow()
     }
-    panel.makeFirstResponder(content)
+    panel.makeFirstResponder(readyMode ? startNextButton : content)
   }
 
   /// Top centre of `screen`, `PanelStyle.margin` below the menu bar: where
@@ -690,6 +882,85 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
     delegate?.presenterExtend(seconds: seconds)
   }
 
+  // MARK: Break
+
+  /// "Take a break…" opens (or closes) the inline chooser; it is use of the
+  /// card, so the auto-finish stops for good. The card refits in place.
+  @objc private func breakToggleClicked() {
+    pickerExpanded.toggle()
+    breakChooser.isHidden = !pickerExpanded
+    onEngage?()
+    refit()
+  }
+
+  /// Re-fit the card to what its rows currently need (picker in or out).
+  private func refit() {
+    content.layoutSubtreeIfNeeded()
+    let height = ceil(content.fittingSize.height)
+    guard height != panel.frame.height else { return }
+    let top = panel.frame.maxY
+    panel.setContentSize(NSSize(width: Self.width, height: height))
+    panel.setFrameTopLeftPoint(NSPoint(x: panel.frame.minX, y: top))
+    if headless {
+      headlessFrame = NSRect(
+        x: headlessFrame.minX, y: headlessFrame.maxY - height, width: Self.width, height: height)
+    }
+  }
+
+  @objc private func breakPicked(_ sender: NSButton) {
+    breakSeconds = sender.tag
+    syncPickerText()
+    onEngage?()
+  }
+
+  @objc private func focusPicked(_ sender: NSButton) {
+    focusSeconds = sender.tag
+    syncPickerText()
+    onEngage?()
+  }
+
+  @objc private func startBreakClicked() { startBreak() }
+
+  /// The chooser's CTA (or Return while it is open): the task rests for the
+  /// picked break, the next block is the picked focus length.
+  func startBreak() {
+    guard let session, !answered, session.state == "ending" else { return }
+    answered = true
+    hide()
+    delegate?.presenterStartBreak(sessionId: session.id, seconds: breakSeconds, focusSeconds: focusSeconds)
+  }
+
+  // MARK: Ready card (the break's end)
+
+  /// "Start N min" (or Return on the ready card): the next focus block.
+  @objc private func startNextClicked() { resumeBreak() }
+
+  func resumeBreak() {
+    guard let session, !answered, session.isOnBreak else { return }
+    answered = true
+    hide()
+    delegate?.presenterResumeBreak(sessionId: session.id)
+  }
+
+  /// "+5 min break": more rest on the same open break.
+  @objc private func moreBreakClicked() {
+    guard let session, !answered, session.isOnBreak else { return }
+    answered = true
+    hide()
+    delegate?.presenterExtendBreak(sessionId: session.id, seconds: 300)
+  }
+
+  /// The task is done for good: the stars and note kept while it cycled
+  /// go with the final Finish.
+  @objc private func readyFinishClicked() {
+    guard let session, !answered, session.isOnBreak else { return }
+    answered = true
+    let rating = stars.rating
+    let note = self.note
+    hide()
+    delegate?.presenterFinishBreak(sessionId: session.id, rating: rating, note: note)
+  }
+
   // MARK: Keys
 
   private var keysArmed: Bool { clock().timeIntervalSince(shownAt) >= keyboardGrace }
@@ -698,21 +969,38 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   /// the grace period every key but Escape is swallowed, so typing meant
   /// for another app neither answers the card nor counts as using it.
   func handleKey(_ event: NSEvent) -> Bool {
-    if event.keyCode == 53 { return true }  // Escape: waits for an answer
+    if event.keyCode == 53 {  // Escape: waits for an answer; with the picker open it just closes it
+      if pickerExpanded {
+        pickerExpanded = false
+        breakChooser.isHidden = true
+        refit()
+      }
+      return true
+    }
     guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
     switch event.keyCode {
     case 36, 76:  // Return, keypad Enter
-      if keysArmed { finish() }
+      if keysArmed {
+        if readyMode { resumeBreak() } else if pickerExpanded { startBreak() } else { finish() }
+      }
       return true
     case 48:  // Tab
       if keysArmed {
         onEngage?()
-        panel.makeFirstResponder(noteField)
+        // The ready card has no note; Tab cycles its visible buttons.
+        if readyMode {
+          panel.makeFirstResponder(startNextButton)
+          panel.selectNextKeyView(startNextButton)
+        } else {
+          panel.makeFirstResponder(noteField)
+        }
       }
       return true
     default:
       break
     }
+    // The ready card's stars and note are hidden; keys cannot reach them.
+    if readyMode { return true }
     guard let characters = event.characters, !characters.isEmpty else { return false }
     if let digit = Int(characters), (1...StarRating.count).contains(digit) {
       if keysArmed {
@@ -741,9 +1029,16 @@ final class EndSheet: NSObject, NSTextFieldDelegate {
   func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
     switch selector {
     case #selector(NSResponder.insertNewline(_:)):
-      if keysArmed { finish() }
+      // Return means the same thing in the field as on the card: on the
+      // ready card it starts the next block, in the open chooser it starts
+      // the break, otherwise it finishes.
+      if keysArmed {
+        if readyMode { resumeBreak() } else if pickerExpanded { startBreak() } else { finish() }
+      }
       return true
     case #selector(NSResponder.cancelOperation(_:)):
+      // Escape closes the chooser first, then just leaves the note.
+      if pickerExpanded { breakToggleClicked() }
       panel.makeFirstResponder(content)
       return true
     default:

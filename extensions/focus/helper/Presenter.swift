@@ -7,11 +7,32 @@ protocol SessionPresenterDelegate: AnyObject {
   func presenterExtend(seconds: Int)
   func presenterStop()
   func presenterFinish(rating: Int?, note: String?)
+  /// The break controls name their session: a stale card or hosted click
+  /// can never reach another task.
+  func presenterStartBreak(sessionId: Int, seconds: Int, focusSeconds: Int)
+  func presenterResumeBreak(sessionId: Int)
+  func presenterExtendBreak(sessionId: Int, seconds: Int)
+  func presenterFinishBreak(sessionId: Int, rating: Int?, note: String?)
+}
+
+/// Defaults keep delegates that predate the break controls (the UI demo,
+/// headless presenters) compiling; the real core implements all four.
+extension SessionPresenterDelegate {
+  func presenterStartBreak(sessionId: Int, seconds: Int, focusSeconds: Int) {}
+  func presenterResumeBreak(sessionId: Int) {}
+  func presenterExtendBreak(sessionId: Int, seconds: Int) {}
+  func presenterFinishBreak(sessionId: Int, rating: Int?, note: String?) {}
 }
 
 /// The session logic drives the UI through this. Calls arrive on the main thread.
+/// A break's Finish reached a host (the shared notch's helper) whose own UI
+/// holds no stars or note: the presenter that owns the end card fills in
+/// the review it kept for that session. Called on the main thread; the
+/// session-targeted delegate call re-validates id and break state.
 protocol SessionPresenter: AnyObject {
   var delegate: SessionPresenterDelegate? { get set }
+  /// Finish `sessionId`'s break with whatever review the end card kept.
+  func finishHostedBreak(sessionId: Int)
   /// Called whenever anything visible changes and once a second while a session exists.
   func update(_ view: SessionView?)
   /// The session reached the end sheet (timer ran out, planned end passed while paused, or manual stop).
@@ -31,11 +52,15 @@ protocol SessionPresenter: AnyObject {
 }
 
 /// UIPresenter implements hosting and timed pauses; presenters that have
-/// no UI (tests, headless) ignore both.
+/// no UI (tests, headless) ignore both and finish a hosted break with no
+/// review.
 extension SessionPresenter {
   func setNotchHosted(_ hosted: Bool) {}
   var supportsHostedTimedPause: Bool { false }
   func scheduleHostedPause(sessionId: Int, seconds: Int) {}
+  func finishHostedBreak(sessionId: Int) {
+    delegate?.presenterFinishBreak(sessionId: sessionId, rating: nil, note: nil)
+  }
 }
 
 /// Used when no UI is attached (tests, headless runs).

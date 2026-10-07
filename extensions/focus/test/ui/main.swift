@@ -29,6 +29,14 @@ final class FakeDelegate: SessionPresenterDelegate {
   func presenterFinish(rating: Int?, note: String?) {
     calls.append("finish \(rating.map(String.init) ?? "nil") \(note.map { "\"\($0)\"" } ?? "nil")")
   }
+  func presenterStartBreak(sessionId: Int, seconds: Int, focusSeconds: Int) {
+    calls.append("startBreak \(sessionId) \(seconds) \(focusSeconds)")
+  }
+  func presenterResumeBreak(sessionId: Int) { calls.append("resumeBreak \(sessionId)") }
+  func presenterExtendBreak(sessionId: Int, seconds: Int) { calls.append("extendBreak \(sessionId) \(seconds)") }
+  func presenterFinishBreak(sessionId: Int, rating: Int?, note: String?) {
+    calls.append("finishBreak \(sessionId) \(rating.map(String.init) ?? "nil") \(note.map { "\"\($0)\"" } ?? "nil")")
+  }
 }
 
 /// Runs scheduled work when the test moves time on, in time order.
@@ -110,7 +118,7 @@ let panel = sheet.panel
 func session(
   id: Int = 7, goal: String = "Deep Work", state: String = "running", remaining: Int = 1500,
   started: TimeInterval = -1500, plannedEnd: TimeInterval? = nil, paused: Int = 0, calendar: String = "Work",
-  extend: [Int] = [300, 600, 900, 1500], adHoc: Bool = false
+  extend: [Int] = [300, 900, 1500, 2700], adHoc: Bool = false
 ) -> SessionView {
   SessionView(
     id: id, goal: goal, state: state, startedAt: now.addingTimeInterval(started),
@@ -171,12 +179,12 @@ check("running menu", visibleTitles() == [info, "---", "Pause", "Extend", "Stop"
 check("info line disabled", !bar.infoItem.isEnabled)
 check(
   "extend submenu from extendOptions",
-  bar.extendItem.submenu?.items.map(\.title) == ["5 min", "10 min", "15 min", "25 min"],
+  bar.extendItem.submenu?.items.map(\.title) == ["5 min", "15 min", "25 min", "45 min"],
   "\(bar.extendItem.submenu?.items.map(\.title) ?? [])")
 perform(bar.pauseItem)
 check("Pause calls presenterPause", lastCall() == "pause", lastCall())
-if let ten = bar.extendItem.submenu?.items[1] { perform(ten) }
-check("Extend ▸ 10 min calls presenterExtend(600)", lastCall() == "extend 600", lastCall())
+if let fifteen = bar.extendItem.submenu?.items[1] { perform(fifteen) }
+check("Extend ▸ 15 min calls presenterExtend(900)", lastCall() == "extend 900", lastCall())
 perform(bar.stopItem)
 check("Stop calls presenterStop", lastCall() == "stop", lastCall())
 
@@ -213,13 +221,13 @@ check("showEndSheet shows the sheet", sheet.isVisible)
 check("status item shown with the sheet", bar.statusItem.isVisible)
 check("title is the goal", sheet.titleLabel.stringValue == "Deep Work", sheet.titleLabel.stringValue)
 check("time's up text", sheet.statusLabel.stringValue == "Time's up · 25 min focused", sheet.statusLabel.stringValue)
-check("four extend buttons", sheet.extendButtons.map(\.title) == ["+5 min", "+10 min", "+15 min", "+25 min"], "\(sheet.extendButtons.map(\.title))")
+check("four extend buttons", sheet.extendButtons.map(\.title) == ["+5 min", "+15 min", "+25 min", "+45 min"], "\(sheet.extendButtons.map(\.title))")
 check("sheet floats on every space", panel.collectionBehavior.contains(.canJoinAllSpaces) && panel.collectionBehavior.contains(.fullScreenAuxiliary))
 check("sheet level above floating windows", panel.level.rawValue > NSWindow.Level.floating.rawValue)
 check("sheet level one above the completion glow", panel.level.rawValue == NSWindow.Level.screenSaver.rawValue + 1)
 check("sheet does not activate the app", panel.styleMask.contains(.nonactivatingPanel))
 check("the card is 360 wide", panel.frame.width == 360, "\(panel.frame)")
-check("the card is compact: about 130 tall", panel.frame.height >= 110 && panel.frame.height <= 140, "\(panel.frame)")
+check("the card is compact: under 200 tall", panel.frame.height >= 130 && panel.frame.height <= 200, "\(panel.frame)")
 check("the card is borderless with the banner's type", panel.styleMask.contains(.borderless) && sheet.titleLabel.font?.pointSize == 14 && sheet.statusLabel.font?.pointSize == 13)
 sheet.content.layoutSubtreeIfNeeded()
 func inContent(_ view: NSView) -> NSRect { view.convert(view.bounds, to: sheet.content) }
@@ -345,14 +353,17 @@ check("Finish button with no stars and blank note", lastCall() == "finish nil ni
 
 // MARK: Extend
 
-ui.showEndSheet(session(id: 9, state: "ending", remaining: 0, plannedEnd: 0))
-check("sheet back up", sheet.isVisible)
-sheet.extendButtons[1].performClick(nil)
-check("+10 min calls presenterExtend(600)", lastCall() == "extend 600", lastCall())
-check("Extend hides the sheet", !sheet.isVisible)
-ui.showEndSheet(session(id: 9, state: "ending", remaining: 0, plannedEnd: 0))
-sheet.extendButtons[3].performClick(nil)
-check("+25 min calls presenterExtend(1500)", lastCall() == "extend 1500", lastCall())
+check("extend button accessibility labels", sheet.extendButtons.map { $0.accessibilityLabel() ?? "" }
+  == ["Extend by 5 min", "Extend by 15 min", "Extend by 25 min", "Extend by 45 min"],
+  "\(sheet.extendButtons.map { $0.accessibilityLabel() ?? "" })")
+for (index, seconds) in [300, 900, 1500, 2700].enumerated() {
+  ui.showEndSheet(session(id: 9, state: "ending", remaining: 0, plannedEnd: 0))
+  check("sheet back up", sheet.isVisible)
+  let calls = fake.calls.count
+  sheet.extendButtons[index].performClick(nil)
+  check("+\(seconds / 60) min calls presenterExtend(\(seconds)) exactly once", fake.calls.count == calls + 1 && lastCall() == "extend \(seconds)", lastCall())
+  check("Extend hides the sheet", !sheet.isVisible)
+}
 let afterExtend = fake.calls.count
 sheet.extendButtons[0].performClick(nil)
 check("a second answer sends nothing", fake.calls.count == afterExtend)
@@ -375,7 +386,110 @@ ui.showEndSheet(session(id: 11, state: "ending", remaining: 0, plannedEnd: 0))
 ui.update(nil)
 check("update(nil) hides the sheet", !sheet.isVisible)
 check("update(nil) hides the status item", !bar.statusItem.isVisible)
-check("no calls from dismissals", fake.calls.count == afterExtend, "\(fake.calls)")
+
+// MARK: Breaks
+
+do {
+  // The end card's "Take a break…" opens the inline chooser; using it is
+  // engagement (the six-second auto-finish is gone for good).
+  ui.showEndSheet(session(id: 20, state: "ending", remaining: 0, plannedEnd: 0))
+  check("break: the toggle is on the end card", !sheet.breakToggle.isHidden && sheet.breakToggle.title == "Take a break…")
+  check("break: chooser closed at first", !sheet.pickerExpanded && sheet.breakChooser.isHidden)
+  let fitsCollapsed = sheet.panel.frame.height
+  sheet.breakToggle.performClick(nil)
+  sheet.content.layoutSubtreeIfNeeded()
+  check("break: the chooser opens inline", sheet.pickerExpanded && !sheet.breakChooser.isHidden)
+  check("break: card grew under its buttons", sheet.panel.frame.height > fitsCollapsed)
+  check("break: still inside the card", inContent(sheet.breakChooser).maxX <= 360 && inContent(sheet.startBreakButton).maxX <= 360 - 8,
+    "\(inContent(sheet.breakChooser)) \(inContent(sheet.startBreakButton))")
+  check("break: defaults are 5 min rest, 25 min next", sheet.breakSeconds == 300 && sheet.focusSeconds == 1500)
+  check("break: picked choices are marked", sheet.breakButtons.map(\.picked) == [true, false, false]
+    && sheet.focusButtons.map(\.picked) == [false, false, true, false])
+  check("break: CTA names the picked break", sheet.startBreakButton.title == "Start 5 min break")
+  check("break: helper names the next block", sheet.breakHelper.stringValue == "Then ask to start 25 min of focus")
+  sheet.breakButtons[1].performClick(nil)
+  sheet.focusButtons[0].performClick(nil)
+  check("break: picks retitle the CTA", sheet.startBreakButton.title == "Start 10 min break" && sheet.breakHelper.stringValue == "Then ask to start 5 min of focus")
+  // Escape closes only the picker, never the card.
+  check("break: Escape just closes the picker", sheet.handleKey(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 53)!)
+    && !sheet.pickerExpanded && sheet.isVisible)
+  sheet.breakToggle.performClick(nil)
+  check("break: the chooser reopens", sheet.pickerExpanded)
+  // Return in the note field while the chooser is open starts the break,
+  // not a finish.
+  now = now.addingTimeInterval(1)
+  panel.makeFirstResponder(sheet.noteField)
+  let beforeNoteReturn = fake.calls.count
+  (sheet.noteField.currentEditor() as? NSTextView)?.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+  check("break: Return in the note starts the break", fake.calls.count == beforeNoteReturn + 1 && lastCall() == "startBreak 20 600 300", lastCall())
+  // Return on the card with the picker open does the same (fresh card).
+  ui.showEndSheet(session(id: 20, state: "ending", remaining: 0, plannedEnd: 0))
+  if !sheet.pickerExpanded { sheet.breakToggle.performClick(nil) }
+  check("break: the picker is open for the card key", sheet.pickerExpanded)
+  now = now.addingTimeInterval(1)
+  let beforeBreak = fake.calls.count
+  check("break: Return starts the break", sheet.handleKey(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
+    && fake.calls.count == beforeBreak + 1 && lastCall() == "startBreak 20 600 300", lastCall())
+  check("break: the card answers away", !sheet.isVisible)
+  sheet.startBreakButton.performClick(nil)
+  check("break: a second answer sends nothing", fake.calls.count == beforeBreak + 1)
+
+  // The card hides (not dismisses): stars and note survive the break.
+  // Engaging the chooser first cancels the six-second auto-finish.
+  ui.showEndSheet(session(id: 21, state: "ending", remaining: 0, plannedEnd: 0))
+  sheet.noteField.stringValue = "kept note"
+  sheet.stars.rating = 5
+  check("break: a new task's chooser is back at the defaults", sheet.breakSeconds == 300 && sheet.focusSeconds == 1500)
+  let beforeEngage = fake.calls.count
+  sheet.breakToggle.performClick(nil)
+  scheduler.advance(10)
+  check("break: engagement cancels the auto-finish", sheet.isVisible && fake.calls.count == beforeEngage, "\(fake.calls)")
+  sheet.startBreak()
+  check("break: startBreak targets the session with the default lengths", lastCall() == "startBreak 21 300 1500", lastCall())
+  check("break: hidden, not dismissed", sheet.rating == 5 && sheet.noteField.stringValue == "kept note")
+
+  // The break's end brings the ready card: no countdown, no auto-finish.
+  let ready = session(id: 21, state: "break", remaining: 0, plannedEnd: -60)
+  var view = ready
+  view.breakUntil = now.addingTimeInterval(-60)
+  view.nextFocusSeconds = 1500
+  ui.showEndSheet(view)
+  check("ready card: break state up", sheet.isVisible && sheet.readyMode)
+  check("ready card: text", sheet.statusLabel.stringValue == "Break finished" && sheet.readyLabel.stringValue == "Ready for another 25 min?", "\(sheet.statusLabel.stringValue) / \(sheet.readyLabel.stringValue)")
+  check("ready card: start names the next block", sheet.startNextButton.title == "Start 25 min")
+  check("ready card: stars hidden but kept", sheet.stars.isHidden && sheet.rating == 5 && sheet.noteField.stringValue == "kept note")
+  check("ready card: its own controls are up", !sheet.readyBlock.isHidden && !sheet.moreBreakButton.isHidden)
+  // 60 s on the ready card: nothing sends a finish.
+  scheduler.advance(60)
+  check("ready card never auto-finishes", fake.calls.last != "finish 5 \"kept note\"" && sheet.isVisible, "\(fake.calls.last ?? "")")
+  // Return on the ready card starts the next block (the wait was a break).
+  now = now.addingTimeInterval(1)
+  _ = sheet.handleKey(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!)
+  check("ready card: Return starts the next block", lastCall() == "resumeBreak 21", lastCall())
+
+  // Back on the ready card: +5 min break and Finish keep the kept rating.
+  ui.showEndSheet(view)
+  sheet.moreBreakButton.performClick(nil)
+  check("ready card: +5 min break", lastCall() == "extendBreak 21 300", lastCall())
+  ui.showEndSheet(view)
+  sheet.readyFinishButton.performClick(nil)
+  check("ready card: Finish ends the task with the kept review", lastCall() == "finishBreak 21 5 \"kept note\"", lastCall())
+  sheet.readyFinishButton.performClick(nil)
+  check("ready card: a second Finish sends nothing", lastCall() == "finishBreak 21 5 \"kept note\"")
+
+  // A continued task's extend also only hides the card: the next end card
+  // for the same id still carries the stars and note (no dismiss).
+  ui.showEndSheet(session(id: 21, state: "ending", remaining: 0, plannedEnd: 0))
+  check("the second card keeps the kept review", sheet.rating == 5 && sheet.noteField.stringValue == "kept note")
+  sheet.extendButtons[0].performClick(nil)
+  check("extend hides the card", !sheet.isVisible && sheet.rating == 5)
+  ui.showEndSheet(session(id: 21, state: "ending", remaining: 0, plannedEnd: 0))
+  check("back again: the review still rides", sheet.rating == 5 && sheet.noteField.stringValue == "kept note")
+  sheet.finishButton.performClick(nil)
+  check("the final Finish sends the kept review", lastCall() == "finish 5 \"kept note\"", lastCall())
+  ui.update(nil)
+}
+check("no calls but the break block's eight", fake.calls.count == afterExtend + 8, "\(fake.calls)")
 
 // MARK: Config keys
 
@@ -1911,6 +2025,16 @@ if CommandLine.arguments.count > 1 {
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: folder + "/" + name))
   }
   write(sheet.content, "sheet.png")
+  // The break chooser opened, and the ready card after a break.
+  sheet.breakToggle.performClick(nil)
+  write(sheet.content, "sheet-break.png")
+  ui.dismissEndSheet()
+  var readyView = session(id: 12, goal: "Deep Work", state: "break", remaining: 0, plannedEnd: -60)
+  readyView.breakUntil = now.addingTimeInterval(-60)
+  readyView.nextFocusSeconds = 1500
+  ui.showEndSheet(readyView)
+  write(sheet.content, "sheet-ready.png")
+  ui.dismissEndSheet()
   // The menu bar item as the dark (black) bar draws it: running, paused,
   // over an hour and a long goal, one PNG each.
   if let button = bar.statusItem.button {
@@ -1985,6 +2109,15 @@ if CommandLine.arguments.count > 1 {
   ui.update(session(goal: "Deep Work", state: "paused", remaining: 1350, started: -1350))
   render(floating.chrome, "panel-hover-paused.png", background: desktop)
   floating.setHovering(false, animated: false)
+  // A break counting down: muted, no green fill, Start now / Finish.
+  var resting = session(goal: "Deep Work", state: "break", remaining: 240, plannedEnd: 240)
+  resting.breakUntil = now.addingTimeInterval(240)
+  resting.nextFocusSeconds = 1500
+  ui.update(resting)
+  floating.setHovering(true, animated: false)
+  render(floating.chrome, "panel-break.png", background: desktop)
+  floating.setHovering(false, animated: false)
+  ui.update(nil)
   // The notch island at 2x over the desktop grey (the menu bar band shows
   // grey here; on screen it is the black menu bar): collapsed, paused, open.
   ui.setDisplay(.notch)

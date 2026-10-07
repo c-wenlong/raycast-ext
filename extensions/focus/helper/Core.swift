@@ -210,6 +210,19 @@ final class FocusCore: SessionPresenterDelegate {
         guard let seconds = try request.int("seconds") else { throw FocusError("seconds is required") }
         return try change(.extend(seconds: seconds, at: now))
       case "stop": return try change(.stop(at: now))
+      case "startBreak":
+        try requireCurrent(request)
+        guard let seconds = try request.int("seconds") else { throw FocusError("seconds is required") }
+        guard let focusSeconds = try request.int("focusSeconds") else { throw FocusError("focusSeconds is required") }
+        return try change(.startBreak(seconds: seconds, focusSeconds: focusSeconds, at: now))
+      case "resumeBreak":
+        try requireBreak(request)
+        return try change(.resume(at: now))
+      case "extendBreak":
+        try requireBreak(request)
+        guard let seconds = try request.int("seconds") else { throw FocusError("seconds is required") }
+        return try change(.extendBreak(seconds: seconds, at: now))
+      case "finishBreak": return try finishBreak(request)
       case "finish": return try finish(request)
       case "pending": return .ok(["waiting": try pendingJSON()])
       case "retryPending": return .ok(countsJSON(try runRecovery()))
@@ -302,23 +315,34 @@ final class FocusCore: SessionPresenterDelegate {
     var machine = SessionMachine(
       restoring: row.startedAt, plannedEnd: row.deadline ?? row.startedAt, extendedSeconds: row.extendedSeconds,
       pauses: pauses, endingReason: row.endReason.flatMap(EndReason.init(rawValue:)),
-      pauseStopsClock: row.sourceEventId == nil)
+      pauseStopsClock: row.sourceEventId == nil,
+      endingAt: row.endingAt, breakUntil: row.breakUntil, nextFocusSeconds: row.nextFocusSeconds)
     let now = self.now
-    if now.timeIntervalSince(row.lastHeartbeat) > FocusCore.abandonAfter {
+    // An open break is an intentional rest, not a crash: it restores however
+    // stale the heartbeat is, and the ready card re-announces if it is due.
+    if now.timeIntervalSince(row.lastHeartbeat) > FocusCore.abandonAfter, row.breakUntil == nil {
       _ = try machine.apply(.abandon(at: row.lastHeartbeat)).get()
       let close = SessionClose(
         endedAt: machine.endedAt ?? row.lastHeartbeat, endReason: EndReason.abandoned.rawValue,
         extendedEnd: FocusCore.movedEnd(machine, from: row))
-      if try db.finish(row.id, close) {
+      // A task that had a break records the wait at its card as a decision
+      // span even when it is abandoned there; land it in the same commit.
+      let added = machine.pauses.suffix(machine.pauses.count - pauses.count)
+      if try db.finish(row.id, close, beforeCommit: {
+        for span in added { try db.addPause(row.id, start: span.start, end: span.end, kind: span.kind) }
+      }) {
         log("session \(row.id): abandoned; last heartbeat \(ISO.local(row.lastHeartbeat))")
       }
       publish(.dismiss)
       return
     }
+    // A restored break already past its end is "ready" now: mark it so the
+    // card shows once here, not again on the next tick.
+    if machine.isOnBreak { _ = try machine.apply(.tick(at: now)).get() }
     active = Active(row: row, machine: machine, calendarTitle: calendarTitle(for: row.calendarId))
     log("session \(row.id): resumed as \(machine.state.rawValue)")
     startTicking()
-    publish(machine.state == .ending ? .show : .keep)
+    publish(machine.state == .ending || (machine.isOnBreak && machine.remainingSeconds(at: now) == 0) ? .show : .keep)
   }
 
   /// The planned end to store when a session closes, if closing moved it
@@ -329,14 +353,23 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   /// Checks the deadline. Returns true when the session just reached it (and
-  /// the end sheet was shown).
+  /// the end sheet was shown). A break whose end passed shows the ready
+  /// card once and keeps the task on its break.
   @discardableResult
   private func advance() throws -> Bool {
     guard try current() != nil else { return false }
-    guard try commit(.tick(at: now)) == .reachedDeadline else { return false }
-    log("session \(active?.row.id ?? 0): planned end reached")
-    publish(.show)
-    return true
+    switch try commit(.tick(at: now)) {
+    case .reachedDeadline:
+      log("session \(active?.row.id ?? 0): planned end reached")
+      publish(.show)
+      return true
+    case .breakReady:
+      log("session \(active?.row.id ?? 0): break ended, ready card shown")
+      publish(.show)
+      return false
+    default:
+      return false
+    }
   }
 
   /// Applies an input to the open session and persists what changed, in one
@@ -351,10 +384,16 @@ final class FocusCore: SessionPresenterDelegate {
     guard transition != .none else { return .none }
     let id = current.row.id
     try db.transaction {
-      if after.pauses.count > before.pauses.count, let pause = after.pauses.last {
-        try db.addPause(id, start: pause.start, end: pause.end)
-      } else if before.pauses.last?.end == nil, let closed = after.pauses.last?.end {
-        try db.closePause(id, at: closed)
+      // An open span the machine closed first (index-aligned), then every
+      // newly added span in order: a startBreak appends a closed "decision"
+      // span and an open "break" span in one step.
+      for index in before.pauses.indices
+      where before.pauses[index].end == nil && after.pauses[index].end != nil {
+        try db.closePause(id, at: after.pauses[index].end!)
+      }
+      for index in before.pauses.count..<after.pauses.count {
+        let span = after.pauses[index]
+        try db.addPause(id, start: span.start, end: span.end, kind: span.kind)
       }
       if after.extendedSeconds != before.extendedSeconds || after.plannedEnd != before.plannedEnd,
         let end = after.plannedEnd
@@ -363,6 +402,12 @@ final class FocusCore: SessionPresenterDelegate {
       }
       if after.endingReason != before.endingReason {
         try db.setEnding(id, reason: after.endingReason?.rawValue)
+      }
+      if after.endingAt != before.endingAt || after.breakUntil != before.breakUntil
+        || after.nextFocusSeconds != before.nextFocusSeconds
+      {
+        try db.setContinuation(
+          id, endingAt: after.endingAt, breakUntil: after.breakUntil, nextFocusSeconds: after.nextFocusSeconds)
       }
     }
     current.machine = after
@@ -387,10 +432,20 @@ final class FocusCore: SessionPresenterDelegate {
       publish(.show)
     case .extended(let seconds, let fromEnding):
       log("session \(id): extended by \(seconds) s\(fromEnding ? " from the end sheet" : "")")
-      publish(fromEnding ? .dismiss : .keep)
+      // A continued task's card hides instead of dismissing so its stars and
+      // note survive the next block, same as a break's.
+      publish(fromEnding && active?.machine.hasBreak != true ? .dismiss : .keep)
     case .paused, .resumed:
       log("session \(id): \(transition == .paused ? "paused" : "resumed")")
       publish(.keep)
+    case .breakStarted(let seconds, let focusSeconds):
+      log("session \(id): break started (\(seconds) s; next block \(focusSeconds) s)")
+      publish(.keep)
+    case .breakExtended(let seconds):
+      log("session \(id): break extended by \(seconds) s")
+      publish(.keep)
+    case .breakReady:
+      publish(.show)
     default:
       publish(.keep)
     }
@@ -445,12 +500,17 @@ final class FocusCore: SessionPresenterDelegate {
       let now = self.now
       // A paused ad-hoc session reports the end it would have if resumed
       // now, so `plannedEnd - now` stays at the frozen time left.
+      let breaking = current.machine.isOnBreak
       return SessionView(
         id: Int(current.row.id), goal: current.row.goal, state: current.machine.state.rawValue, startedAt: startedAt,
-        plannedEnd: current.machine.effectiveEnd(at: now) ?? plannedEnd,
+        // On a break the countdown runs to the break's end; the real planned
+        // end is held for the resume, which starts a fresh block anyway.
+        plannedEnd: breaking ? (current.machine.breakUntil ?? plannedEnd) : (current.machine.effectiveEnd(at: now) ?? plannedEnd),
         remainingSeconds: current.machine.remainingSeconds(at: now),
         pausedSeconds: current.machine.pausedSeconds(at: now), calendarTitle: current.calendarTitle,
-        extendOptions: SessionMachine.extendOptions, pauseStopsClock: current.machine.pauseStopsClock)
+        extendOptions: SessionMachine.extendOptions,
+        pauseStopsClock: breaking ? false : current.machine.pauseStopsClock,
+        breakUntil: current.machine.breakUntil, nextFocusSeconds: current.machine.nextFocusSeconds)
     }
   }
 
@@ -479,6 +539,45 @@ final class FocusCore: SessionPresenterDelegate {
   func presenterExtend(seconds: Int) { fromUI("extend") { try self.change(.extend(seconds: seconds, at: self.now)) } }
   func presenterStop() { fromUI("stop") { try self.change(.stop(at: self.now)) } }
 
+  /// The session id the UI acted on must still be the open session: a stale
+  /// card or hosted control can never mutate another task.
+  private func targeted(_ sessionId: Int, _ input: SessionInput) throws -> Reply {
+    guard try current()?.row.id == Int64(sessionId) else {
+      throw FocusError("session \(sessionId) is not the current session")
+    }
+    return try change(input)
+  }
+
+  func presenterStartBreak(sessionId: Int, seconds: Int, focusSeconds: Int) {
+    fromUI("startBreak") { try self.targeted(sessionId, .startBreak(seconds: seconds, focusSeconds: focusSeconds, at: self.now)) }
+  }
+
+  /// A break-targeted call also requires the break: a click that lands
+  /// after the block resumed already must not act on it.
+  private func targetedBreak(_ sessionId: Int, _ input: SessionInput) throws -> Reply {
+    guard let open = try current(), open.row.id == Int64(sessionId), open.machine.isOnBreak else {
+      throw FocusError("the session is not on a break")
+    }
+    return try change(input)
+  }
+
+  func presenterResumeBreak(sessionId: Int) {
+    fromUI("resumeBreak") { try self.targetedBreak(sessionId, .resume(at: self.now)) }
+  }
+
+  func presenterExtendBreak(sessionId: Int, seconds: Int) {
+    fromUI("extendBreak") { try self.targetedBreak(sessionId, .extendBreak(seconds: seconds, at: self.now)) }
+  }
+
+  func presenterFinishBreak(sessionId: Int, rating: Int?, note: String?) {
+    fromUI("finishBreak") {
+      guard let open = try self.current(), open.row.id == Int64(sessionId), open.machine.isOnBreak else {
+        throw FocusError("the session is not on a break")
+      }
+      return try self.finishSession(rating: rating, note: note, reason: nil)
+    }
+  }
+
   func presenterFinish(rating: Int?, note: String?) {
     fromUI("finish") { try self.finishSession(rating: rating, note: note, reason: nil) }
   }
@@ -492,12 +591,25 @@ final class FocusCore: SessionPresenterDelegate {
         _ = try body()
       } catch let error as FocusError {
         self.log("\(action) from the UI refused: \(error.message)")
-        self.publish(.keep)
+        self.publishOnFailure()
       } catch {
         self.log("\(action) from the UI failed: \(error.localizedDescription)")
-        self.publish(.keep)
+        self.publishOnFailure()
       }
     }
+  }
+
+  /// A refused UI action puts the card back up when the session still
+  /// waits at the end sheet or the ready card, so the control Kai pressed
+  /// never leaves a hidden card behind the real state.
+  private func publishOnFailure() {
+    guard let open = try? current() else {
+      publish(.keep)
+      return
+    }
+    let waiting = open.machine.state == .ending
+      || (open.machine.isOnBreak && open.machine.remainingSeconds(at: now) == 0)
+    publish(waiting ? .show : .keep)
   }
 
   // MARK: Shared notch bridge
@@ -511,14 +623,21 @@ final class FocusCore: SessionPresenterDelegate {
   /// The session as the bridge snapshot: SessionView's fields verbatim, or
   /// null when nothing is running or paused (idle, ending, finished).
   private func bridgeSessionJSON() -> JSONValue {
-    guard let view = sessionView(), view.state == "running" || view.state == "paused" else { return .null }
+    guard let view = sessionView(), view.state == "running" || view.state == "paused" || view.isOnBreak else {
+      return .null
+    }
+    // v1 clients only accept "running"/"paused": a break reports as paused
+    // (with breakUntil/nextFocusSeconds for hosts that understand them), so
+    // an old host's Resume still works through the ordinary `resume` action.
     return .object([
-      "id": .int(view.id), "goal": .string(view.goal), "state": .string(view.state),
+      "id": .int(view.id), "goal": .string(view.goal), "state": .string(view.isOnBreak ? "paused" : view.state),
       "startedAt": .string(ISO.local(view.startedAt)), "plannedEnd": .string(ISO.local(view.plannedEnd)),
       "remainingSeconds": .int(view.remainingSeconds), "pausedSeconds": .int(view.pausedSeconds),
       "calendarTitle": .string(view.calendarTitle),
       "extendOptions": .array(view.extendOptions.map { .int($0) }),
-      "pauseStopsClock": .bool(view.pauseStopsClock),
+      "pauseStopsClock": .bool(view.isOnBreak ? false : view.pauseStopsClock),
+      "breakUntil": .optional(view.breakUntil.map { ISO.local($0) }),
+      "nextFocusSeconds": .optional(view.nextFocusSeconds),
     ])
   }
 
@@ -526,7 +645,7 @@ final class FocusCore: SessionPresenterDelegate {
   /// additive controls; `pauseFor` only when the presenter can arm a timed
   /// pause (the real UI can, a headless one cannot).
   private func advertisedActions() -> [String] {
-    var actions = NotchBridge.legacyActions + ["edit", "cancel", "moveToPanel", "moveToMenuBar"]
+    var actions = NotchBridge.legacyActions + ["edit", "cancel", "moveToPanel", "moveToMenuBar", "finishBreak", "extendBreak"]
     if storedPresenter.supportsHostedTimedPause { actions.append("pauseFor") }
     return actions
   }
@@ -565,6 +684,18 @@ final class FocusCore: SessionPresenterDelegate {
       runOnMain { self.openURL(URL(string: "raycast://extensions/c-wenlong/focus/focusToday")!) }
     case .cancel:
       _ = try finishSession(rating: nil, note: nil, reason: nil)
+    case .finishBreak:
+      // The kept review lives on the end card (the main thread): the
+      // presenter hands it to the session-targeted finishBreak, which
+      // re-validates id and break state before closing anything.
+      guard let open = try current(), open.machine.isOnBreak else {
+        throw FocusError("the session is not on a break")
+      }
+      let sessionId = Int(open.row.id)
+      let presenter = storedPresenter
+      runOnMain { presenter.finishHostedBreak(sessionId: sessionId) }
+    case .extendBreak(let seconds):
+      _ = try change(.extendBreak(seconds: seconds, at: now))
     case .move(let target):
       try config.update(["countdownDisplay": .string(target.rawValue)])
       // Leaving the notch drops the lease at once; only the display key moves.
@@ -576,6 +707,42 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   // MARK: Calendars and today
+
+  /// The break commands name the session they act on: a stale card or a
+  /// host whose view lagged can never reach the wrong task.
+  private func requireCurrent(_ request: Request) throws {
+    guard let sessionId = try request.int("sessionId") else { throw FocusError("sessionId is required") }
+    guard let open = try current(), open.row.id == sessionId else {
+      throw FocusError("session \(sessionId) is not the current session")
+    }
+  }
+
+  /// `resumeBreak`/`finishBreak` (and `extendBreak`) name the session AND
+  /// its state: a stale card or host whose view lagged can never resume an
+  /// ordinary pause or finish the next focus block.
+  private func requireBreak(_ request: Request) throws {
+    try requireCurrent(request)
+    guard let open = try current(), open.machine.isOnBreak else {
+      throw FocusError("the session is not on a break")
+    }
+  }
+
+  /// `finishBreak {sessionId, rating?, note?}`: the final Finish while the
+  /// task is on a break; the end card's Finish sends the stars and note it
+  /// kept. The row closes like `finish`, its open break span included.
+  private func finishBreak(_ request: Request) throws -> Reply {
+    try requireBreak(request)
+    let rating = try request.int("rating")
+    if let rating, !(1...5).contains(rating) { throw FocusError("rating must be 1 to 5") }
+    let note = try request.string("note")
+    let (id, logEventId, skipped) = try finishSession(rating: rating, note: note, reason: nil)
+    return .ok([
+      "session": try sessionJSON(id),
+      "logEventId": .optional(logEventId),
+      "logPending": .bool(logEventId == nil && !skipped),
+      "logSkipped": .bool(skipped),
+    ])
+  }
 
   private func requireAccess() throws {
     let state = calendar.accessState
@@ -636,6 +803,10 @@ final class FocusCore: SessionPresenterDelegate {
     let state = open.machine.state
     if state == .running || state == .paused {
       announce(try commit(.stop(at: now)))
+    } else if state == .onBreak {
+      // A break is resting, not deciding: a new task is refused without
+      // disturbing the countdown or the ready card.
+      publish(.keep)
     } else {
       publish(.show)
     }
@@ -749,7 +920,15 @@ final class FocusCore: SessionPresenterDelegate {
       note: machine.note, logCalendarId: destination?.id, logCalendarName: destination?.name, logSkipped: skipsLog,
       extendedEnd: FocusCore.movedEnd(machine, from: open.row))
     let id = open.row.id
-    guard try db.finish(id, close) else {
+    // Spans the machine appended while closing (the wait at the card of a
+    // task that had a break) land in the same commit; the open break's own
+    // close is the ordinary open-pause update inside db.finish.
+    let storedPauses = open.machine.pauses.count
+    let added = machine.pauses.suffix(machine.pauses.count - storedPauses)
+    guard try db.finish(id, close, beforeCommit: {
+      for span in added { try db.addPause(id, start: span.start, end: span.end, kind: span.kind) }
+    })
+    else {
       endActive()
       throw FocusError("the session had already ended")
     }
@@ -1154,12 +1333,19 @@ final class FocusCore: SessionPresenterDelegate {
     let now = self.now
     var fields = baseJSON(current.row)
     fields["state"] = .string(current.machine.state.rawValue)
-    fields["plannedEnd"] = .optional(current.machine.effectiveEnd(at: now).map { ISO.local($0) })
-    fields["pauseStopsClock"] = .bool(current.machine.pauseStopsClock)
+    // On a break the clock runs to the break's end, like the UI shows.
+    fields["plannedEnd"] = .optional(
+      (current.machine.isOnBreak ? current.machine.breakUntil : current.machine.effectiveEnd(at: now)).map {
+        ISO.local($0)
+      })
+    // A break's clock runs on the break, never stopped by a pause.
+    fields["pauseStopsClock"] = .bool(!current.machine.isOnBreak && current.machine.pauseStopsClock)
     fields["extendedSeconds"] = .int(current.machine.extendedSeconds)
     fields["remainingSeconds"] = .int(current.machine.remainingSeconds(at: now))
     fields["pausedSeconds"] = .int(current.machine.pausedSeconds(at: now))
     fields["endReason"] = .optional(current.machine.endingReason?.rawValue)
+    fields["breakUntil"] = .optional(current.machine.breakUntil.map { ISO.local($0) })
+    fields["nextFocusSeconds"] = .optional(current.machine.nextFocusSeconds)
     return .object(fields)
   }
 

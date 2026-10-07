@@ -96,6 +96,8 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
     notch.actions = self
     menuBar.onMoveToPanel = { [weak self] in self?.setDisplay(.panel) }
     menuBar.onMoveToNotch = { [weak self] in self?.setDisplay(.notch) }
+    // A break's Finish keeps the end card's review through this presenter.
+    menuBar.onFinishBreak = { [weak self] in self?.finishHostedBreak(sessionId: $0) }
     endSheet.onEngage = { [weak self] in self?.endCardEngaged() }
     endSheet.onHide = { [weak self] in self?.stopEndCard() }
     endSheet.onPointer = { [weak self] inside in self?.endCardPointerMoved(inside: inside) }
@@ -176,17 +178,29 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
     }
     if view.state == "running" || view.state == "paused" { liveSessionId = view.id }
     // The panel and the notch are for a live session: hidden at the end
-    // sheet (the menu bar item stays, with its Extend menu).
-    let live = view.state != "ending"
+    // sheet (the menu bar item stays, with its Extend menu). On a break
+    // they keep counting down (muted); while the ready card waits at the
+    // break's end they step aside, same as at the end sheet.
+    let live = view.state != "ending" && !(view.isOnBreak && view.remainingSeconds == 0)
     if display == .panel && live {
       floating.show(view, saved: config.panelPosition)
     } else {
       floating.hide()
     }
     if display == .notch && live && !notchHosted { notch.show(view) } else { notch.hide() }
-    // Back to running or paused (extended from the menu, say): the
-    // question is answered.
-    if endSheet.isVisible, endSheet.session?.id == view.id, view.state != "ending", view.remainingSeconds > 0 {
+    if view.isOnBreak {
+      // The break's end announced it (or it is past): the ready card.
+      // Extended or resumed, the card goes (its stars and note are kept).
+      if view.remainingSeconds == 0 {
+        if !endSheet.isVisible || endSheet.session?.id != view.id {
+          endSheet.show(view, on: screens().first)
+        }
+      } else if endSheet.isVisible, endSheet.session?.id == view.id {
+        endSheet.hide()
+      }
+    } else if endSheet.isVisible, endSheet.session?.id == view.id, view.state != "ending", view.remainingSeconds > 0 {
+      // Back to running or paused (extended from the menu, say): the
+      // question is answered.
       endSheet.hide()
     }
   }
@@ -203,14 +217,22 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
       // The card hangs right under the notch and says it all: the island
       // steps aside rather than showing 00:00 above it.
       notch.hide()
-      if completionEnabled, liveSessionId == view.id, !endSheet.isVisible {
+      if completionEnabled, liveSessionId == view.id, !endSheet.isVisible, !view.isOnBreak {
         liveSessionId = nil
         completion.play(screens: screens())
       }
       // A refresh of the card already up keeps its countdown.
       let fresh = !endSheet.isVisible || endSheet.session?.id != view.id
       endSheet.show(view, on: screens().first)
-      if fresh { startEndCard(view.id) }
+      if fresh {
+        if view.isOnBreak {
+          // The ready card waits for an answer; it never fades or finishes.
+          stopEndCard()
+          endCard = (view.id, true, false)
+        } else {
+          startEndCard(view.id)
+        }
+      }
     }
   }
 
@@ -362,6 +384,9 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
   private func followTimedPause(_ view: SessionView?) {
     guard var pause = timedPause else { return }
     guard let view, view.id == pause.sessionId else { return cancelTimedPause() }
+    // A break is not a pause: a timed pause armed before the end sheet can
+    // never resume the task while it rests.
+    if view.isOnBreak { return cancelTimedPause() }
     if view.state == "paused" {
       pause.seenPaused = true
       timedPause = pause
@@ -412,10 +437,33 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
 
   func panelResume() {
     cancelTimedPause()
+    // "Start now" on a break resumes the task into its next block.
+    if let view = lastView, view.isOnBreak {
+      delegate?.presenterResumeBreak(sessionId: view.id)
+      return
+    }
     delegate?.presenterResume()
   }
 
-  func panelComplete() { delegate?.presenterStop() }
+  /// A hosted or panel Finish on a break ends the task with the stars and
+  /// note the end card kept for that session, if it is the same one.
+  func finishHostedBreak(sessionId: Int) {
+    onMain { [self] in
+      let kept = endSheet.session?.id == sessionId
+      delegate?.presenterFinishBreak(
+        sessionId: sessionId, rating: kept ? endSheet.rating : nil, note: kept ? endSheet.note : nil)
+    }
+  }
+
+  /// Complete ends the focus block (end sheet); on a break the control is
+  /// Finish, which closes the task for good.
+  func panelComplete() {
+    if let view = lastView, view.isOnBreak {
+      finishHostedBreak(sessionId: view.id)
+      return
+    }
+    delegate?.presenterStop()
+  }
 
   func panelEdit() { openURL(Self.editURL) }
 

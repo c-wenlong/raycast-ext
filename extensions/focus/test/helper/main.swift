@@ -473,7 +473,7 @@ do {
   let path = dir + "/focus.db"
   let db = try! Database(path: path)
   check("database is in WAL mode", db.journalMode == "wal", db.journalMode ?? "nil")
-  check("schema version is 3", db.userVersion == 3, "\(String(describing: db.userVersion))")
+  check("schema version is 4", db.userVersion == 4, "\(String(describing: db.userVersion))")
 
   let new = NewSession(
     sourceEventId: "EV1", calendarId: "work", goal: "Write", profile: "deep", plannedStart: at(14, 0),
@@ -522,7 +522,7 @@ do {
 
   let reopened = try! Database(path: path)
   check("reopening keeps the data", (try! reopened.session(id: id))?.goal == "Write")
-  check("reopening keeps the schema version", reopened.userVersion == 3)
+  check("reopening keeps the schema version", reopened.userVersion == 4)
   check("the database file exists", FileManager.default.fileExists(atPath: path))
 }
 
@@ -698,7 +698,7 @@ do {
   var restoredEnding = SessionMachine(restoring: at(14, 0), plannedEnd: at(14, 30), extendedSeconds: 0, pauses: [], endingReason: .timer)
   check("restoring with an ending reason is at the end sheet", restoredEnding.state == .ending && restoredEnding.endingReason == .timer)
   check("a restored end sheet finishes with its reason", applied(&restoredEnding, .finish(at: at(14, 40), rating: nil, note: nil, reason: nil)) == .finished(.timer))
-  check("the extend options are 5, 10, 15 and 25 minutes", SessionMachine.extendOptions == [300, 600, 900, 1500])
+  check("the extend options are 5, 15, 25 and 45 minutes", SessionMachine.extendOptions == [300, 900, 1500, 2700])
 }
 
 // MARK: - Session state machine: an ad-hoc session's pause stops the clock
@@ -806,14 +806,26 @@ do {
   let path = dir + "/focus.db"
   do {
     let db = try! Database(path: path)
-    // Back to a step 1 database: no extended_end, version 1.
-    try! db.exec("alter table sessions drop column extended_end; alter table sessions drop column log_skipped; pragma user_version = 1;")
+    // Back to a step 1 database: no extended_end or later columns, version 1.
+    try! db.exec(
+      """
+      alter table sessions drop column extended_end; alter table sessions drop column log_skipped;
+      alter table sessions drop column ending_at; alter table sessions drop column break_until;
+      alter table sessions drop column next_focus_seconds; alter table pauses drop column kind;
+      pragma user_version = 1;
+      """)
     try! db.insertSession(
       NewSession(sourceEventId: nil, calendarId: "work", goal: "Old", profile: "default", plannedStart: at(9, 0), plannedEnd: at(9, 30), startedAt: at(9, 0)))
   }
   let db = try! Database(path: path)
-  check("a version 1 database migrates to 3", db.userVersion == 3)
+  check("a version 1 database migrates to 4", db.userVersion == 4)
   check("migration adds log_skipped as false", (try! db.session(id: 1))?.logSkipped == false)
+  check("migration leaves the continuation empty and pauses ordinary", {
+    let row = try! db.session(id: 1)
+    let spans = try! db.pauses(1)
+    return row?.endingAt == nil && row?.breakUntil == nil && row?.nextFocusSeconds == nil
+      && spans.allSatisfy { $0.kind == "pause" }
+  }())
   let old = try! db.session(id: 1)
   check("migration keeps the rows", old?.goal == "Old" && old?.extendedEnd == nil && old?.deadline == at(9, 30), "\(String(describing: old))")
 
@@ -1265,7 +1277,7 @@ do {
   check("a calendar session's pause does not stop the clock", started["session"]?["pauseStopsClock"] == false, started.serialized())
   check("start begins the 1 Hz tick", h.core.ticking)
   check("start shows the session", h.lastView?.state == "running" && h.lastView?.remainingSeconds == 600 && h.lastView?.goal == "Draft", "\(String(describing: h.lastView))")
-  check("the view names the calendar and the extend options", h.lastView?.calendarTitle == "Work" && h.lastView?.extendOptions == [300, 600, 900, 1500] && h.lastView?.id == id)
+  check("the view names the calendar and the extend options", h.lastView?.calendarTitle == "Work" && h.lastView?.extendOptions == [300, 900, 1500, 2700] && h.lastView?.id == id)
   check("the view carries the start and the planned end", h.lastView?.startedAt == at(10, 0) && h.lastView?.plannedEnd == at(10, 10))
   check("no deeplink unless configured", h.opened.isEmpty)
 
@@ -1341,6 +1353,20 @@ do {
   check("idle after finish", h.send("status")["session"] == .null && h.send("stop")["error"] == "no session is running")
   h.core.secondTick()
   check("a stray tick after finish does nothing", !h.core.ticking && h.lastView == nil)
+}
+
+do {
+  // The 45 min preset from the end sheet keeps the same session running.
+  let clock = Clock(at(13, 0))
+  let h = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log"}"#, clock: clock)
+  h.fake.eventList = [event("L1", "Long", at(13, 0), at(13, 5))]
+  let id = h.send("start", ["eventId": "L1"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(13, 5)
+  h.core.secondTick()
+  check("the deadline shows the end sheet", h.lastView?.state == "ending")
+  let again = h.send("extend", ["seconds": 2700])["session"]
+  check("extend 45 min from the end sheet keeps the session", again?["id"]?.intValue == id && again?["state"] == "running"
+    && again?["remainingSeconds"] == 2700 && again?["extendedSeconds"] == 2700, again?.serialized() ?? "")
 }
 
 do {
@@ -2700,8 +2726,9 @@ do {
   let claimed = h.send("notchBridge", bridge.merging(["op": "claim", "owner": "owner-a"]) { _, n in n })
   check("bridge claim: held, session snapshot mirrors the view", claimed["ok"] == true && claimed["claimed"] == true
     && claimed["session"]?["id"]?.intValue == sessionId && claimed["session"]?["state"] == "running"
-    && claimed["session"]?["goal"] == "Deep Work" && claimed["session"]?["extendOptions"] == [300, 600, 900, 1500]
-    && claimed["session"]?["pauseStopsClock"] == true && claimed["session"]?["remainingSeconds"]?.intValue == 1500,
+    && claimed["session"]?["goal"] == "Deep Work" && claimed["session"]?["extendOptions"] == [300, 900, 1500, 2700]
+    && claimed["session"]?["pauseStopsClock"] == true && claimed["session"]?["remainingSeconds"]?.intValue == 1500
+    && claimed["session"]?["breakUntil"] == .null && claimed["session"]?["nextFocusSeconds"] == .null,
     claimed.serialized())
   check("bridge claim: presenter told hosted before/with the refresh", h.presenter.hostedFlags.last == true
     && h.presenter.hostedFlags.count == h.presenter.views.count)
@@ -2787,7 +2814,7 @@ do {
   // plus edit/cancel/move; pauseFor waits on a UI that can arm it.
   let advertised = h.send("notchBridge", bridge.merging(["op": "status"]) { _, n in n })["actions"]?.arrayValue?.compactMap { $0.stringValue } ?? []
   check("bridge: replies advertise the native controls",
-    Set(advertised) == ["pause", "resume", "stop", "extend", "edit", "cancel", "moveToPanel", "moveToMenuBar"],
+    Set(advertised) == ["pause", "resume", "stop", "extend", "edit", "cancel", "moveToPanel", "moveToMenuBar", "finishBreak", "extendBreak"],
     advertised.joined(separator: ","))
   check("bridge: pauseFor hidden until supported", !advertised.contains("pauseFor"))
 
@@ -2850,6 +2877,207 @@ do {
   check("notchAction cancel: finished, no rating, no end sheet", cancelled["ok"] == true
     && h.send("status")["session"]?.isNull == true && h.presenter.endSheets.count == sheetsBefore,
     cancelled.serialized())
+}
+
+// MARK: - Breaks: the machine
+
+do {
+  // The frozen fixture: work 14:00-14:25, decide 14:25-14:27, a 5 min break
+  // resumed 3 min late at 14:35, work 14:35-15:00, decide 15:00-15:02.
+  var m = running(until: at(14, 25))
+  check("startBreak refuses while running", refused(&m, .startBreak(seconds: 300, focusSeconds: 1500, at: at(14, 1)))?.contains("running") == true)
+  check("startBreak at the deadline", applied(&m, .tick(at: at(14, 25))) == .reachedDeadline && m.endingAt == at(14, 25))
+  for bad in [30, 0, 3601] {
+    check("startBreak refuses \(bad) s", refused(&m, .startBreak(seconds: bad, focusSeconds: 1500, at: at(14, 25)))?.contains("60 to 3600") == true)
+  }
+  check("startBreak refuses a bad next block", refused(&m, .startBreak(seconds: 300, focusSeconds: 30, at: at(14, 25)))?.contains("60 to 86400") == true)
+  check("a break starts", applied(&m, .startBreak(seconds: 300, focusSeconds: 1500, at: at(14, 27))) == .breakStarted(seconds: 300, focusSeconds: 1500))
+  check("the state is break", m.state == .onBreak && m.breakUntil == at(14, 32) && m.nextFocusSeconds == 1500)
+  check("starting a break clears the sheet bookkeeping", m.endingReason == nil && m.endingAt == nil)
+  check("decision and open break spans", m.pauses == [
+    PauseSpan(start: at(14, 25), end: at(14, 27), kind: "decision"),
+    PauseSpan(start: at(14, 27), end: nil, kind: "break"),
+  ], "\(m.pauses)")
+  check("the break counts down", m.remainingSeconds(at: at(14, 30)) == 120)
+  check("pause on a break is refused", refused(&m, .pause(at: at(14, 28)))?.contains("on a break") == true)
+  check("extend on a break is refused", refused(&m, .extend(seconds: 300, at: at(14, 28)))?.contains("on a break") == true)
+  check("stop on a break is refused", refused(&m, .stop(at: at(14, 28)))?.contains("on a break") == true)
+  check("the break's end announces once", applied(&m, .tick(at: at(14, 32))) == .breakReady && applied(&m, .tick(at: at(14, 33))) == SessionTransition.none)
+  check("past the break's end the task still rests", m.state == .onBreak && m.remainingSeconds(at: at(14, 34)) == 0)
+  check("extendBreak rearms past the ready card", applied(&m, .extendBreak(seconds: 60, at: at(14, 34))) == .breakExtended(seconds: 60) && m.breakUntil == at(14, 35) && applied(&m, .tick(at: at(14, 35))) == .breakReady)
+  check("resume starts the fresh full block", applied(&m, .resume(at: at(14, 35))) == .resumed
+    && m.state == .running && m.plannedEnd == at(15, 0) && m.extendedSeconds == 1500
+    && m.breakUntil == nil && m.endingAt == nil && m.remainingSeconds(at: at(14, 35)) == 1500)
+  check("the break closed at the real resume", m.pauses[1].end == at(14, 35))
+  check("the next deadline ends again", applied(&m, .tick(at: at(15, 0))) == .reachedDeadline && m.endingAt == at(15, 0))
+  check("finish closes it all", applied(&m, .finish(at: at(15, 2), rating: nil, note: nil, reason: nil)) == .finished(.timer)
+    && m.state == .finished && m.endedAt == at(15, 2))
+  check("the wait before the last answer is a decision span", m.pauses.last == PauseSpan(start: at(15, 0), end: at(15, 2), kind: "decision"))
+  check("the excluded seconds add up once", m.pausedSeconds(at: at(15, 2)) == 720, "\(m.pausedSeconds(at: at(15, 2)))")
+  check("the focused span is the two blocks", m.focusedSeconds(at: at(15, 2)) == 3000)
+
+  // A break finished early still runs the full next block.
+  var early = running(at: at(9, 0), until: at(9, 25))
+  _ = early.apply(.tick(at: at(9, 25)))
+  _ = early.apply(.startBreak(seconds: 300, focusSeconds: 1500, at: at(9, 25)))
+  _ = early.apply(.resume(at: at(9, 27)))
+  check("a break ended early gives the whole next block", early.plannedEnd == at(9, 52) && early.remainingSeconds(at: at(9, 27)) == 1500)
+  check("the break span is its real length", early.pauses.last == PauseSpan(start: at(9, 25), end: at(9, 27), kind: "break"))
+
+  // Restoring an open break keeps it: no autofinish of a forgotten task.
+  var restored = SessionMachine(
+    restoring: at(8, 0), plannedEnd: at(8, 55), extendedSeconds: 1500,
+    pauses: [PauseSpan(start: at(8, 25), end: nil, kind: "break")], endingReason: nil, pauseStopsClock: false,
+    endingAt: at(8, 25), breakUntil: at(8, 30), nextFocusSeconds: 1500)
+  check("restored break stays on break", restored.state == .onBreak && restored.remainingSeconds(at: at(8, 40)) == 0)
+  check("restored break re-announces its end", applied(&restored, .tick(at: at(8, 41))) == .breakReady)
+}
+
+// MARK: - Breaks: the core
+
+do {
+  // The lead's frozen fixture end to end: one calendar session, one event.
+  let clock = Clock(at(14, 0))
+  let h = Harness(
+    config: #"{"startableCalendars": ["work"], "logCalendarId": "log", "logCalendarName": "Focus Log"}"#,
+    clock: clock, fake: FakeCalendar())
+  keepHarnesses.append(h)
+  h.fake.eventList = [event("B1", "toolbox db sync module", at(14, 0), at(14, 25))]
+  let started = h.send("start", ["eventId": "B1"])
+  let id = started["session"]?["id"]?.intValue ?? 0
+  check("break fixture: session runs", started["ok"] == true && started["session"]?["state"] == "running", started.serialized())
+
+  clock.now = at(14, 25)
+  h.core.tick()
+  check("break fixture: ending at the deadline", h.send("status")["session"]?["state"] == "ending")
+
+  // Stale or missing ids never reach the machine.
+  check("startBreak needs sessionId", h.send("startBreak", ["seconds": 300, "focusSeconds": 1500])["error"] == "sessionId is required")
+  check("startBreak refuses another task's id", h.send("startBreak", ["sessionId": .int(999), "seconds": 300, "focusSeconds": 1500])["ok"] == false)
+
+  // The break is picked 2 minutes after the card came up: the wait is a
+  // decision span, the 5 min break runs 14:27-14:32.
+  clock.now = at(14, 27)
+  let onBreak = h.send("startBreak", ["sessionId": .int(id), "seconds": 300, "focusSeconds": 1500])
+  check("startBreak puts the task on its break", onBreak["ok"] == true && onBreak["session"]?["state"] == "break"
+    && onBreak["session"]?["breakUntil"]?.stringValue.flatMap(ISO.parse) == at(14, 32)
+    && onBreak["session"]?["nextFocusSeconds"] == 1500, onBreak.serialized())
+  check("the reply's planned end is the break's end", onBreak["session"]?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(14, 32), onBreak.serialized())
+  check("the reply reports the break countdown", onBreak["session"]?["remainingSeconds"] == 300, onBreak.serialized())
+  check("the reply's pauseStopsClock is false on a break", onBreak["session"]?["pauseStopsClock"] == false, onBreak.serialized())
+  let refusedStart = h.send("startAdhoc", ["goal": "other", "durationSeconds": 600, "calendarId": "work"])
+  check("a new task is refused while on break, the break untouched", refusedStart["ok"] == false
+    && h.send("status")["session"]?["state"] == "break", refusedStart.serialized())
+  check("blocking is off on a break", h.send("blocking")["active"] == false)
+  check("extend during a break is refused", h.send("extend", ["seconds": 300])["ok"] == false)
+  check("pause during a break is refused", h.send("pause")["ok"] == false)
+  check("stop during a break is refused", h.send("stop")["ok"] == false && h.send("status")["session"]?["state"] == "break")
+
+  // The row records where it stands; sqlite sees what memory holds.
+  let openRow = try! h.db.openSession()!
+  check("break continuation stored", openRow.endingAt == nil && openRow.breakUntil == at(14, 32) && openRow.nextFocusSeconds == 1500)
+  check("decision and break spans persisted", (try! h.db.pauses(openRow.id)) == [
+    PauseSpan(start: at(14, 25), end: at(14, 27), kind: "decision"),
+    PauseSpan(start: at(14, 27), end: nil, kind: "break"),
+  ])
+
+  // A daemon restart inside the break keeps the plan; past its end the
+  // ready state re-announces once.
+  clock.now = at(14, 28)
+  let h2 = h.relaunch(at: at(14, 28))
+  check("restart in a break restores it", h2.send("status")["session"]?["state"] == "break", h2.send("status").serialized())
+  clock.now = at(14, 35)  // break ended at 14:32, resumed 3 min late
+  let atBreakEnd = h2.send("status")  // the request itself advances the machine
+  check("the ready card shows once the break's end passed", h2.presenter.endSheets.last?.state == "break"
+    && atBreakEnd["session"]?["remainingSeconds"] == 0, "\(h2.presenter.endSheets)")
+  h2.core.tick()
+  h2.core.secondTick()
+  check("the ready card announces once and the break stays", h2.presenter.endSheets.count == 1
+    && h2.send("status")["session"]?["state"] == "break")
+
+  let resumed = h2.send("resumeBreak", ["sessionId": .int(id)])
+  check("resumeBreak runs the full next block", resumed["ok"] == true && resumed["session"]?["state"] == "running"
+    && resumed["session"]?["plannedEnd"]?.stringValue.flatMap(ISO.parse) == at(15, 0)
+    && resumed["session"]?["extendedSeconds"] == 1500, resumed.serialized())
+  check("continuation cleared on resume", (try! h2.db.openSession()!).breakUntil == nil && (try! h2.db.openSession()!).endingAt == nil)
+
+  clock.now = at(15, 0)
+  h2.core.tick()
+  check("the second block ends the same task", h2.send("status")["session"]?["state"] == "ending" && h2.send("status")["session"]?["id"] == .int(id))
+  clock.now = at(15, 2)
+  // The live wait counts while it waits: 10 min of stored spans (2 decision
+  // + 8 break) plus the 2 minutes at the card is the 720 the reply reports.
+  check("the live wait counts before the final Finish",
+    h2.send("status")["session"]?["pausedSeconds"] == 720
+      && h2.send("status")["session"]?["state"] == "ending")
+  let done = h2.send("finish", ["rating": 4])
+  check("finish from the second card writes one event", done["ok"] == true && h2.fake.saved.count == 1, done.serialized())
+  let event = h2.fake.saved.first?.draft
+  check("the one event spans start to finish", event?.start == at(14, 0) && event?.end == at(15, 2))
+  let notes = event?.notes ?? ""
+  check("event notes: focused 50 of 62", notes.contains("Focused: 50 min of 1 h 2 min"), notes)
+  check("event notes: the focus blocks are named",
+    notes.contains("Focus block: \(ISO.local(at(14, 0))) to \(ISO.local(at(14, 25))) (25 min)")
+      && notes.contains("Focus block: \(ISO.local(at(14, 35))) to \(ISO.local(at(15, 0))) (25 min)"), notes)
+  check("event notes: the break line", notes.contains("Breaks: 1, 8 min in total") && notes.contains("Break: \(ISO.local(at(14, 27))) to \(ISO.local(at(14, 35))) (8 min)"), notes)
+  check("event notes: the waits", notes.contains("Waiting between blocks: 4 min"), notes)
+  check("event notes: no ordinary pauses counted", !notes.contains("Paused:") || notes.contains("Paused: none") || !notes.contains("\nPaused"), notes)
+  check("the source line stays", notes.contains("Source: Work, event B1"), notes)
+  let spans = try! h2.db.pauses(Int64(id))
+  check("all three non-focus spans stored", spans == [
+    PauseSpan(start: at(14, 25), end: at(14, 27), kind: "decision"),
+    PauseSpan(start: at(14, 27), end: at(14, 35), kind: "break"),
+    PauseSpan(start: at(15, 0), end: at(15, 2), kind: "decision"),
+  ], "\(spans)")
+  let closed = try! h2.db.session(id: Int64(id))
+  check("finish clears the continuation", closed?.endingAt == nil && closed?.breakUntil == nil && closed?.nextFocusSeconds == nil)
+}
+
+// A restart while the break's end is already past: the ready card shows
+// once at launch, not again on the next tick.
+do {
+  let clock = Clock(at(14, 0))
+  let h = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log", "logCalendarName": "Focus Log"}"#, clock: clock)
+  keepHarnesses.append(h)
+  h.fake.eventList = [event("B3", "relaunch past break", at(14, 0), at(14, 25))]
+  let id = h.send("start", ["eventId": "B3"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(14, 25)
+  h.core.secondTick()
+  clock.now = at(14, 27)
+  let broke = h.send("startBreak", ["sessionId": .int(id), "seconds": 300, "focusSeconds": 1500])
+  check("relaunch fixture: on break", broke["ok"] == true && broke["session"]?["state"] == "break", broke.serialized())
+  // The helper dies at 14:28; the break ends at 14:32 while it is down.
+  let h3 = h.relaunch(at: at(14, 35))
+  keepHarnesses.append(h3)
+  let restored = h3.send("status")
+  check("a restart past the break's end shows the ready card once", restored["session"]?["state"] == "break"
+    && restored["session"]?["remainingSeconds"] == 0
+    && h3.presenter.endSheets.count == 1 && h3.presenter.endSheets.last?.state == "break",
+    "\(h3.presenter.endSheets)")
+  h3.core.secondTick()
+  h3.core.tick()
+  check("the restored ready card never re-announces", h3.presenter.endSheets.count == 1
+    && h3.send("blocking")["active"] == false)
+}
+
+// finishBreak while the break is open: the task ends there, in one commit.
+do {
+  let clock = Clock(at(14, 0))
+  let h = Harness(config: #"{"startableCalendars": ["work"], "logCalendarId": "log", "logCalendarName": "Focus Log"}"#, clock: clock)
+  keepHarnesses.append(h)
+  h.fake.eventList = [event("B2", "finish during break", at(14, 0), at(14, 25))]
+  let id = h.send("start", ["eventId": "B2"])["session"]?["id"]?.intValue ?? 0
+  clock.now = at(14, 25)
+  h.core.tick()
+  _ = h.send("startBreak", ["sessionId": .int(id), "seconds": 300, "focusSeconds": 1500])
+  clock.now = at(14, 28)
+  let finished = h.send("finishBreak", ["sessionId": .int(id), "rating": 3, "note": "done enough"])
+  check("finishBreak closes the task mid-break", finished["ok"] == true && finished["session"]?["state"] == "finished", finished.serialized())
+  let spans = try! h.db.pauses(Int64(id))
+  check("the break closes at the finish", spans.last == PauseSpan(start: at(14, 25), end: at(14, 28), kind: "break"), "\(spans)")
+  check("finishBreak writes the review", finished["session"]?["rating"] == 3 && finished["session"]?["note"] == "done enough", finished.serialized())
+  check("finishBreak wrote one event", h.fake.saved.count == 1 && h.fake.saved.first?.draft.end == at(14, 28))
+  check("finishBreak for another task is refused", h.send("finishBreak", ["sessionId": .int(999)])["ok"] == false)
 }
 
 print("\(count - failures)/\(count) passed")

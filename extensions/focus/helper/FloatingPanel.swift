@@ -599,16 +599,21 @@ final class FloatingPanel: NSObject {
 
   private func updateControls(_ view: SessionView) {
     let paused = view.state == "paused"
+    let onBreak = view.isOnBreak
     pauseButton.set(
-      title: paused ? "Resume" : "Pause", symbol: paused ? "play" : "pause",
-      label: paused ? "Resume" : "Pause")
-    completeButton.setAccessibilityLabel("Complete")
+      title: onBreak ? "Start now" : paused ? "Resume" : "Pause",
+      symbol: onBreak || paused ? "play" : "pause",
+      label: onBreak ? "Start the next focus block" : paused ? "Resume" : "Pause")
+    completeButton.set(
+      title: onBreak ? "Finish" : "Complete", symbol: "checkmark",
+      label: onBreak ? "Finish" : "Complete")
   }
 
-  /// Pause and Resume share one width so the row does not jump.
+  /// Pause, Resume and "Start now" share one width so the row does not jump.
   static let pauseSlot: CGFloat = max(
     PanelButton(title: "Pause", symbol: "pause").preferredWidth,
-    PanelButton(title: "Resume", symbol: "play").preferredWidth)
+    PanelButton(title: "Resume", symbol: "play").preferredWidth,
+    PanelButton(title: "Start now", symbol: "play").preferredWidth)
 
   // MARK: Hover
 
@@ -728,7 +733,8 @@ final class FloatingPanel: NSObject {
 
   @objc func pauseClicked() {
     guard let session, session.state != "ending" else { return }
-    if session.state == "paused" {
+    // On a break this is "Start now": resume straight into the next block.
+    if session.isOnBreak || session.state == "paused" {
       actions?.panelResume()
     } else {
       runMenu(pauseMenu, from: pauseButton)

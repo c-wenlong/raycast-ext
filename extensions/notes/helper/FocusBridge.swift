@@ -121,14 +121,19 @@ extension BridgeValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, 
 struct FocusSession: Equatable {
   var id: Int
   var goal: String
-  var state: String            // "running" or "paused"
+  var state: String            // "running" or "paused" (a break reports as paused)
   var startedAt: Date
-  var plannedEnd: Date
+  var plannedEnd: Date         // the break's end while the task rests
   var remainingSeconds: Int    // at `receivedAt`
   var pausedSeconds: Int
   var calendarTitle: String
   var extendOptions: [Int]
   var pauseStopsClock: Bool
+  /// A task resting between focus blocks: when the break ends, and the
+  /// next block's length. Newer daemons send both; nil means no break.
+  var breakUntil: Date?
+  var nextFocusSeconds: Int?
+  var isOnBreak: Bool { state == "break" || breakUntil != nil }
   var receivedAt: Date
 
   /// The countdown as of `now`: ticks between bridge replies while the
@@ -151,7 +156,7 @@ struct FocusSession: Equatable {
   init?(json: BridgeValue, at receivedAt: Date) {
     guard json.objectValue != nil, !json.isNull else { return nil }
     guard let id = json["id"]?.intValue, let goal = json["goal"]?.stringValue,
-      let state = json["state"]?.stringValue, state == "running" || state == "paused",
+      let state = json["state"]?.stringValue, state == "running" || state == "paused" || state == "break",
       let startedAt = json["startedAt"]?.stringValue.flatMap(FocusBridgeClient.isoDate),
       let plannedEnd = json["plannedEnd"]?.stringValue.flatMap(FocusBridgeClient.isoDate),
       let remaining = json["remainingSeconds"]?.intValue
@@ -164,8 +169,10 @@ struct FocusSession: Equatable {
     remainingSeconds = remaining
     pausedSeconds = json["pausedSeconds"]?.intValue ?? 0
     calendarTitle = json["calendarTitle"]?.stringValue ?? ""
-    extendOptions = json["extendOptions"]?.arrayValue?.compactMap { $0.intValue } ?? [300, 600, 900, 1500]
+    extendOptions = json["extendOptions"]?.arrayValue?.compactMap { $0.intValue } ?? [300, 900, 1500, 2700]
     pauseStopsClock = json["pauseStopsClock"]?.boolValue ?? false
+    breakUntil = json["breakUntil"]?.stringValue.flatMap(FocusBridgeClient.isoDate)
+    nextFocusSeconds = json["nextFocusSeconds"]?.intValue
     self.receivedAt = receivedAt
   }
 }

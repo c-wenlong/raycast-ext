@@ -62,6 +62,7 @@ interface Data {
 const STATE_COLORS: Record<Session["state"], Color> = {
   running: Color.Green,
   paused: Color.Orange,
+  break: Color.Orange,
   ending: Color.Red,
   finished: Color.SecondaryText,
 };
@@ -392,14 +393,30 @@ export default function FocusTodayCommand() {
             ) : null}
             {allowed.resume ? (
               <Action
-                title="Resume"
+                title={session.state === "break" ? "Start Now" : "Resume"}
                 icon={Icon.Play}
                 shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
                 onAction={() =>
                   handleChange(
-                    "Resuming…",
-                    () => getDaemon().resume(),
-                    () => "Resumed",
+                    session.state === "break" ? "Starting…" : "Resuming…",
+                    () =>
+                      session.state === "break"
+                        ? getDaemon().resumeBreak(session.id)
+                        : getDaemon().resume(),
+                    () => (session.state === "break" ? "Started" : "Resumed"),
+                  )
+                }
+              />
+            ) : null}
+            {session.state === "break" ? (
+              <Action
+                title="+5 Min Break"
+                icon={Icon.PlusCircle}
+                onAction={() =>
+                  handleChange(
+                    "Extending the break…",
+                    () => getDaemon().extendBreak(session.id, 300),
+                    () => "Break extended by 5 min",
                   )
                 }
               />

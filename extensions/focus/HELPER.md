@@ -14,7 +14,7 @@ All in `~/.raycast/focus/` (gitignored as `/focus/`; `FOCUS_DIR` overrides the f
 |---|---|
 | `focus.sock` | Unix socket, mode 0600. |
 | `config.json` | Settings. Created with defaults if missing; re-read on every request. `countdownDisplay` is `"panel"`, `"menuBar"` or `"notch"`. `logCalendarId` (with `logCalendarName`, its "Title (account)") is the optional override: null (the default) sends each session's log event to its own calendar, an id sends every session's event there (see "Log event and recovery"). The helper writes only `countdownDisplay` and `panelPosition` (see "Countdown panel"), through `ConfigFile.update`, which keeps every other key and replaces the file atomically; a file that does not parse is never written. |
-| `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`, the end the timer runs to when it is not `planned_end`: extensions, plus for an ad-hoc session its closed pauses). |
+| `focus.db` | sqlite (WAL). Schema from PLAN.md; `pragma user_version` is the schema version (2: adds `sessions.extended_end`, the end the timer runs to when it is not `planned_end`: extensions, plus for an ad-hoc session its closed pauses; 4: adds `sessions.ending_at`/`break_until`/`next_focus_seconds` for a break's continuation and `pauses.kind` for `pause`/`break`/`decision`). |
 | `focus.lock` | `flock` held by the running instance (holds its pid). |
 | `daemon.log` | stderr of the daemon; rotated to `daemon.log.1` past 1 MB. |
 
@@ -47,6 +47,10 @@ sqlite stores UTC.
 | `extend {seconds}` | `session`. `seconds` 60 to 86400, from running, paused or ending; ending returns to running (same session, same row). While an ad-hoc session is paused it adds to the end as it stands. |
 | `stop` | `session`, now ending (the end sheet shows). Only from running or paused. |
 | `finish {rating?, note?, reason?}` | `session` (finished), `logEventId` (string or null), `logPending` (bool). From running, paused or ending. `rating` 1 to 5; `reason` "timer" or "manual", default: why the session reached the end sheet, or "manual" if it never did. |
+| `startBreak {sessionId, seconds, focusSeconds}` | `session`, now `"break"`. Only from the end sheet (ending); `seconds` 60 to 3600, `focusSeconds` the `extend` range. The same task rests: same row and goal, blocking off. Records the card wait as a `decision` span, opens a `break` span, and stores `breakUntil`/`nextFocusSeconds`. |
+| `resumeBreak {sessionId}` | `session`, running. Only while on a break: closes the break span at the real resume time and starts a fresh block of `nextFocusSeconds`. The legacy `resume` accepts a break too (old hosted clients). |
+| `extendBreak {sessionId, seconds}` | `session`. More rest on the open break (`seconds` 60 to 3600); rearms the ready card when it already showed. |
+| `finishBreak {sessionId, rating?, note?}` | Same reply as `finish`. The final Finish from a break; closes the break span and the session in one commit. All four break commands carry `sessionId`: `startBreak` requires the end sheet, the other three the break itself, so a stale card or host can never end a new block. |
 | `pending` | `waiting: [{sessionId, goal, endedAt, logCalendarId, logCalendarName, reason}]`; `reason` is the last try's (null before one): "calendar access is …", "calendar <name> is not in Calendar.app", "calendar <name> is read-only, so it cannot take the log event; move the waiting sessions to a writable calendar", "the session has no calendar to log to; move the waiting sessions to a calendar", or a failed search or save |
 | `retryPending` | `written`, `adopted`, `stillWaiting` |
 | `movePending {calendarId}` | `moved`, `written`, `adopted`, `stillWaiting` |
@@ -56,15 +60,25 @@ sqlite stores UTC.
 | `deleteSession {sessionId}` | `deleted` (true), `logEventRemoved` (bool), `warning` (only when a log event was kept). Removes the session with its pauses and blocked attempts; the open session is discarded first. An unknown id is `ok: false`, "no session with id N". See "Deleting a session" below. |
 | `updateSession {sessionId, rating?, note?}` | `session` (finished, as updated), `logEventUpdated` (bool), `warning` (only when a log event was left as it was). Changes a finished or abandoned session's rating (1 to 5) and note; a field left out keeps its value, null clears it. The open session is refused ("session N is still open; finish it before editing it"), an unknown id is "no session with id N". See "Editing a session" below. |
 | `notchBridge {version, op, owner?}` | `bridgeVersion` (1), `display` ("panel", "menuBar" or "notch"), `claimed` (bool), `ttlSeconds` (3), `session` (bridge snapshot or null), `actions` (the `notchAction` verbs this daemon accepts). The shared-notch lease for other helpers (see "Shared notch" below): `op` is `status`, `claim`, `renew` or `release`; `owner` (a UUID) is required for all but status. A claim or renew expires `ttlSeconds` after the last one; a different owner cannot take, prolong or release a live claim. Off the notch display any claim clears and `claimed` is false. Errors never mutate the lease. |
-| `notchAction {version, owner, sessionId, action, seconds?}` | same fields as `notchBridge`. Runs `pause`, `resume`, `stop` (the host's Complete: the session reaches the end sheet) or `extend` (with `seconds`, the same range as `extend`) through the ordinary session rules, plus the additive controls: `pauseFor` (`seconds` 1-86400; pauses, then the presenter arms its resume timer (refused when the UI cannot, e.g. headless)), `edit` (opens the Focus Today deeplink), `cancel` (finishes now, no rating/note/end sheet) and `moveToPanel`/`moveToMenuBar` (write only `countdownDisplay`, ending the claim). Refused without a valid claim for `owner`, off the notch display, for a session that is not the current one, or at a wrong version. |
+| `notchAction {version, owner, sessionId, action, seconds?}` | same fields as `notchBridge`. Runs `pause`, `resume`, `stop` (the host's Complete: the session reaches the end sheet) or `extend` (with `seconds`, the same range as `extend`) through the ordinary session rules, plus the additive controls: `pauseFor` (`seconds` 1-86400; pauses, then the presenter arms its resume timer (refused when the UI cannot, e.g. headless)), `finishBreak` (the host's Finish on a break: the final close, with the end card's kept review), `extendBreak` (`seconds` 60-3600, more rest), `edit` (opens the Focus Today deeplink), `cancel` (finishes now, no rating/note/end sheet) and `moveToPanel`/`moveToMenuBar` (write only `countdownDisplay`, ending the claim). Refused without a valid claim for `owner`, off the notch display, for a session that is not the current one, or at a wrong version. |
 
 A session is `{id, goal, state, startedAt, plannedEnd, calendarId, profile, sourceEventId, extendedSeconds, pausedSeconds}`.
-`plannedEnd` includes extensions. While open, `state` is "running", "paused" or
+`plannedEnd` includes extensions. While open, `state` is "running", "paused",
+"break" (the same task resting between focus blocks) or
 "ending" (at the end sheet), plus `remainingSeconds` (whole seconds to
 `plannedEnd`, 0 while ending), `endReason` (null, or while ending "timer" or
-"manual": what Finish records) and `pauseStopsClock` (true for an ad-hoc
-session). A finished session has `state: "finished"` plus
+"manual": what Finish records), `pauseStopsClock` (true for an ad-hoc
+session, false on a break) and, on a break, `breakUntil` and
+`nextFocusSeconds`; while on a break `plannedEnd` is `breakUntil` (the
+countdown's end). A finished session has `state: "finished"` plus
 `endedAt, endReason, rating, note, logCalendarId, logCalendarName, logEventId`.
+
+The shared-notch bridge snapshot reports a break to version-1 hosts as
+`state: "paused"` with `pauseStopsClock: false`, `plannedEnd` the break's
+end, plus the additive `breakUntil` and `nextFocusSeconds`; old hosts'
+`resume` ends the break early (the same input the native "Start now" sends),
+their other verbs are refused on a break, and new hosts advertise and call
+`finishBreak`/`extendBreak`.
 
 What a pause does (Kai, 2026-09-28):
 
@@ -315,7 +329,7 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   the floating panel's canvas and HUD blur and a window shadow: the goal
   (14 pt semibold) over "Time's up" or "Stopped · N min focused" (13 pt
   grey), the completion banner's type; five 18 pt stars with the note field
-  (13 pt, "Add a note") beside them; +5/+10/+15/+25 min as 26 pt bordered
+  (13 pt, "Add a note") beside them; +5/+15/+25/+45 min as 26 pt bordered
   boxes (12 pt) and Finish as a light pill with a ↩ keycap on the row
   below; 12 pt padding. It is non-activating but becomes key so 1 to 5,
   Return and typing reach it. There is no saved sheet position, so every
@@ -342,14 +356,33 @@ second. Core is unchanged: everything below lives behind `SessionPresenter`.
   extended or finished elsewhere, dismissed) drops the countdown and the
   poll. `NullPresenter` is unchanged.
 
+  Under the buttons a "Take a break…" toggle opens an inline chooser
+  (the card grows in place, still 360 wide): Break 5/10/15 min, Next focus
+  the session's extend options (default 5 and 25), a "Start N min break"
+  call to action and a helper line naming the next block; Escape or the
+  toggle again closes only the chooser, and Return in the picker starts the
+  break. Answering it hides the card but keeps the stars and note for the
+  same task's next card. While a break runs, the panel, notch and menu bar
+  count the rest down in the muted style with no green fill, Pause becomes
+  "Start now" (resumeBreak) and Complete becomes Finish (finishBreak); the
+  menu bar's Extend offers break extension instead of focus extension (the
+  hosted Focus tab's "…" menu does the same). When the
+  break ends the same card returns as the ready card ("Break finished",
+  "Ready for another N min?", Start N min / +5 min break / Finish) with no
+  countdown and no auto-finish; a restarted daemon whose break already
+  ended shows it again.
+
 Launch recovery (in `FocusCore.init`): an open row whose `last_heartbeat` is
 more than 90 s old is closed with `end_reason = abandoned`, `ended_at =
 last_heartbeat` (never before the start; an open pause closes there, never
 before it began), no rating, no log event, and the sheet is dismissed. A fresher
 one (the helper restarted quickly) is resumed as running, paused (an open pause
-row) or at the end sheet (`end_reason` set), and the timer carries on. A paused
+row), on a break (`break_until` set) or at the end sheet (`end_reason` set),
+and the timer carries on. A paused
 ad-hoc session comes back with its time left frozen at the open pause's start
-(its stored `extended_end` holds only the pauses already closed).
+(its stored `extended_end` holds only the pauses already closed). An open
+break is exempt from the heartbeat rule — resting is intentional — and one
+whose end already passed resumes showing the ready card once.
 
 With `raycastDeeplink` on in config, start also opens
 `raycast://focus/start?goal=<goal>&duration=<seconds left>&mode=block` and

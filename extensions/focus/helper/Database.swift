@@ -37,6 +37,13 @@ struct SessionRow: Equatable {
   var lastHeartbeat: Date
   /// Started with no calendar: no log event is ever written.
   var logSkipped: Bool = false
+  /// When the session last reached the end sheet (schema 4); nil while
+  /// running or on a break after it was answered.
+  var endingAt: Date? = nil
+  /// On a break: when it ends.
+  var breakUntil: Date? = nil
+  /// On a break: the next focus block's length.
+  var nextFocusSeconds: Int? = nil
 
   /// The end the timer runs to: the extended end, else the planned end.
   var deadline: Date? { extendedEnd ?? plannedEnd }
@@ -97,7 +104,7 @@ private struct Row {
 }
 
 final class Database {
-  static let schemaVersion = 3
+  static let schemaVersion = 4
 
   private var handle: OpaquePointer?
 
@@ -180,6 +187,21 @@ final class Database {
           """)
       }
     }
+    if version < 4 {
+      // A task continued through breaks: when it last reached the end
+      // sheet, when the open break ends and the next block's length;
+      // pauses.kind tells real pauses from "break" and "decision" spans.
+      try transaction {
+        try exec(
+          """
+          alter table sessions add column ending_at text;
+          alter table sessions add column break_until text;
+          alter table sessions add column next_focus_seconds integer;
+          alter table pauses add column kind text not null default 'pause';
+          pragma user_version = 4;
+          """)
+      }
+    }
   }
 
   var journalMode: String? { try? scalarText("pragma journal_mode") }
@@ -190,7 +212,7 @@ final class Database {
   private static let sessionColumns = """
     id, source_event_id, calendar_id, goal, profile, planned_start, planned_end, started_at,
     ended_at, end_reason, extended_seconds, rating, note, log_calendar_id, log_calendar_name,
-    log_event_id, last_heartbeat, extended_end, log_skipped
+    log_event_id, last_heartbeat, extended_end, log_skipped, ending_at, break_until, next_focus_seconds
     """
 
   private static func session(_ row: Row) -> SessionRow {
@@ -213,7 +235,10 @@ final class Database {
       logCalendarName: row.text(14),
       logEventId: row.text(15),
       lastHeartbeat: row.date(16) ?? Date(timeIntervalSince1970: 0),
-      logSkipped: (row.int(18) ?? 0) != 0)
+      logSkipped: (row.int(18) ?? 0) != 0,
+      endingAt: row.date(19),
+      breakUntil: row.date(20),
+      nextFocusSeconds: row.int(21).map(Int.init))
   }
 
   @discardableResult
@@ -243,14 +268,19 @@ final class Database {
     ).first
   }
 
-  /// Closes an open session and any open pause in one transaction. False if
-  /// the session had already ended. A pause never ends before it began.
-  func finish(_ id: Int64, _ close: SessionClose) throws -> Bool {
+  /// Closes an open session and any open pause in one transaction, and
+  /// clears the break bookkeeping (ending_at, break_until,
+  /// next_focus_seconds) with it. False if the session had already ended.
+  /// A pause never ends before it began. `beforeCommit` runs after the
+  /// close, inside the transaction, so spans the machine appended at the
+  /// end (a closed "decision" span) land in the same commit.
+  func finish(_ id: Int64, _ close: SessionClose, beforeCommit: () throws -> Void = {}) throws -> Bool {
     try transaction {
       let changed = try run(
         """
         update sessions set ended_at = ?, end_reason = ?, rating = ?, note = ?, log_calendar_id = ?,
-          log_calendar_name = ?, log_skipped = ?, last_heartbeat = ?, extended_end = coalesce(?, extended_end)
+          log_calendar_name = ?, log_skipped = ?, last_heartbeat = ?, extended_end = coalesce(?, extended_end),
+          ending_at = null, break_until = null, next_focus_seconds = null
         where id = ? and ended_at is null
         """,
         [
@@ -262,6 +292,7 @@ final class Database {
       try run(
         "update pauses set resumed_at = max(paused_at, ?) where session_id = ? and resumed_at is null",
         [SQLValue(close.endedAt), .int(id)])
+      try beforeCommit()
       return true
     }
   }
@@ -329,6 +360,15 @@ final class Database {
     try run("update sessions set end_reason = ? where id = ? and ended_at is null", [SQLValue(reason), .int(id)])
   }
 
+  /// The break bookkeeping on the open row: when the end card was reached,
+  /// when the open break ends and the next focus block's length. Fields
+  /// passed as nil are cleared (a resumed or finished task carries none).
+  func setContinuation(_ id: Int64, endingAt: Date?, breakUntil: Date?, nextFocusSeconds: Int?) throws {
+    try run(
+      "update sessions set ending_at = ?, break_until = ?, next_focus_seconds = ? where id = ? and ended_at is null",
+      [SQLValue(endingAt), SQLValue(breakUntil), SQLValue(nextFocusSeconds), .int(id)])
+  }
+
   /// Removes a session with its pauses and blocked attempts in one
   /// transaction (the children first: foreign keys are on and do not
   /// cascade). `beforeCommit` runs once the deletes are done and before they
@@ -362,10 +402,10 @@ final class Database {
 
   // MARK: Pauses and blocked attempts
 
-  func addPause(_ sessionId: Int64, start: Date, end: Date?) throws {
+  func addPause(_ sessionId: Int64, start: Date, end: Date?, kind: String = "pause") throws {
     try run(
-      "insert into pauses (session_id, paused_at, resumed_at) values (?, ?, ?)",
-      [.int(sessionId), SQLValue(start), SQLValue(end)])
+      "insert into pauses (session_id, paused_at, resumed_at, kind) values (?, ?, ?, ?)",
+      [.int(sessionId), SQLValue(start), SQLValue(end), .text(kind)])
   }
 
   /// Ends the session's open pause, never before it began.
@@ -376,8 +416,8 @@ final class Database {
   }
 
   func pauses(_ sessionId: Int64) throws -> [PauseSpan] {
-    try rows("select paused_at, resumed_at from pauses where session_id = ? order by id", [.int(sessionId)]) {
-      PauseSpan(start: $0.date(0) ?? Date(timeIntervalSince1970: 0), end: $0.date(1))
+    try rows("select paused_at, resumed_at, kind from pauses where session_id = ? order by id", [.int(sessionId)]) {
+      PauseSpan(start: $0.date(0) ?? Date(timeIntervalSince1970: 0), end: $0.date(1), kind: $0.text(2) ?? "pause")
     }
   }
 
@@ -436,8 +476,10 @@ final class Database {
   func pauses(forSessions ids: [Int64]) throws -> [Int64: [PauseSpan]] {
     var bySession: [Int64: [PauseSpan]] = [:]
     let spans = try perSession(
-      ids, "select session_id, paused_at, resumed_at from pauses where session_id in (%@) order by id"
-    ) { ($0.int(0) ?? 0, PauseSpan(start: $0.date(1) ?? Date(timeIntervalSince1970: 0), end: $0.date(2))) }
+      ids, "select session_id, paused_at, resumed_at, kind from pauses where session_id in (%@) order by id"
+    ) {
+      ($0.int(0) ?? 0, PauseSpan(start: $0.date(1) ?? Date(timeIntervalSince1970: 0), end: $0.date(2), kind: $0.text(3) ?? "pause"))
+    }
     for (id, span) in spans { bySession[id, default: []].append(span) }
     return bySession
   }

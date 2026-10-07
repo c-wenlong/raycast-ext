@@ -39,7 +39,12 @@ export interface TodayEvent {
 
 // "ending" is the end sheet: the timer ran out (or the planned end passed
 // while paused) or Kai pressed Stop; it waits for Extend or Finish.
-export type SessionState = "running" | "paused" | "ending" | "finished";
+export type SessionState =
+  | "running"
+  | "paused"
+  | "ending"
+  | "break"
+  | "finished";
 
 export interface Session {
   id: number;
@@ -62,6 +67,11 @@ export interface Session {
   // Open sessions only: true for an ad-hoc session, whose pause stops the
   // clock (the time left holds; `plannedEnd` moves on by the pause).
   pauseStopsClock?: boolean;
+  // While state is "break" (the task resting at its end card's choice):
+  // when the break ends (`plannedEnd` mirrors it) and the next block's
+  // length in seconds.
+  breakUntil?: string | null;
+  nextFocusSeconds?: number | null;
   // While ending, why ("timer" or "manual"), which Finish records unless
   // told otherwise; for a finished session, the recorded reason.
   endReason?: string | null;
@@ -337,7 +347,7 @@ export interface FinishRequest {
 }
 
 // Extend choices, as on the native end sheet.
-export const EXTEND_MINUTES = [5, 10, 15, 25] as const;
+export const EXTEND_MINUTES = [5, 15, 25, 45] as const;
 
 export type DaemonErrorCode =
   | "missing-binary" // assets/focus-daemon is not there
@@ -750,6 +760,67 @@ export class FocusDaemon {
   // Sends the session to the end sheet.
   async stop(): Promise<Session> {
     return this.sessionReply(await this.request("stop"));
+  }
+
+  // From the end card: the same task rests for `seconds`, then offers
+  // another focus block of `focusSeconds`. The session keeps its id, goal
+  // and calendar; blocking is off while it rests.
+  async startBreak(
+    sessionId: number,
+    seconds: number,
+    focusSeconds: number,
+  ): Promise<Session> {
+    if (!Number.isInteger(seconds) || seconds < 60 || seconds > 3600) {
+      throw new RangeError("A break takes whole seconds from 60 to 3600.");
+    }
+    return this.sessionReply(
+      await this.request("startBreak", { sessionId, seconds, focusSeconds }),
+    );
+  }
+
+  // "Start now" on a break: the next focus block begins early.
+  async resumeBreak(sessionId: number): Promise<Session> {
+    return this.sessionReply(await this.request("resumeBreak", { sessionId }));
+  }
+
+  // More rest on the same open break.
+  async extendBreak(sessionId: number, seconds: number): Promise<Session> {
+    if (!Number.isInteger(seconds) || seconds < 60 || seconds > 3600) {
+      throw new RangeError(
+        "Extending a break takes whole seconds from 60 to 3600.",
+      );
+    }
+    return this.sessionReply(
+      await this.request("extendBreak", { sessionId, seconds }),
+    );
+  }
+
+  // The final Finish while the task is on a break: the one calendar event
+  // gets the break's timestamps in its notes.
+  async finishBreak(
+    sessionId: number,
+    request: FinishRequest = {},
+  ): Promise<FinishResult> {
+    const payload: Record<string, unknown> = { sessionId };
+    if (
+      request.rating !== undefined &&
+      (!Number.isInteger(request.rating) ||
+        request.rating < 1 ||
+        request.rating > 5)
+    ) {
+      throw new RangeError("rating must be a whole number from 1 to 5.");
+    }
+    if (request.rating !== undefined) payload.rating = request.rating;
+    const note = request.note?.replace(/\s+/g, " ").trim();
+    if (note) payload.note = note;
+    const reply = await this.request("finishBreak", payload);
+    return {
+      session: field<Session>(reply, "session", isObject),
+      logEventId:
+        typeof reply.logEventId === "string" ? reply.logEventId : null,
+      logPending: reply.logPending === true,
+      logSkipped: reply.logSkipped === true,
+    };
   }
 
   private sessionReply(reply: Reply): Session {

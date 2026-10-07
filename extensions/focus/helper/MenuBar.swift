@@ -114,10 +114,10 @@ final class MenuBar: NSObject {
       statusItem.isVisible = false
       return
     }
-    let paused = view.state == "paused"
+    let paused = view.state == "paused" || view.isOnBreak
     let clock = Self.clock(view.state == "ending" ? 0 : view.remainingSeconds)
     timeText = paused ? "⏸ \(clock)" : clock
-    goalText = Self.shortGoal(view.goal)
+    goalText = Self.shortGoal(view.isOnBreak ? "Break · \(view.goal)" : view.goal)
     statusItem.isVisible = true
 
     if let button = statusItem.button {
@@ -128,20 +128,29 @@ final class MenuBar: NSObject {
     updateMenu(view)
   }
 
+  /// The "Extend break" choices while the task rests: 5, 10 or 15 minutes.
+  static let breakChoices = [300, 600, 900]
+
   private func updateMenu(_ view: SessionView) {
     infoItem.title = Self.infoText(view)
     let ending = view.state == "ending"
+    let onBreak = view.isOnBreak
     let paused = view.state == "paused"
     pauseItem.isHidden = ending
-    pauseItem.title = paused ? "Resume" : "Pause"
-    pauseItem.image = Self.symbol(paused ? "play.circle" : "pause.circle")
+    pauseItem.title = onBreak ? "Start now" : paused ? "Resume" : "Pause"
+    pauseItem.image = Self.symbol(onBreak || paused ? "play.circle" : "pause.circle")
+    // On a break the slot is Finish: the final end, review kept by the card.
     stopItem.isHidden = ending
-    extendItem.isHidden = view.extendOptions.isEmpty
-    if view.extendOptions != extendOptions {
-      extendOptions = view.extendOptions
+    stopItem.title = onBreak ? "Finish" : "Stop"
+    extendItem.title = onBreak ? "Extend break" : "Extend"
+    // On a break the submenu extends the rest, not the focus block.
+    let options = onBreak ? Self.breakChoices : view.extendOptions
+    extendItem.isHidden = options.isEmpty
+    if options != extendOptions {
+      extendOptions = options
       let submenu = extendItem.submenu ?? NSMenu(title: "Extend")
       submenu.removeAllItems()
-      for seconds in view.extendOptions {
+      for seconds in options {
         let item = NSMenuItem(title: Self.extendTitle(seconds), action: #selector(extend(_:)), keyEquivalent: "")
         item.target = self
         item.tag = seconds
@@ -155,16 +164,28 @@ final class MenuBar: NSObject {
 
   @objc private func pauseOrResume() {
     guard let view, view.state != "ending" else { return }
-    if view.state == "paused" { delegate?.presenterResume() } else { delegate?.presenterPause() }
+    if view.isOnBreak { delegate?.presenterResumeBreak(sessionId: view.id) }
+    else if view.state == "paused" { delegate?.presenterResume() } else { delegate?.presenterPause() }
   }
 
   @objc private func extend(_ sender: NSMenuItem) {
-    guard view != nil, sender.tag > 0 else { return }
-    delegate?.presenterExtend(seconds: sender.tag)
+    guard let view, sender.tag > 0 else { return }
+    if view.isOnBreak { delegate?.presenterExtendBreak(sessionId: view.id, seconds: sender.tag) }
+    else { delegate?.presenterExtend(seconds: sender.tag) }
   }
+
+  /// The card's kept review belongs to this Finish; UIPresenter fills it
+  /// (a headless delegate gets nil).
+  var onFinishBreak: ((Int) -> Void)?
 
   @objc private func stop() {
     guard let view, view.state != "ending" else { return }
+    if view.isOnBreak {
+      if let onFinishBreak { onFinishBreak(view.id) } else {
+        delegate?.presenterFinishBreak(sessionId: view.id, rating: nil, note: nil)
+      }
+      return
+    }
     delegate?.presenterStop()
   }
 
