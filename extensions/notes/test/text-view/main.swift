@@ -1678,6 +1678,54 @@ for count in [1, 3, 6, 23] {
   gapPalette.hide()
 }
 
+// Key badges: each key's ink sits in the middle of its cap, measured on
+// the rendered pixels, for keys that sit at different heights above the
+// baseline (⌘, capitals, brackets, ↩). Within a point, since the harness
+// may render at 1x; the old label badges sat 2.5 to 4.75pt low.
+// Each badge is sized by its own constraints inside a parent, so a wide
+// key ("Esc", "Tab") must come out wider than 22pt with 6pt of padding a side.
+for key in ["⌘", "D", "P", "[", "]", "↩", "F", "+", "K", "Esc", "Tab"] {
+  let badge = KeyBadge(key: key, scale: 1)
+  badge.layer?.backgroundColor = nil
+  badge.appearance = NSAppearance(named: .aqua)
+  let holder = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+  holder.addSubview(badge)
+  NSLayoutConstraint.activate([
+    badge.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
+    badge.topAnchor.constraint(equalTo: holder.topAnchor),
+  ])
+  holder.layoutSubtreeIfNeeded()
+  let wanted = max(22, ceil(badge.ink.width) + 12)
+  check(
+    "key badge \(key) is sized from its ink", badge.bounds.height == 22 && badge.bounds.width == wanted
+      && (key.count == 1 || badge.bounds.width > 22),
+    "\(badge.bounds.size) wanted \(wanted)")
+  guard let rep = badge.bitmapImageRepForCachingDisplay(in: badge.bounds) else {
+    check("key badge \(key) renders", false)
+    continue
+  }
+  badge.cacheDisplay(in: badge.bounds, to: rep)
+  // The key's colour is translucent, so count any pixel above a fifth of
+  // the strongest one: a fixed cutoff drops thin strokes on one side.
+  var strongest: CGFloat = 0
+  for y in 0..<rep.pixelsHigh {
+    for x in 0..<rep.pixelsWide { strongest = max(strongest, rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) }
+  }
+  var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
+  for y in 0..<rep.pixelsHigh {
+    for x in 0..<rep.pixelsWide where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > strongest * 0.2 {
+      minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+    }
+  }
+  let px = CGFloat(rep.pixelsWide) / badge.bounds.width
+  let inkMidX = CGFloat(minX + maxX + 1) / 2 / px
+  let inkMidY = CGFloat(minY + maxY + 1) / 2 / px
+  check(
+    "key badge \(key) is centred",
+    maxX >= 0 && abs(inkMidX - badge.bounds.midX) <= 1 && abs(inkMidY - badge.bounds.midY) <= 1,
+    "ink centre \(inkMidX), \(inkMidY) in a \(badge.bounds.size) cap")
+}
+
 // An open palette follows a setting change from any path: checkmarks move
 // and key badges take the new appearance's colour.
 func pollUntil(timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {

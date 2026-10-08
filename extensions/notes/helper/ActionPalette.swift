@@ -221,7 +221,7 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true),
       let keys = cell.subviews.first(where: { $0 is NSStackView }) as? NSStackView
     else { return nil }
-    return keys.arrangedSubviews.first(where: { $0 is NSTextField })?.layer?.backgroundColor
+    return keys.arrangedSubviews.first(where: { $0 is KeyBadge })?.layer?.backgroundColor
   }
 
   /// The panel height that shows every row with the gap under the last
@@ -329,20 +329,12 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     keys.spacing = 4 * scale
     keys.translatesAutoresizingMaskIntoConstraints = false
     for key in action.keys {
-      let badge = NSTextField(labelWithString: String(key))
-      badge.font = NSFont.systemFont(ofSize: 12 * scale, weight: .medium)
-      badge.textColor = .secondaryLabelColor
-      badge.alignment = .center
-      badge.wantsLayer = true
+      let badge = KeyBadge(key: String(key), scale: scale)
       // A layer colour is fixed when set: resolve it in the palette's
       // own appearance (forced light or dark, or the system's).
       tableView.effectiveAppearance.performAsCurrentDrawingAppearance {
         badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
       }
-      badge.layer?.cornerRadius = 5 * scale
-      badge.translatesAutoresizingMaskIntoConstraints = false
-      badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 22 * scale).isActive = true
-      badge.heightAnchor.constraint(equalToConstant: 22 * scale).isActive = true
       keys.addArrangedSubview(badge)
     }
 
@@ -379,6 +371,53 @@ final class ActionPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate,
 }
 
 /// The palette's background, which reports appearance changes.
+/// One key of a shortcut in a rounded cap. The key is drawn centred on
+/// its own ink, not its line box, so ⌘, letters, brackets and ↩ all sit
+/// in the middle of the cap whatever their height above the baseline.
+final class KeyBadge: NSView {
+  let key: String
+  private let line: CTLine
+
+  init(key: String, scale: CGFloat) {
+    self.key = key
+    let font = NSFont.systemFont(ofSize: 12 * scale, weight: .medium)
+    line = CTLineCreateWithAttributedString(NSAttributedString(string: key, attributes: [
+      .font: font,
+      NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,
+    ]))
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.cornerRadius = 5 * scale
+    translatesAutoresizingMaskIntoConstraints = false
+    widthAnchor.constraint(equalToConstant: max(22 * scale, ceil(ink.width) + 12 * scale)).isActive = true
+    heightAnchor.constraint(equalToConstant: 22 * scale).isActive = true
+    setAccessibilityElement(true)
+    setAccessibilityRole(.staticText)
+    setAccessibilityLabel(key)
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  /// The key's glyph outlines, relative to its baseline origin.
+  var ink: CGRect { CTLineGetBoundsWithOptions(line, .useGlyphPathBounds) }
+
+  /// The baseline origin that puts the middle of the ink in the middle
+  /// of the cap.
+  var textOrigin: CGPoint {
+    CGPoint(x: bounds.midX - ink.midX, y: bounds.midY - ink.midY)
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard let context = NSGraphicsContext.current?.cgContext else { return }
+    context.saveGState()
+    context.setFillColor(NSColor.secondaryLabelColor.cgColor)
+    context.textMatrix = .identity
+    context.textPosition = textOrigin
+    CTLineDraw(line, context)
+    context.restoreGState()
+  }
+}
+
 final class PaletteRootView: NSVisualEffectView {
   var onAppearanceChange: (() -> Void)?
 
