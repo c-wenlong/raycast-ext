@@ -1682,11 +1682,24 @@ for count in [1, 3, 6, 23] {
 // the rendered pixels, for keys that sit at different heights above the
 // baseline (⌘, capitals, brackets, ↩). Within a point, since the harness
 // may render at 1x; the old label badges sat 2.5 to 4.75pt low.
-for key in ["⌘", "D", "P", "[", "]", "↩", "F", "+", "K"] {
+// Each badge is sized by its own constraints inside a parent, so a wide
+// key ("Esc", "Tab") must come out wider than 22pt with 6pt of padding a side.
+for key in ["⌘", "D", "P", "[", "]", "↩", "F", "+", "K", "Esc", "Tab"] {
   let badge = KeyBadge(key: key, scale: 1)
   badge.layer?.backgroundColor = nil
   badge.appearance = NSAppearance(named: .aqua)
-  badge.frame = NSRect(x: 0, y: 0, width: 22, height: 22)
+  let holder = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+  holder.addSubview(badge)
+  NSLayoutConstraint.activate([
+    badge.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
+    badge.topAnchor.constraint(equalTo: holder.topAnchor),
+  ])
+  holder.layoutSubtreeIfNeeded()
+  let wanted = max(22, ceil(badge.ink.width) + 12)
+  check(
+    "key badge \(key) is sized from its ink", badge.bounds.height == 22 && badge.bounds.width == wanted
+      && (key.count == 1 || badge.bounds.width > 22),
+    "\(badge.bounds.size) wanted \(wanted)")
   guard let rep = badge.bitmapImageRepForCachingDisplay(in: badge.bounds) else {
     check("key badge \(key) renders", false)
     continue
@@ -1708,8 +1721,9 @@ for key in ["⌘", "D", "P", "[", "]", "↩", "F", "+", "K"] {
   let inkMidX = CGFloat(minX + maxX + 1) / 2 / px
   let inkMidY = CGFloat(minY + maxY + 1) / 2 / px
   check(
-    "key badge \(key) is centred", maxX >= 0 && abs(inkMidX - 11) <= 1 && abs(inkMidY - 11) <= 1,
-    "ink centre \(inkMidX), \(inkMidY) in a 22pt cap")
+    "key badge \(key) is centred",
+    maxX >= 0 && abs(inkMidX - badge.bounds.midX) <= 1 && abs(inkMidY - badge.bounds.midY) <= 1,
+    "ink centre \(inkMidX), \(inkMidY) in a \(badge.bounds.size) cap")
 }
 
 // An open palette follows a setting change from any path: checkmarks move
