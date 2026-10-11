@@ -97,9 +97,10 @@ do {
     wings.right > wings.left && uneven.minX + wings.left == notched.notch!.minX
       && uneven.maxX - wings.right == notched.notch!.maxX, "\(uneven) \(wings)")
   let clockWidth = ceil(NSAttributedString(string: "1:30:00", attributes: [.font: NotchMetrics.clockFont]).size().width)
-  check("the hour clock starts clear of the notch",
-    uneven.maxX - wings.right + NotchMetrics.wingInner >= notched.notch!.maxX + NotchMetrics.wingInner - 0.5
-      && clockWidth <= wings.right - NotchMetrics.wingOuter - NotchMetrics.wingInner, "\(clockWidth)")
+  let clockStart = uneven.minX + IslandStripView.clockX(textWidth: clockWidth, stripWidth: uneven.width, rightWing: wings.right)
+  check("the hour clock starts the inner padding past the notch and ends the outer padding from the edge",
+    abs(clockStart - (notched.notch!.maxX + NotchMetrics.wingInner)) <= 0.5
+      && abs(uneven.maxX - NotchMetrics.wingOuter - (clockStart + clockWidth)) <= 0.5, "\(clockStart) \(clockWidth) \(uneven)")
   let unevenCard = NotchGeometry.card(size: NSSize(width: 200, height: 300), strip: uneven, on: notched)
   check("the card stays centred on the notch and covers an uneven strip",
     abs(unevenCard.midX - notched.notch!.midX) < 1 && unevenCard.minX <= uneven.minX && unevenCard.maxX >= uneven.maxX,

@@ -110,6 +110,15 @@ final class IslandStripView: NSView {
     return (left, NotchGeometry.wing(contentWidth: text.size().width))
   }
 
+  /// Where the clock's text starts in a strip `stripWidth` wide: centred
+  /// in the right wing between its padding, the inner side (by the notch)
+  /// on the wing's left.
+  static func clockX(textWidth: CGFloat, stripWidth: CGFloat, rightWing: CGFloat) -> CGFloat {
+    let minX = stripWidth - rightWing + NotchMetrics.wingInner
+    let width = rightWing - NotchMetrics.wingOuter - NotchMetrics.wingInner
+    return (minX + (width - textWidth) / 2).rounded()
+  }
+
   override func draw(_ dirtyRect: NSRect) {
     let bandMidY = bounds.maxY - barHeight / 2
     if let icon = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Notes")?
@@ -129,12 +138,7 @@ final class IslandStripView: NSView {
     let color = paused ? NotchMetrics.clockPaused : NotchMetrics.focusGreen
     let text = NSAttributedString(
       string: clockText, attributes: [.font: NotchMetrics.clockFont, .foregroundColor: color])
-    let textWidth = ceil(text.size().width)
-    // The right wing's inner edge (by the notch) is on its left.
-    let area = NSRect(
-      x: bounds.maxX - rightWing + NotchMetrics.wingInner, y: 0,
-      width: rightWing - NotchMetrics.wingOuter - NotchMetrics.wingInner, height: 0)
-    let x = (area.minX + (area.width - textWidth) / 2).rounded()
+    let x = Self.clockX(textWidth: ceil(text.size().width), stripWidth: bounds.width, rightWing: rightWing)
     let font = NotchMetrics.clockFont
     text.draw(at: NSPoint(x: x, y: (bandMidY - font.capHeight / 2 + font.descender).rounded()))
   }
