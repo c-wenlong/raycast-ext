@@ -90,6 +90,21 @@ do {
   check("the strip hugs the top edge over the notch",
     strip.maxY == notched.frame.maxY && abs(strip.midX - notched.notch!.midX) < 1
       && strip.width == 280 && strip.height == 33, "\(strip)")
+  // The notes symbol on the left, a Focus clock past an hour on the right.
+  let wings = IslandStripView.wings(clock: "1:30:00")
+  let uneven = NotchGeometry.strip(leftWing: wings.left, rightWing: wings.right, on: notched)
+  check("a wider clock wing still leaves the gap on the notch",
+    wings.right > wings.left && uneven.minX + wings.left == notched.notch!.minX
+      && uneven.maxX - wings.right == notched.notch!.maxX, "\(uneven) \(wings)")
+  let clockWidth = ceil(NSAttributedString(string: "1:30:00", attributes: [.font: NotchMetrics.clockFont]).size().width)
+  let clockStart = uneven.minX + IslandStripView.clockX(textWidth: clockWidth, stripWidth: uneven.width, rightWing: wings.right)
+  check("the hour clock starts the inner padding past the notch and ends the outer padding from the edge",
+    abs(clockStart - (notched.notch!.maxX + NotchMetrics.wingInner)) <= 0.5
+      && abs(uneven.maxX - NotchMetrics.wingOuter - (clockStart + clockWidth)) <= 0.5, "\(clockStart) \(clockWidth) \(uneven)")
+  let unevenCard = NotchGeometry.card(size: NSSize(width: 200, height: 300), strip: uneven, on: notched)
+  check("the card stays centred on the notch and covers an uneven strip",
+    abs(unevenCard.midX - notched.notch!.midX) < 1 && unevenCard.minX <= uneven.minX && unevenCard.maxX >= uneven.maxX,
+    "\(unevenCard) \(uneven)")
   let plain = NotesNotchScreen(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), notch: nil, barHeight: 24)
   let plainStrip = NotchGeometry.strip(leftWing: 40, rightWing: 40, on: plain)
   check("without a notch the strip centres on the screen with a small gap",
