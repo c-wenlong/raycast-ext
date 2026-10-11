@@ -130,8 +130,9 @@ final class IslandStripView: NSView {
     let text = NSAttributedString(
       string: clockText, attributes: [.font: NotchMetrics.clockFont, .foregroundColor: color])
     let textWidth = ceil(text.size().width)
+    // The right wing's inner edge (by the notch) is on its left.
     let area = NSRect(
-      x: bounds.maxX - rightWing + NotchMetrics.wingOuter, y: 0,
+      x: bounds.maxX - rightWing + NotchMetrics.wingInner, y: 0,
       width: rightWing - NotchMetrics.wingOuter - NotchMetrics.wingInner, height: 0)
     let x = (area.minX + (area.width - textWidth) / 2).rounded()
     let font = NotchMetrics.clockFont

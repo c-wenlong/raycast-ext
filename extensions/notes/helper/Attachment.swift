@@ -128,21 +128,26 @@ enum NotchGeometry {
   }
 
   /// The collapsed island (flares aside): the gap plus a wing each side,
-  /// hanging from the top edge, one point taller than the menu bar.
+  /// hanging from the top edge, one point taller than the menu bar. The gap
+  /// sits on the notch even when the wings differ (the notes symbol on the
+  /// left, a wider Focus clock such as 1:30:00 on the right), so the clock
+  /// never slides under the notch.
   static func strip(leftWing: CGFloat, rightWing: CGFloat, on screen: NotesNotchScreen) -> NSRect {
     let width = screen.gap + leftWing + rightWing
     let height = screen.barHeight + NotchMetrics.extraHeight
     return NSRect(
-      x: (screen.centreX - width / 2).rounded(), y: screen.frame.maxY - height, width: width, height: height)
+      x: (screen.centreX - screen.gap / 2 - leftWing).rounded(), y: screen.frame.maxY - height, width: width,
+      height: height)
   }
 
-  /// The open card: as wide as the strip or `size`, whichever is wider,
-  /// from the top edge down past the content.
+  /// The open card: centred on the notch, as wide as `size` or enough to
+  /// cover the strip, whichever is wider, from the top edge down past the content.
   static func card(size: NSSize, strip: NSRect, on screen: NotesNotchScreen) -> NSRect {
-    let width = max(strip.width, size.width)
+    let reach = max(screen.centreX - strip.minX, strip.maxX - screen.centreX)
+    let width = max(reach * 2, size.width)
     let height = screen.barHeight + size.height
     return NSRect(
-      x: (strip.midX - width / 2).rounded(), y: screen.frame.maxY - height, width: width, height: height)
+      x: (screen.centreX - width / 2).rounded(), y: screen.frame.maxY - height, width: width, height: height)
   }
 
   /// The window: the card and the strip with room for the flares.
