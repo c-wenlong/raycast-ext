@@ -20,7 +20,7 @@ to this repo.
 
 ## Build and test
 
-Focus, from `extensions/focus`: `npm run build-helper` (signed `assets/focus-daemon`, committed), `npm test` (the four suites: TS, helper, UI, site; every one must be green before a push), `npm run build` and `npm run lint`. The commands, flags (`FOCUS_DIR`, `FOCUS_DEBUG`, `FOCUS_UI_DEMO`) and what each suite covers are in the "Build and test" and "Tests" sections of [extensions/focus/HELPER.md](extensions/focus/HELPER.md). Knobs has only `build`, `lint` and `build-helper` (`clang`, for `assets/colorfilter`, committed).
+Focus, from `extensions/focus`: `npm run build-helper` (signed `assets/focus-daemon`, committed), `npm test` (the four suites: TS, helper, UI, site; every one must be green before a push), `npm run build` and `npm run lint`. The committed binary stays ad hoc signed so the dev cert identity is not in git: local builds may carry the owner's Apple Development cert (which keeps the running copy's TCC grants stable), so re-sign the repo file ad hoc before committing — `codesign -f -s - --identifier com.c-wenlong.focus-daemon assets/focus-daemon`. The commands, flags (`FOCUS_DIR`, `FOCUS_DEBUG`, `FOCUS_UI_DEMO`) and what each suite covers are in the "Build and test" and "Tests" sections of [extensions/focus/HELPER.md](extensions/focus/HELPER.md). Knobs has only `build`, `lint` and `build-helper` (`clang`, for `assets/colorfilter`, committed).
 
 Notes, from `extensions/notes`:
 
