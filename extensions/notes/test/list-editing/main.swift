@@ -1074,7 +1074,7 @@ do {
   check("an empty title reads Untitled", ListEditing.noteLink(title: "  ", target: "a.md") == "[Untitled](a.md)")
   check("parentheses and colons in the name are encoded", ListEditing.noteLink(title: "T", target: "a (1): b.md") == "[T](a%20%281%29%3A%20b.md)",
     ListEditing.noteLink(title: "T", target: "a (1): b.md"))
-  check("a full path keeps its slashes", ListEditing.noteLink(title: "T", target: "/Users/k/My Notes/a.md") == "[T](/Users/k/My%20Notes/a.md)")
+  check("a full path keeps its slashes", ListEditing.noteLink(title: "T", target: "/Users/x/My Notes/a.md") == "[T](/Users/x/My%20Notes/a.md)")
   check("accents are percent-encoded", ListEditing.noteLink(title: "Café", target: "café.md") == "[Café](caf%C3%A9.md)")
 }
 

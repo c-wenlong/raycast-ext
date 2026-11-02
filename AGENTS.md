@@ -44,7 +44,7 @@ Notes, from `extensions/notes`:
 
 ## Verifying changes
 
-Focus: tests first, then a live check on an isolated daemon (`FOCUS_DIR=/tmp/<short>`, the socket path has a length limit; `FOCUS_FOREGROUND=1`; `FOCUS_UI_DEMO=1` with its capture flags for the displays), capturing windows with `screencapture -l <windowID>` as below. the live daemon keeps its old binary until `quit`; restart it only when `status` shows no session, never by killing it. Kill only your own daemon, by pid. Google CalDAV forbids creating calendars, so live calendar checks use an existing empty one with "Focus test" events. After a merge, refresh the dev registration (`npx ray develop` for about 20 s, then kill that pid; never `pkill -f`).
+Focus: tests first, then a live check on an isolated daemon (`FOCUS_DIR=/tmp/<short>`, the socket path has a length limit; `FOCUS_FOREGROUND=1`; `FOCUS_UI_DEMO=1` with its capture flags for the displays), capturing windows with `screencapture -l <windowID>` as below. The live daemon keeps its old binary until `quit`; restart it only when `status` shows no session, never by killing it. Kill only your own daemon, by pid. Google CalDAV forbids creating calendars, so live calendar checks use an existing empty one with "Focus test" events. After a merge, refresh the dev registration (`npx ray develop` for about 20 s, then kill that pid; never `pkill -f`).
 
 Notes:
 

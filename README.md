@@ -32,12 +32,15 @@ its own ignore rule. Focus's location is fixed for the extension.
 
 Built for one trusted user on one Mac. The helpers talk over unix sockets
 under `~/.raycast/` and `~/Library/Application Support/` guarded only by
-file permissions: any process running as the same user can drive them
-(open files in the notes window, move focus sessions, quit the daemon).
-There is no socket authentication, and no multi-user or sandbox threat
-model. `FOCUS_DEBUG=1` additionally enables test commands that create and
-delete `Focus test*` calendars and events. Install only where that is
-acceptable.
+file permissions, with no socket authentication: any process running as
+the same user can drive them (open files in the notes window, trash the
+open note, move or delete focus sessions and their calendar events, quit
+the daemon). Focus's block page also listens on `127.0.0.1` at a random
+port; its state-changing POST is gated by a per-session token plus Host
+and Origin checks. `FOCUS_DEBUG=1` enables test commands that create and
+delete `Focus test*` calendars and events, plus commands that simulate a
+block and press its Snooze. There is no multi-user or sandbox threat
+model. Install only where that is acceptable.
 
 ## Working on it
 

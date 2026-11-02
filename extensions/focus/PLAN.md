@@ -295,7 +295,7 @@ Order and recovery, so a session is never lost and never logged twice:
    `log_calendar_name` to the new destination and lets step 3 run there, so
    any later waiting message names the calendar the session is actually
    bound for.
-   the user takes that step knowingly; if the old calendar returns afterwards, the
+   The user takes that step knowingly; if the old calendar returns afterwards, the
    `focus-session: <id>` line in both descriptions makes the duplicate easy to
    find and remove.
 
@@ -383,7 +383,7 @@ Estimate: four to six working days, most of it in step 3.
 
 ## Countdown panel (2026-09-28)
 
-the user asked for Raycast Focus's floating countdown. Decided while building it:
+The user asked for Raycast Focus's floating countdown. Decided while building it:
 
 - The countdown shows in a floating panel by default (`countdownDisplay`
   `"panel"`), or in the menu bar (`"menuBar"`); never both. Focus Settings has
@@ -437,7 +437,7 @@ the user asked for Raycast Focus's floating countdown. Decided while building it
 
 ## Notch countdown (2026-09-29)
 
-the user: "Let's add the notch for the focus session ... try to replicate what
+The user: "Let's add the notch for the focus session ... try to replicate what
 HeyClicky already does." Decided while building it:
 
 - A third display, `countdownDisplay: "notch"`, alongside the panel and the
@@ -467,11 +467,11 @@ HeyClicky already does." Decided while building it:
   one shared `PanelSweep` that reads `pauseStopsClock` from the daemon
   (2026-09-29; the island first guessed it from the digits).
 - HeyClicky and the island share the notch and the level; while a session
-  runs ours covers HeyClicky's and keeps its card from opening. the user picks
+  runs ours covers HeyClicky's and keeps its card from opening. The user picks
   one; nothing tries to dodge the other.
 ## End card (2026-09-28)
 
-the user asked for the end sheet to replace the completion banner, float for
+The user asked for the end sheet to replace the completion banner, float for
 about 5 seconds and fade out, stay while hovered, and count as Finish with
 no rating or note when left alone. Decided while building it:
 
@@ -486,7 +486,7 @@ no rating or note when left alone. Decided while building it:
   Every control still works (stars, note, extend, Finish, 1 to 5, Return).
 - Left alone it stays opaque for 1 s, then fades slowly and linearly to
   clear over 5 s, and at 6 s finishes the session as Finish would with
-  nothing filled in (no rating, no note). the user asked for a slow fade over 5 s
+  nothing filled in (no rating, no note). The user asked for a slow fade over 5 s
   rather than a hold and a one-second cliff, then for the 1 s lag first so
   it is not abrupt. Hovering holds it at full opacity; leaving starts the
   1 s hold and the fade again.

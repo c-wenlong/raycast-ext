@@ -2650,7 +2650,7 @@ do {
   let healed = update(offlineId, ["rating": 3])
   check("updateSession: a later edit catches the event up", healed["logEventUpdated"] == true && (h.fake.notes(of: offlineEvent) ?? "").contains("Rating: ★★★☆☆"), healed.serialized())
 
-  // the user added his own text but kept the markers: only the review lines change.
+  // the user added their own text but kept the markers: only the review lines change.
   let (keptId, keptEvent) = finished("Annotated", from: at(13, 40), to: at(13, 50))
   let generated = h.fake.notes(of: keptEvent) ?? ""
   let annotated = "My own thoughts\n\n" + generated.replacingOccurrences(of: "Blocked attempts:", with: "Aside: kept\nBlocked attempts:") + "\nPS: also mine"

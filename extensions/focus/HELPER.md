@@ -510,7 +510,7 @@ Session and Focus Today's Discard Session, both `⌃X` with no confirmation).
   `CalendarBackend.removeEvent(id:)` (`EKEventStore.remove`), but only after
   `loggedEvent(id:)` shows its notes still carry both marker lines of this
   session (`focus-session: <id>` and `focus-started: <UTC start>`, the test
-  recovery adopts by), so an event the user rewrote, or his own event, is never
+  recovery adopts by), so an event the user rewrote, or one of the user's own, is never
   deleted. The row goes whatever happens to the event. Order: the row
   deletes run, then the event is removed, then the transaction commits
   (`Database.deleteSession(_:beforeCommit:)`). A delete that fails never
