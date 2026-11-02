@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Block page HTML
 //
 // The page a blocked tab is sent to, modelled on Raycast Focus's block page
-// (Kai's screenshot, 2026-09-27): a black canvas with a soft lighter centre,
+// (the user's screenshot, 2026-09-27): a black canvas with a soft lighter centre,
 // a round icon, "<host> has been blocked", one flat bordered "Snooze for N
 // minutes" button and a grey footer near the bottom. Pure string building so
 // the test harness can check it without a server.

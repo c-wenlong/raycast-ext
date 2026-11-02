@@ -1775,7 +1775,7 @@ scheduler.advance(6)
 check("left alone, it finishes with the kept rating", fake.calls == ["extend 300", "finish 4 nil"], "\(fake.calls)")
 sessionFinished()
 
-// Manual stop: the sound and glow play too (Kai: Complete and Finish felt
+// Manual stop: the sound and glow play too (the user: Complete and Finish felt
 // silent), the same card and timer.
 fake.calls.removeAll()
 let soundsBefore = sound.plays
@@ -2080,7 +2080,7 @@ if CommandLine.arguments.count > 1 {
     ]
     for (name, view) in states {
       ui.update(view)
-      // At 2x, on black like Kai's menu bar.
+      // At 2x, on black like the user's menu bar.
       guard let image = button.image,
         let rep = NSBitmapImageRep(
           bitmapDataPlanes: nil, pixelsWide: Int(image.size.width * 2) + 16, pixelsHigh: 48, bitsPerSample: 8,

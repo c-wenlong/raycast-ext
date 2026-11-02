@@ -18,7 +18,7 @@ import Foundation
 //
 // Automation permission is checked first with
 // AEDeterminePermissionToAutomateTarget (no prompt). Never asked: one prompt
-// per browser is requested on a thread of its own, so waiting for Kai's
+// per browser is requested on a thread of its own, so waiting for the user's
 // answer never holds up polling or the other browser's prompt (TCC makes even
 // the no-prompt check wait while a prompt for the same browser is up, so that
 // browser is skipped meanwhile). Denied (-1743) and other failures are logged
@@ -149,7 +149,7 @@ final class BrowserWatch {
       return
     }
     guard isRunning(bundle) else { return }
-    // While the prompt is up, even the no-prompt check waits for Kai's answer; leave this browser alone.
+    // While the prompt is up, even the no-prompt check waits for the user's answer; leave this browser alone.
     guard !asking.contains(bundle) else { return }
     if let until = deferred[bundle] { if clock() < until { return } else { deferred[bundle] = nil } }
     switch permission(bundle, false) {
@@ -192,7 +192,7 @@ final class BrowserWatch {
   }
 
   /// Shows the Automation prompt for `bundle` once, on a thread of its own
-  /// (the call blocks until Kai answers; one browser's prompt never waits on another's).
+  /// (the call blocks until the user answers; one browser's prompt never waits on another's).
   private func requestPermission(_ bundle: String) {
     asking.insert(bundle)
     log("\(bundle): asking for Automation permission to read its tabs")

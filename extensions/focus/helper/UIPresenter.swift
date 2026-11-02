@@ -208,7 +208,7 @@ final class UIPresenter: SessionPresenter, FloatingPanelActions, NotchPanelActio
   /// The sheet shows at once as the end card, top centre of the main screen
   /// (the glow's screen rule). The sound and glow play with it whenever a
   /// session this UI saw live reaches the card, whether the timer ran out or
-  /// Kai pressed Complete or Stop (Cancel never reaches the card).
+  /// the user pressed Complete or Stop (Cancel never reaches the card).
   func showEndSheet(_ view: SessionView) {
     onMain { [self] in
       lastView = view

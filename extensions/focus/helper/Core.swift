@@ -609,7 +609,7 @@ final class FocusCore: SessionPresenterDelegate {
   }
 
   /// A refused UI action puts the card back up when the session still
-  /// waits at the end sheet or the ready card, so the control Kai pressed
+  /// waits at the end sheet or the ready card, so the control the user pressed
   /// never leaves a hidden card behind the real state.
   private func publishOnFailure() {
     guard let open = try? current() else {
@@ -805,7 +805,7 @@ final class FocusCore: SessionPresenterDelegate {
   // MARK: Starting
 
   /// PLAN: starting while a session is open sends that one to the end sheet
-  /// first. The start itself is refused; Kai finishes (or extends) the open
+  /// first. The start itself is refused; the user finishes (or extends) the open
   /// session, then starts again.
   private func refuseIfRunning() throws {
     guard let open = try current() else { return }
@@ -1019,7 +1019,7 @@ final class FocusCore: SessionPresenterDelegate {
 
   /// Removes a session's log event, before its row deletes commit, if it is still the one this
   /// session wrote: its notes carry both marker lines (the session id and
-  /// the UTC start), the same test recovery adopts by, so an event Kai
+  /// the UTC start), the same test recovery adopts by, so an event the user
   /// rewrote or one a reused id points at is never touched. Returns nil when
   /// removed, else why it was kept.
   private func removeLogEvent(_ eventId: String, of row: SessionRow) -> String? {
@@ -1048,7 +1048,7 @@ final class FocusCore: SessionPresenterDelegate {
   /// null clears it. The note is squashed onto one line, and a blank one is
   /// null. The row is written first; then, when the row has a log event whose
   /// notes still carry this session's markers, the Rating and Note lines of
-  /// those notes are replaced (everything else, Kai's own text included,
+  /// those notes are replaced (everything else, the user's own text included,
   /// stays). An event that cannot be updated never fails the request: the
   /// reply says `logEventUpdated: false` with a warning.
   private func updateSession(_ request: Request) throws -> Reply {

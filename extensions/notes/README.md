@@ -82,7 +82,7 @@ Inside the window:
 | `⇥` / `⇧⇥` in a list | nest / unnest the item with everything under it |
 | `⌫` right after a marker | remove the marker (a nested item steps out first) |
 | ```` ``` ```` then `↩` or `Space` | open a code block and add its closing fence |
-| `@today`, `@tomorrow` or `@yesterday` then `Space`, `↩`, `⇥` or punctuation | the word becomes the local date, `2026-10-05`, keeping what you typed after it; `⌘Z` right after gives the word back. Only at the start of a word (not in `kai@today.com`), never in code or a link address; pasted text is left alone |
+| `@today`, `@tomorrow` or `@yesterday` then `Space`, `↩`, `⇥` or punctuation | the word becomes the local date, `2026-10-05`, keeping what you typed after it; `⌘Z` right after gives the word back. Only at the start of a word (not in `user@today.com`), never in code or a link address; pasted text is left alone |
 | paste a URL over a selection | turn the selection into `[text](url)` |
 | `⌘Z` / `⇧⌘Z` | undo / redo; each typing rule and formatting key is one step |
 
@@ -112,7 +112,7 @@ way too.
 ## Storage
 
 Plain `.md` files in the folder set in preferences, default `~/.raycast/notes`.
-This repo is checked out at `~/.raycast`, so `/notes/` in the root
+With the repo checked out at `~/.raycast`, `/notes/` in the root
 `.gitignore` covers the default folder. Point the preference at another
 folder inside the repo and those files will be tracked. Pins are kept in
 Raycast LocalStorage so the files stay untouched.

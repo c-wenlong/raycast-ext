@@ -331,7 +331,7 @@ do {
   let collision = Recovery.resolve(WaitingSession(sessionId: 1, logCalendarId: "log", draft: reused), store: store)
   check("a reused id with another start time is not adopted", collision == .created("log-3"), "\(collision)")
 
-  // Kai moved the saved event by hours before its id was stored.
+  // the user moved the saved event by hours before its id was stored.
   var seven = draft(7)
   seven.notes = "x\n\n" + LogText.marker(7) + "\n" + LogText.startedLine(at(14, 0))
   let movedEvent = LoggedEvent(id: "m", start: at(17, 0), end: at(17, 30), notes: seven.notes)
@@ -1214,7 +1214,7 @@ do {
 }
 
 do {
-  // Rows that finished before the change with no log calendar (Kai's
+  // Rows that finished before the change with no log calendar (the user's
   // sessions 2 and 3): recovery gives them a destination, then writes them.
   let clock = Clock(at(10, 0))
   let h = Harness(config: "{}", clock: clock, fake: destinationFake())
@@ -1518,7 +1518,7 @@ do {
 }
 
 do {
-  // Ad hoc: a pause stops the clock (Kai, 2026-09-28).
+  // Ad hoc: a pause stops the clock (2026-09-28).
   let clock = Clock(at(10, 0))
   let h = Harness(config: #"{"logCalendarId": "log", "logCalendarName": "Focus Log (iCloud)"}"#, clock: clock)
   let started = h.send("startAdhoc", ["goal": "Essay", "durationSeconds": 1200, "calendarId": "work"])
@@ -2383,7 +2383,7 @@ do {
   check("deleteSession: the same id again is unknown", h.send("deleteSession", ["sessionId": .int(Int(firstId))])["error"] == .string("no session with id \(firstId)"))
   check("deleteSession: it is logged", h.logs.contains("session \(firstId): deleted") && h.logs.contains("session \(firstId): log event \(firstEvent) removed"))
 
-  // The event's notes lost the marker (Kai rewrote them): the row goes, the event stays.
+  // The event's notes lost the marker (the user rewrote them): the row goes, the event stays.
   let (rewrittenId, rewrittenEvent) = finished("Rewritten", from: at(11, 0), to: at(11, 30))
   if let index = h.fake.saved.firstIndex(where: { $0.id == rewrittenEvent }) {
     h.fake.saved[index].draft.notes = "My own notes about this block"
@@ -2519,14 +2519,14 @@ do {
   check("replacingReview: no note stays no note", LogText.replacingReview(in: bare, rating: 2, note: "  ") == bare.replacingOccurrences(of: "Rating: none", with: "Rating: ★★☆☆☆"))
   let crlf = base.replacingOccurrences(of: "\n", with: "\r\n")
   check("replacingReview: CRLF lines keep their endings", LogText.replacingReview(in: crlf, rating: 4, note: nil) == crlf.replacingOccurrences(of: "Rating: ★★★☆☆\r\nNote: old\r\n", with: "Rating: ★★★★☆\r\n"))
-  let kais = "Rating: great session\n" + base
-  check("replacingReview: Kai's own Rating line is not Focus's", LogText.replacingReview(in: kais, rating: 5, note: nil) == "Rating: great session\n" + base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★"))
+  let ownRating = "Rating: great session\n" + base
+  check("replacingReview: the user's own Rating line is not Focus's", LogText.replacingReview(in: ownRating, rating: 5, note: nil) == "Rating: great session\n" + base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old", with: "Rating: ★★★★★"))
   let afterMarkers = bare.replacingOccurrences(of: "Rating: none\n", with: "") + "\nRating: ★★★★★"
   check("replacingReview: nil without a Rating line above the markers", LogText.replacingReview(in: afterMarkers, rating: 3, note: nil) == nil)
-  let kaisReview = "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + base
-  check("replacingReview: Kai's own review lines above Focus's block are kept", LogText.replacingReview(in: kaisReview, rating: nil, note: nil) == "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + bare)
-  let kaisNote = base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old\nEnded: manually", with: "Rating: ★★★☆☆\nEnded: manually\nNote: mine")
-  check("replacingReview: Kai's Note line below the block is kept", LogText.replacingReview(in: kaisNote, rating: 2, note: nil) == kaisNote.replacingOccurrences(of: "Rating: ★★★☆☆", with: "Rating: ★★☆☆☆"))
+  let usersReview = "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + base
+  check("replacingReview: the user's own review lines above Focus's block are kept", LogText.replacingReview(in: usersReview, rating: nil, note: nil) == "Blocked attempts: 9\nRating: ★★★★★\nNote: mine\nEnded: fine\n\n" + bare)
+  let usersNote = base.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: old\nEnded: manually", with: "Rating: ★★★☆☆\nEnded: manually\nNote: mine")
+  check("replacingReview: the user's Note line below the block is kept", LogText.replacingReview(in: usersNote, rating: 2, note: nil) == usersNote.replacingOccurrences(of: "Rating: ★★★☆☆", with: "Rating: ★★☆☆☆"))
   let inserted = base.replacingOccurrences(of: "Note: old\n", with: "Note: old\nMy line\n")
   check("replacingReview: nil when a line was put inside the block", LogText.replacingReview(in: inserted, rating: 5, note: nil) == nil)
   check("replacingReview: nil without the attempts line above the rating", LogText.replacingReview(in: base.replacingOccurrences(of: "Blocked attempts: none\n", with: ""), rating: 5, note: nil) == nil)
@@ -2612,7 +2612,7 @@ do {
   let finishedOpen = h.send("finish", ["rating": 1])
   check("updateSession: the refused session finishes with its own rating", finishedOpen["session"]?["rating"] == 1 && finishedOpen["session"]?["note"] == .null, finishedOpen.serialized())
 
-  // The event's markers are gone (Kai rewrote the notes): the row changes, the event does not.
+  // The event's markers are gone (the user rewrote the notes): the row changes, the event does not.
   let (mineId, mineEvent) = finished("Rewritten", from: at(11, 0), to: at(11, 30))
   if let index = h.fake.saved.firstIndex(where: { $0.id == mineEvent }) {
     h.fake.saved[index].draft.notes = "My own notes about this block"
@@ -2650,14 +2650,14 @@ do {
   let healed = update(offlineId, ["rating": 3])
   check("updateSession: a later edit catches the event up", healed["logEventUpdated"] == true && (h.fake.notes(of: offlineEvent) ?? "").contains("Rating: ★★★☆☆"), healed.serialized())
 
-  // Kai added his own text but kept the markers: only the review lines change.
+  // the user added their own text but kept the markers: only the review lines change.
   let (keptId, keptEvent) = finished("Annotated", from: at(13, 40), to: at(13, 50))
   let generated = h.fake.notes(of: keptEvent) ?? ""
   let annotated = "My own thoughts\n\n" + generated.replacingOccurrences(of: "Blocked attempts:", with: "Aside: kept\nBlocked attempts:") + "\nPS: also mine"
   if let index = h.fake.saved.firstIndex(where: { $0.id == keptEvent }) { h.fake.saved[index].draft.notes = annotated }
   let annotatedReply = update(keptId, ["rating": 5, "note": "after"])
   let expected = annotated.replacingOccurrences(of: "Rating: ★★★☆☆\nNote: before", with: "Rating: ★★★★★\nNote: after")
-  check("updateSession: Kai's own text in the event is kept", annotatedReply["logEventUpdated"] == true && h.fake.notes(of: keptEvent) == expected, h.fake.notes(of: keptEvent) ?? "")
+  check("updateSession: the user's own text in the event is kept", annotatedReply["logEventUpdated"] == true && h.fake.notes(of: keptEvent) == expected, h.fake.notes(of: keptEvent) ?? "")
 
   // The Rating line is gone: nothing to put the review in, so the event stays.
   let noRatingLine = generated.replacingOccurrences(of: "Rating: ★★★☆☆\n", with: "")

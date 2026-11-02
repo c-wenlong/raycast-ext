@@ -9,7 +9,7 @@ import Foundation
 //    after them: whitespace (Space, Enter, Tab) or closing punctuation. The
 //    "@" must start a word: at the line start or after whitespace, with
 //    only opening punctuation ("(", "[", "\"", "*"...) between. That keeps
-//    out email addresses ("kai@today.com"), handles inside other words and
+//    out email addresses ("user@today.com"), handles inside other words and
 //    URLs. Inline code, fenced code and link addresses are never touched.
 //
 // 2. A date chip marks every standalone ISO date in prose. Standalone

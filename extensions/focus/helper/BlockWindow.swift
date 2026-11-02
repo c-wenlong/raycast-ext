@@ -16,7 +16,7 @@ import Foundation
 // app); Escape or a click anywhere off the button just closes the page, and
 // the app stays hidden.
 //
-// The look mirrors Raycast Focus's block page (Kai's screenshot, 2026-09-27)
+// The look mirrors Raycast Focus's block page (the user's screenshot, 2026-09-27)
 // with the end sheet's type and controls (EndSheet.swift): system font,
 // semibold for the one headline, 15 pt for the rest, flat boxes with a
 // hairline border.

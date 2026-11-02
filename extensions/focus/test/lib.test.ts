@@ -472,8 +472,8 @@ const cases: Case[] = [
       assert.equal(stars(9), "★★★★★");
       assert.equal(stars(0), "☆☆☆☆☆");
       assert.equal(
-        calendarLabel({ title: "Work", account: "kai@work.example" }),
-        "Work (kai@work.example)",
+        calendarLabel({ title: "Work", account: "user@work.example" }),
+        "Work (user@work.example)",
       );
     },
   ],
@@ -1165,7 +1165,7 @@ net.createServer((socket) => {
         const calendars = await daemon.calendars();
         assert.deepEqual(
           calendars.filter((c) => c.title === "Work").map(calendarLabel),
-          ["Work (kai@work.example)", "Work (kai@school.example)"],
+          ["Work (user@work.example)", "Work (user@school.example)"],
         );
 
         await writeConfig(
@@ -1216,7 +1216,7 @@ net.createServer((socket) => {
         assert.equal(finished.session.logCalendarId, "cal-work");
         assert.equal(
           finished.session.logCalendarName,
-          "Work (kai@work.example)",
+          "Work (user@work.example)",
         );
         assert.equal(fake.state.calendarEvents.at(-1).calendarId, "cal-work");
         // No reason unless asked: the helper knows why the session ended.
@@ -2790,8 +2790,8 @@ net.createServer((socket) => {
       );
       assert.equal(escapeMarkdown("a | b <script>"), "a \\| b \\<script\\>");
       assert.equal(
-        chartMarkdown("/Users/kai/.raycast/focus/stats/week.svg"),
-        "![Focused minutes](file:///Users/kai/.raycast/focus/stats/week.svg)",
+        chartMarkdown("/Users/user/.raycast/focus/stats/week.svg"),
+        "![Focused minutes](file:///Users/user/.raycast/focus/stats/week.svg)",
       );
       assert.equal(
         chartMarkdown("/tmp/my focus (1)/week.svg"),
@@ -2823,8 +2823,8 @@ net.createServer((socket) => {
       );
       assert.equal(calendarTable([]), "_No sessions in this period._");
       assert.ok(
-        waitingMarkdown("Old Log (kai@old.example)").startsWith(
-          "The log event for this session waits for `Old Log (kai@old.example)`.",
+        waitingMarkdown("Old Log (user@old.example)").startsWith(
+          "The log event for this session waits for `Old Log (user@old.example)`.",
         ),
       );
       assert.ok(waitingMarkdown("a`b").includes("`a'b`"));
@@ -3577,7 +3577,7 @@ net.createServer((socket) => {
           message: warned.warning,
         });
 
-        // Kai's own text in the event stays; only the review lines change.
+        // the user's own text in the event stays; only the review lines change.
         const annotated = await finishOne("Annotated");
         const own = `Mine above\n${eventOf(annotated.id).notes}\nMine below`;
         eventOf(annotated.id).notes = own;

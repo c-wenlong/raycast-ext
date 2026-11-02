@@ -32,7 +32,7 @@ final class AppBlocker: NSObject, AppWorkspace {
   /// A launching app can ignore the first hide, so it is repeated after these delays while the app still shows.
   static let hideRetries: [TimeInterval] = [0.3, 1.0]
   /// Another app coming forward this long after the page appeared closes it
-  /// (Kai switched away); earlier ones are the system activating the next
+  /// (the user switched away); earlier ones are the system activating the next
   /// app after the hide.
   static let switchAwayGrace: TimeInterval = 0.75
 

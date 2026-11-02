@@ -2,7 +2,7 @@
 // text is tested. The last two lines, "focus-session: <id>" (PLAN.md's
 // marker) and "focus-started: <UTC start>", identify the session for the
 // recovery loop: the id alone repeats if focus.db is recreated, the start
-// time tells those sessions apart, and neither changes when Kai moves the
+// time tells those sessions apart, and neither changes when the user moves the
 // event. Every other field is squashed onto one line so nothing (a note, a
 // calendar title) can forge a marker line.
 
@@ -190,7 +190,7 @@ enum LogText {
   /// then optionally one "Note: " line, then an "Ended: " line, all above the
   /// marker lines (the last such run there, the one next to the markers).
   /// Its Rating line is replaced and its Note line replaced, added or
-  /// dropped; every other line, including a "Rating:" or "Note:" line Kai
+  /// dropped; every other line, including a "Rating:" or "Note:" line the user
   /// added in Calendar, stays as it is. Nil when no such block is left.
   static func replacingReview(in notes: String, rating: Int?, note: String?) -> String? {
     var lines = notes.components(separatedBy: "\n")
