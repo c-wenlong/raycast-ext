@@ -38,7 +38,7 @@ export interface TodayEvent {
 }
 
 // "ending" is the end sheet: the timer ran out (or the planned end passed
-// while paused) or Kai pressed Stop; it waits for Extend or Finish.
+// while paused) or the user pressed Stop; it waits for Extend or Finish.
 export type SessionState =
   | "running"
   | "paused"

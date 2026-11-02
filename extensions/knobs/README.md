@@ -24,7 +24,7 @@ Merged from the old Color Filter and Lid Control extensions on 2026-09-29.
 committed; rebuild it with `npm run build-helper` (`clang -O2`) after editing
 the C file and commit the result.
 
-The `lid` and `caff` scripts come from Kai's home-manager config, not this
+The `lid` and `caff` scripts come from the owner's dotfiles, not this
 repo. `lid` needs the NOPASSWD sudoers rule in `/etc/sudoers.d/lid-sleep`;
 without it the toggle fails and the HUD says so. `caff` cannot hold a closed
 lid: `caffeinate` only takes the idle and display sleep assertions, and a

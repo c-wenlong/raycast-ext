@@ -516,7 +516,7 @@ final class FakeBrowsers {
         asks.append(bundle)
         return promptOpen
       }
-      prompt?.wait()  // Kai has not answered yet
+      prompt?.wait()  // the user has not answered yet
     }
     return locked {
       if !ask { checks[bundle, default: 0] += 1 }
@@ -613,7 +613,7 @@ check("watch: denied browser logged once", watchLogs.count("\(dia): Automation p
 check("watch: denied browser not scripted", browsers.reads[dia] == nil)
 check("watch: other browser still blocked", browsers.tabs[chrome]?.hasPrefix(origin + "/blocked") == true)
 
-// Dia never asked: one prompt on the side queue, which Kai answers later;
+// Dia never asked: one prompt on the side queue, which the user answers later;
 // meanwhile Dia is not checked (the check would wait on the prompt) and Chrome is still polled.
 browsers.locked {
   browsers.permissions[dia] = BrowserWatch.notAsked

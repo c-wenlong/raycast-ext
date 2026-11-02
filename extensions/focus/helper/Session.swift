@@ -13,7 +13,7 @@
 //   running | paused | ending ──finish──▶ finished
 //   running | paused | ending ──abandon─▶ abandoned (recovery at launch only)
 //
-// What a pause does to the deadline depends on the session (Kai, 2026-09-28):
+// What a pause does to the deadline depends on the session (2026-09-28):
 //
 // - A calendar session (it has a source event) runs to the event's end. Its
 //   deadline is wall-clock: pausing does not move it, so a paused session

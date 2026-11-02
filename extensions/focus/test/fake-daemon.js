@@ -42,8 +42,8 @@ const path = require("node:path");
 const MINUTE = 60 * 1000;
 
 const CALENDARS = [
-  { id: "cal-work", title: "Work", account: "kai@work.example", color: "#3B82F6", writable: true },
-  { id: "cal-work-dup", title: "Work", account: "kai@school.example", color: "#6366F1", writable: false },
+  { id: "cal-work", title: "Work", account: "user@work.example", color: "#3B82F6", writable: true },
+  { id: "cal-work-dup", title: "Work", account: "user@school.example", color: "#6366F1", writable: false },
   { id: "cal-study", title: "Study", account: "iCloud", color: "#10B981", writable: true },
   { id: "cal-log", title: "Focus Log", account: "Google", color: "#F59E0B", writable: true },
   { id: "cal-holidays", title: "Holidays", account: "Subscribed", color: null, writable: false },
@@ -55,7 +55,7 @@ function fixtureEvents(now) {
   const at = (minutes) => new Date(now.getTime() + minutes * MINUTE).toISOString();
   return [
     { id: "ev-review", title: "Review the Focus plan", calendarId: "cal-work", start: at(-10), end: at(50) },
-    { id: "ev-pset", title: "CS3230 problem set", calendarId: "cal-study", start: at(-30), end: at(30) },
+    { id: "ev-pset", title: "algorithms problem set", calendarId: "cal-study", start: at(-30), end: at(30) },
     { id: "ev-deep", title: "Deep work: focus helper", calendarId: "cal-work", start: at(90), end: at(150) },
     { id: "ev-almost", title: "Almost over", calendarId: "cal-work", start: at(-60), end: new Date(now.getTime() + 30 * 1000).toISOString() },
     { id: "ev-done", title: "Standup", calendarId: "cal-work", start: at(-120), end: at(-105) },
@@ -103,7 +103,7 @@ function createFakeDaemon(options) {
             sessionId: 900,
             goal: "Yesterday's reading",
             endedAt: new Date(clock().getTime() - 20 * 60 * MINUTE).toISOString(),
-            logCalendarName: "Old Log (kai@old.example)",
+            logCalendarName: "Old Log (user@old.example)",
           },
         ]
       : [],
@@ -818,7 +818,7 @@ function seedHistory(now) {
     ...extra,
   });
   return [
-    session(801, "CS3230 problem set", "cal-study", 6, 10, 90, { rating: 5, note: "Finished question 3" }),
+    session(801, "algorithms problem set", "cal-study", 6, 10, 90, { rating: 5, note: "Finished question 3" }),
     session(802, "Review the Focus plan", "cal-work", 4, 14, 50, { blockedAttempts: 3, snoozes: 1 }),
     session(803, "Inbox zero", "scratch", 3, 9, 25, { rating: 3, endReason: "manual" }),
     session(804, "Deep work: focus helper", "cal-work", 1, 15, 120, {

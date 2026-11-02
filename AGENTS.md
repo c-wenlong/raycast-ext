@@ -1,8 +1,9 @@
 # Agent instructions: raycast-ext
 
-Kai's Raycast extensions and helper scripts, checked out at `~/.raycast`.
-The global rules in `~/.quiver/AGENTS.md` apply on top of this file (PR
-loop, response style, subagent tiers); this file holds what is specific
+Personal Raycast extensions and helper scripts. The development checkout
+lives at `~/.raycast`.
+The owner's global agent rules apply on top of this file (PR loop,
+response style, subagent tiers); this file holds what is specific
 to this repo.
 
 ## Layout
@@ -43,7 +44,7 @@ Notes, from `extensions/notes`:
 
 ## Verifying changes
 
-Focus: tests first, then a live check on an isolated daemon (`FOCUS_DIR=/tmp/<short>`, the socket path has a length limit; `FOCUS_FOREGROUND=1`; `FOCUS_UI_DEMO=1` with its capture flags for the displays), capturing windows with `screencapture -l <windowID>` as below. Kai's own daemon keeps its old binary until `quit`; restart it only when `status` shows no session, never by killing it. Kill only your own daemon, by pid. Google CalDAV forbids creating calendars, so live calendar checks use an existing empty one with "Focus test" events. After a merge, refresh the dev registration (`npx ray develop` for about 20 s, then kill that pid; never `pkill -f`).
+Focus: tests first, then a live check on an isolated daemon (`FOCUS_DIR=/tmp/<short>`, the socket path has a length limit; `FOCUS_FOREGROUND=1`; `FOCUS_UI_DEMO=1` with its capture flags for the displays), capturing windows with `screencapture -l <windowID>` as below. the live daemon keeps its old binary until `quit`; restart it only when `status` shows no session, never by killing it. Kill only your own daemon, by pid. Google CalDAV forbids creating calendars, so live calendar checks use an existing empty one with "Focus test" events. After a merge, refresh the dev registration (`npx ray develop` for about 20 s, then kill that pid; never `pkill -f`).
 
 Notes:
 

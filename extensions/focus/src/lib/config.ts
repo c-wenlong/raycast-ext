@@ -159,7 +159,7 @@ export function normalizeConfig(raw: unknown): FocusConfig {
 
 // Returns the parsed JSON object, or undefined when the file does not exist.
 // A file that exists but is not a JSON object is an error: silently treating
-// it as empty would let the next save wipe whatever Kai wrote there.
+// it as empty would let the next save wipe whatever the user wrote there.
 async function readRaw(
   file: string,
 ): Promise<Record<string, unknown> | undefined> {

@@ -7,7 +7,8 @@ page, Chrome and Dia tab watcher), the Ad-hoc Session form and Focus Stats.
 The daemon reports version 0.3.0. Known operational facts: macOS asks for
 Calendar access and for Automation access to each browser once per binary
 path (Raycast's copy is a path of its own), and while an Automation prompt
-is pending every Apple Event to that browser times out. Written 2026-09-27 from an interview with Kai.
+is pending every Apple Event to that browser times out. Written 2026-09-27
+from a product interview.
 This file is the spec for the extension that will live in this folder. Update
 it when a decision changes; the code follows the file, not the other way round.
 
@@ -18,7 +19,7 @@ focus sessions. It lists today's events from chosen calendars, starts a session
 with app and website blocking, keeps the timer in the menu bar, asks for a
 rating and a note at the end, logs everything to a local sqlite database, and
 writes the actual time as a new event in the session's own calendar (or in
-one log calendar for everything, when Kai sets one).
+one log calendar for everything, when the user sets one).
 
 It replaces Raycast Focus so that nothing breaks if Raycast moves Focus into
 the paid tier. The Raycast deeplink stays available as an optional extra.
@@ -29,17 +30,17 @@ the paid tier. The Raycast deeplink stays available as an optional extra.
 |---|---|
 | Which events are startable | Only events from calendars picked in a settings page that lists every calendar Calendar.app knows about, and only while their planned end is more than one minute away. Events that already ended today are not listed; to focus on one anyway, start an ad-hoc session with its title. |
 | What "start" does | Our own blocking and UI, built in the Swift helper. Optionally also fire `raycast://focus/start` so the two can run side by side during migration. |
-| Where actual time goes | A new event in the session's own calendar: the calendar an ad-hoc session is filed under, or the calendar the source event lives in, so the actual block sits next to the planned one. Settings has an optional override, "Log Calendar", that sends every session's event to one calendar instead. The planned event is never edited. (Changed 2026-09-28; it was always the log calendar Kai picked, and a session finished with none picked waited.) |
+| Where actual time goes | A new event in the session's own calendar: the calendar an ad-hoc session is filed under, or the calendar the source event lives in, so the actual block sits next to the planned one. Settings has an optional override, "Log Calendar", that sends every session's event to one calendar instead. The planned event is never edited. (Changed 2026-09-28; it was always the log calendar the user picked, and a session finished with none picked waited.) |
 | When the log event is written | Only at the end. A running or abandoned session leaves no trace on the calendar. |
 | Session length from an event | Until the planned end of the event. Starting at 14:10 on a 14:00 to 15:00 event gives 50 minutes. |
 | Ad-hoc sessions | Yes. A goal, a length, and a calendar to file the session under for stats. |
-| How a session ends | The timer runs out and a sheet asks Extend or Finish, or Kai stops it manually at any time. |
+| How a session ends | The timer runs out and a sheet asks Extend or Finish, or the user stops it manually at any time. |
 | What the log records | Start, end, source event, pauses and resumes, every blocked attempt, the end reason, a 5-star rating and a one-line note. |
 | Blocking configuration | Built-in categories (social, gaming, and the rest below) on by default, a default profile per startable calendar, and an allowlist mode. |
 | What a block looks like | Like Raycast Focus: a dark block page saying "<host> has been blocked", one "Snooze for 3 minutes" button, and the footer "End your focus session to access this page". Snoozes are logged. Apps get the same page as a native window over the spot the app's window had, not the whole screen (changed 2026-10-04; it was full screen). |
-| Overlapping events | Both are listed in Focus Today; Kai picks, and the session runs until the planned end of the one picked. |
+| Overlapping events | Both are listed in Focus Today; the user picks, and the session runs until the planned end of the one picked. |
 | Paused past planned end | A paused calendar session goes straight to the end sheet when its planned end passes, same as a running one. An ad-hoc session's pause stops its clock instead, so it never passes its end while paused. (Changed 2026-09-28; it was every session.) |
-| What pause means | A calendar session (it has a source event) takes a break inside the event: the end stays at the event's end and the countdown keeps falling. An ad-hoc session asked for a length, so pause stops the clock: the time left holds while paused and the planned end (with any extension) moves later by the pause on resume. Timed pauses resume the same way. (Kai, 2026-09-28.) |
+| What pause means | A calendar session (it has a source event) takes a break inside the event: the end stays at the event's end and the countdown keeps falling. An ad-hoc session asked for a length, so pause stops the clock: the time left holds while paused and the planned end (with any extension) moves later by the pause on resume. Timed pauses resume the same way. (2026-09-28.) |
 | Browsers | Chrome and Dia for now. Both expose tab URLs over AppleScript (checked on this Mac: Dia's dictionary has `active tab`, `URL`, `title`). |
 | Calendar access | EventKit through Calendar.app, which already syncs the Google account (41 CalDAV calendars found in `Calendar.sqlitedb` on 2026-09-27). No OAuth, works offline, one permission prompt. |
 | Surfaces in v1 | Countdown (floating panel by default, or the menu bar or the notch), block page (a tab for sites, a card over the app's window for apps), stats view, end-of-session sheet. |
@@ -103,15 +104,15 @@ Rules:
   stays put and the countdown keeps falling. An ad-hoc session's pause stops
   the clock: the time left holds, and closing the pause (resume, stop,
   finish) moves the planned end, and any extended end, later by its length.
-  An extension during an ad-hoc pause adds to that end. (Kai, 2026-09-28.)
+  An extension during an ad-hoc pause adds to that end. (2026-09-28.)
 - Extend keeps the same session and the same log row; the log event's end
   time is whatever the real end was.
-- The end sheet keeps blocking on until Kai answers, so the timer running out
+- The end sheet keeps blocking on until the user answers, so the timer running out
   does not silently unblock everything.
 - An abandoned session (Mac slept through it, helper quit) gets `end = last
   heartbeat`, `end_reason = abandoned`, no rating, and no calendar event.
   The helper writes a heartbeat to sqlite every 30 seconds for this.
-- If Kai starts a session while one is running, the current one goes to the
+- If the user starts a session while one is running, the current one goes to the
   end sheet first.
 - A calendar session still paused when its planned end passes goes to the
   end sheet at that moment, exactly as if it had been running. A paused
@@ -139,7 +140,7 @@ Rules:
 
 ## Blocking
 
-- The block page mirrors Raycast Focus (screenshot from Kai on 2026-09-27):
+- The block page mirrors Raycast Focus (screenshot from the user on 2026-09-27):
   a dark page with the extension icon, "<host> has been blocked", one button
   "Snooze for 3 minutes", and the footer "End your focus session to access
   this page". The helper serves it from an HTTP server bound to 127.0.0.1
@@ -216,7 +217,7 @@ Rules:
     scheme)"). A leading `www.` is dropped on save, as the helper does.
   - Ad-hoc Session remembers the last calendar used in Raycast LocalStorage.
 
-Built-in categories, each a list of bundle ids and hosts that Kai can edit in
+Built-in categories, each a list of bundle ids and hosts that the user can edit in
 Settings. All on by default in the default profile:
 
 | Category | Starts with |
@@ -234,7 +235,7 @@ one in the form.
 
 ## Log event
 
-Where it goes (Kai, 2026-09-28: "The calendar you choose is where the event
+Where it goes (2026-09-28: "The calendar you choose is where the event
 goes."), one rule:
 
 1. If `logCalendarId` is set in config, every session's event goes there.
@@ -294,7 +295,7 @@ Order and recovery, so a session is never lost and never logged twice:
    `log_calendar_name` to the new destination and lets step 3 run there, so
    any later waiting message names the calendar the session is actually
    bound for.
-   Kai takes that step knowingly; if the old calendar returns afterwards, the
+   the user takes that step knowingly; if the old calendar returns afterwards, the
    `focus-session: <id>` line in both descriptions makes the duplicate easy to
    find and remove.
 
@@ -382,7 +383,7 @@ Estimate: four to six working days, most of it in step 3.
 
 ## Countdown panel (2026-09-28)
 
-Kai asked for Raycast Focus's floating countdown. Decided while building it:
+the user asked for Raycast Focus's floating countdown. Decided while building it:
 
 - The countdown shows in a floating panel by default (`countdownDisplay`
   `"panel"`), or in the menu bar (`"menuBar"`); never both. Focus Settings has
@@ -390,7 +391,7 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   bar item's menu has Move to Floating Panel. The helper writes only this key
   and `panelPosition` to `config.json`, keeping every other key.
 - The panel floats above every window and space, at the top centre of the
-  screen with the key window by default (where the end card shows; Kai
+  screen with the key window by default (where the end card shows; the user
   asked for it there on 2026-09-28, it was the top right before), and moves only by its drag handle;
   the place is saved and reset from the "…" menu. It hides at the end sheet.
 - Hover shows Pause (a menu: 1, 2, 5, 10 minutes or indefinitely), Complete
@@ -403,8 +404,8 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   timed pause leaves it paused until Resume.
 - Whenever a session reaches the end card (the timer runs out, or Complete
   or Stop is pressed; Cancel skips the card), a sound plays and the screen
-  edges glow green for 2.5 s (2026-09-28, Kai: Finish felt silent).
-- Liquid glass (2026-09-28, Kai: "this liquid glass look ... prioritise the
+  edges glow green for 2.5 s (2026-09-28, the user: Finish felt silent).
+- Liquid glass (2026-09-28, the user: "this liquid glass look ... prioritise the
   liquid glass look, then the dynamic background"). The pill is a slab of
   dark green glass: on macOS 26 a clear `NSGlassEffectView` behind it, with
   the green painted on top rather than set as the glass's `tintColor`,
@@ -415,7 +416,7 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
   does not show through. The rim, top highlight, sheen and bottom shade are
   drawn by the panel, over the pill and the hover row. Before macOS 26 the
   HUD blur stays, with a denser tint.
-- Smooth sweep (2026-09-28, Kai: "the meter fills up one section at a
+- Smooth sweep (2026-09-28, the user: "the meter fills up one section at a
   time; I'd like the meter to move smoothly, and the speed would be
   inversely proportional to the time allocated"): the fill moves on with
   the wall clock between the once-a-second updates at 1 / total per second.
@@ -436,7 +437,7 @@ Kai asked for Raycast Focus's floating countdown. Decided while building it:
 
 ## Notch countdown (2026-09-29)
 
-Kai: "Let's add the notch for the focus session ... try to replicate what
+the user: "Let's add the notch for the focus session ... try to replicate what
 HeyClicky already does." Decided while building it:
 
 - A third display, `countdownDisplay: "notch"`, alongside the panel and the
@@ -466,11 +467,11 @@ HeyClicky already does." Decided while building it:
   one shared `PanelSweep` that reads `pauseStopsClock` from the daemon
   (2026-09-29; the island first guessed it from the digits).
 - HeyClicky and the island share the notch and the level; while a session
-  runs ours covers HeyClicky's and keeps its card from opening. Kai picks
+  runs ours covers HeyClicky's and keeps its card from opening. the user picks
   one; nothing tries to dodge the other.
 ## End card (2026-09-28)
 
-Kai asked for the end sheet to replace the completion banner, float for
+the user asked for the end sheet to replace the completion banner, float for
 about 5 seconds and fade out, stay while hovered, and count as Finish with
 no rating or note when left alone. Decided while building it:
 
@@ -485,7 +486,7 @@ no rating or note when left alone. Decided while building it:
   Every control still works (stars, note, extend, Finish, 1 to 5, Return).
 - Left alone it stays opaque for 1 s, then fades slowly and linearly to
   clear over 5 s, and at 6 s finishes the session as Finish would with
-  nothing filled in (no rating, no note). Kai asked for a slow fade over 5 s
+  nothing filled in (no rating, no note). the user asked for a slow fade over 5 s
   rather than a hold and a one-second cliff, then for the 1 s lag first so
   it is not abrupt. Hovering holds it at full opacity; leaving starts the
   1 s hold and the fade again.

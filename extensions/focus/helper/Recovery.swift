@@ -5,7 +5,7 @@
 //   calendar missing            -> keep waiting (it may come back; never re-point)
 //   its event already there     -> adopt it (saved before, id never stored); found
 //                                  by the session id and start time in its notes, so
-//                                  neither a recreated focus.db reusing an id nor Kai
+//                                  neither a recreated focus.db reusing an id nor the user
 //                                  moving the event in Calendar.app can fool it
 //   search failed               -> keep waiting (creating now could duplicate)
 //   calendar read-only          -> keep waiting (only movePending gets it written)
@@ -72,7 +72,7 @@ struct RecoveryCounts: Equatable {
 }
 
 enum Recovery {
-  /// The search looks a week either side of the session, so an event Kai
+  /// The search looks a week either side of the session, so an event the user
   /// moved in Calendar.app before its id was stored is still found. The
   /// notes, not the times, decide the match.
   static let searchMargin: TimeInterval = 7 * 86_400

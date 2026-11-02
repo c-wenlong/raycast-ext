@@ -949,7 +949,7 @@ do {
   check("inside bold", typed("**@today*") == "**2026-10-05*", typed("**@today*") ?? "nil")
   check("in a task", typed("- [ ] pay @tomorrow ") == "- [ ] pay 2026-10-06 ")
   check("in a heading", typed("# @today ") == "# 2026-10-05 ")
-  check("not part of an email", typed("kai@today.") == nil && typed("kai@today ") == nil)
+  check("not part of an email", typed("user@today.") == nil && typed("user@today ") == nil)
   check("not after a word and an opener", typed("a(@today)") == nil && typed("x_@today ") == nil)
   check("not a longer word", typed("@todays ") == nil && typed("@xtoday ") == nil && typed("@yesterdays ") == nil)
   check("not a bare @", typed("@ ") == nil && typed("today ") == nil)

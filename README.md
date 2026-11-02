@@ -1,8 +1,9 @@
 # raycast-ext
 
-Kai's Raycast extensions, checked out at `~/.raycast`. Three extensions, each
-in its own folder under `extensions/` with its own README, `package.json` and
-(where it has one) a native helper committed under `assets/`.
+Personal Raycast extensions. The development checkout lives at `~/.raycast`.
+Three extensions, each in its own folder under `extensions/` with its own
+README, `package.json` and (where it has one) a native helper committed
+under `assets/`.
 
 | Extension | What it does | Commands | Docs |
 |---|---|---|---|
@@ -17,8 +18,8 @@ then `npm run dev` (or `npx ray develop`) once, and Raycast registers it and
 copies its build. Rerun that after pulling a change so Raycast picks it up;
 a new icon also needs Raycast restarted, since it caches extension icons.
 Focus and Notes start their helpers themselves; Knobs' lid and caffeinate
-commands need the `lid` and `caff` scripts in `~/.local/bin` (from Kai's
-home-manager config) and the `lid-sleep` sudoers rule.
+commands need the `lid` and `caff` scripts in `~/.local/bin` (provided by the
+owner's dotfiles, not this repo) and the `lid-sleep` sudoers rule.
 
 ## Data
 
@@ -26,6 +27,17 @@ By default the notes live in `notes/` and Focus's sqlite database, config
 and socket in `focus/`, both at the repo root and gitignored. Notes' folder
 setting can point elsewhere; another folder inside the checkout would need
 its own ignore rule. Focus's location is fixed for the extension.
+
+## Security model
+
+Built for one trusted user on one Mac. The helpers talk over unix sockets
+under `~/.raycast/` and `~/Library/Application Support/` guarded only by
+file permissions: any process running as the same user can drive them
+(open files in the notes window, move focus sessions, quit the daemon).
+There is no socket authentication, and no multi-user or sandbox threat
+model. `FOCUS_DEBUG=1` additionally enables test commands that create and
+delete `Focus test*` calendars and events. Install only where that is
+acceptable.
 
 ## Working on it
 
