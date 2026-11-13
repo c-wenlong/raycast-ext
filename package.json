@@ -1,0 +1,10 @@
+{
+  "name": "raycast-ext",
+  "private": true,
+  "workspaces": [
+    "extensions/*"
+  ],
+  "scripts": {
+    "postinstall": "sh scripts/workspaces-postinstall.sh"
+  }
+}

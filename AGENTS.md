@@ -20,6 +20,17 @@ to this repo.
 
 ## Build and test
 
+Dependencies install once at the repo root, not per extension: the root
+`package.json` is an npm workspaces root over `extensions/*`, so `npm
+install` hoists shared deps into a single root `node_modules` (the per-
+extension lockfiles are gone on purpose; `knobs` keeps a real nested
+`node_modules` only for its divergent majors like eslint 10 / TS 6).
+`ray`'s typecheck probes `./node_modules/.bin/tsc` relative to the
+extension dir, which hoisting breaks — `scripts/workspaces-postinstall.sh`
+runs on `postinstall` and symlinks any workspace without its own
+`node_modules` to the root copy. Never `npm install` inside a single
+extension dir: it recreates a private `node_modules` and a stray lockfile.
+
 Focus, from `extensions/focus`: `npm run build-helper` (signed `assets/focus-daemon`, committed), `npm test` (the four suites: TS, helper, UI, site; every one must be green before a push), `npm run build` and `npm run lint`. The committed binary stays ad hoc signed so the dev cert identity is not in git: local builds may carry the owner's Apple Development cert (which keeps the running copy's TCC grants stable), so re-sign the repo file ad hoc before committing — `codesign -f -s - --identifier com.c-wenlong.focus-daemon assets/focus-daemon`. The commands, flags (`FOCUS_DIR`, `FOCUS_DEBUG`, `FOCUS_UI_DEMO`) and what each suite covers are in the "Build and test" and "Tests" sections of [extensions/focus/HELPER.md](extensions/focus/HELPER.md). Knobs has only `build`, `lint` and `build-helper` (`clang`, for `assets/colorfilter`, committed).
 
 Notes, from `extensions/notes`:
