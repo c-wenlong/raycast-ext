@@ -11,6 +11,8 @@ under `assets/`.
 | [Focus](extensions/focus/) | Calendar-driven and ad-hoc focus sessions with app and site blocking, a countdown (floating glass panel, menu bar item or notch island), an end card with rating and note, stats, and a log event written back to the calendar. Replaces Raycast Focus. | Focus Today, Ad-hoc Session, Focus Stats, Focus Settings | [README](extensions/focus/README.md), [PLAN](extensions/focus/PLAN.md), [HELPER](extensions/focus/HELPER.md) |
 | [Knobs](extensions/knobs/) | macOS system switches: the grayscale colour filter, sleep with the lid closed, and caffeinate. | Set Grayscale, Toggle Lid Sleep, Lid Sleep Status, Toggle Caffeinate, Caffeinate Status | [README](extensions/knobs/README.md) |
 
+Every user-facing feature, with its entry point and the tests that cover it, is listed in [FEATURES.md](FEATURES.md).
+
 ## Installing
 
 Each extension is a development extension: from its folder, `npm install`
